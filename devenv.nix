@@ -36,30 +36,45 @@ in
     initialScript = "ALTER ROLE ${database.user} CREATEDB;";
   };
 
-  dotenv.enable = true;
-
   env.DATABASE_URL = databaseUrl;
   env.ARBOTERS_DATABASE__URL = databaseUrl;
   env.ARBOTERS_LEAGUE = "team4545";
   env.SQLX_OFFLINE = "true";
   env.ARBOTERS_TELEMETRY__LOG_FORMAT = "pretty";
-
-  tasks."arboters:migrate" = {
-    exec = "sqlx migrate run --source \"$DEVENV_ROOT/migrations\"";
-    after = [ "devenv:processes:postgres" ];
-    before = [ "devenv:processes:arboters" ];
-  };
-
-  processes.arboters = {
-    exec = "bacon --headless run";
-    ports.http.allocate = 4545;
-    env.ARBOTERS_HTTP__PORT = toString config.processes.arboters.ports.http.value;
-  };
+  env.ARBOTERS_WATCHLIST__REFRESH_INTERVAL = "30s";
 
   scripts.db-migrate.exec = ''sqlx migrate run --source "$DEVENV_ROOT/migrations"'';
   scripts.db-new-migration.exec = ''sqlx migrate add --source "$DEVENV_ROOT/migrations" -r "$@"'';
   scripts.db-prepare.exec = ''cd "$DEVENV_ROOT" && SQLX_OFFLINE=false cargo sqlx prepare -- --all-targets'';
   scripts.db-reset.exec = ''sqlx database reset -y --source "$DEVENV_ROOT/migrations"'';
+
+  scripts.subscribe.exec = ''
+    set -eu
+    if [ $# -ne 3 ] || ! [[ "$1" =~ ^[A-Za-z0-9_-]{2,30}$ ]]; then
+      echo "usage: subscribe <lichess-user> <zulip-channel> <zulip-topic>" >&2
+      exit 2
+    fi
+    psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v league="$ARBOTERS_LEAGUE" -v player="$1" -v channel="$2" -v topic="$3" <<'SQL'
+    INSERT INTO subscriptions (requester_user_id, league, source_kind, source_name, event, target_channel, target_topic)
+    SELECT 0, :'league', 'player', lower(:'player'), event, trim(:'channel'), trim(:'topic')
+    FROM unnest(enum_range(NULL::subscription_event)) AS event
+    ON CONFLICT DO NOTHING;
+    SELECT id, source_name AS player, event, target_channel AS channel, target_topic AS topic
+    FROM subscriptions
+    ORDER BY id;
+    SQL
+  '';
+
+  scripts.run-on-zulip.exec = ''
+    set -eu
+    cd "$DEVENV_ROOT"
+    if ! pg_isready -q -h 127.0.0.1 -p "$PGPORT"; then
+      echo "postgres is not running; start it with: devenv up -d" >&2
+      exit 1
+    fi
+    sqlx migrate run --source migrations
+    exec secretspec run -- cargo run
+  '';
 
   git-hooks.hooks.nixpkgs-pin = {
     enable = true;

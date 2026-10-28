@@ -19,7 +19,7 @@ Subscriptions are league-scoped and their source is a player or a team. The noti
 
 ## Subscription commands
 
-- The only way to create a subscription today is SQL. Port Chesster's `tell <listener> when <event> in <league> for <source>`, `subscription list`, and `subscription remove <id>` as Zulip commands.
+- The only way to create a subscription today is the `subscribe` dev script, which writes SQL directly. Port Chesster's `tell <listener> when <event> in <league> for <source>`, `subscription list`, and `subscription remove <id>` as Zulip commands.
 
 ## Deployment
 

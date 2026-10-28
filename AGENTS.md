@@ -14,7 +14,7 @@ Arboters is a Lichess4545 league bot for Zulip, written in Rust. It is the succe
 - **Modules are `foo.rs` beside `foo/`, never `foo/mod.rs`.** `clippy::mod_module_files` enforces it.
 - **Prefer integration tests.** Test DAL code against the real database with `#[sqlx::test]`, and test code that uses the DAL against the real DAL too. Never write an in-memory reimplementation of a DAL: it can drift from the SQL. A test double is acceptable only for a failure that cannot be produced for real, and it must not reimplement behavior. Test adapters for external services we cannot run locally (Lichess, Zulip) against a local HTTP server that speaks their protocol.
 - **Build only what is needed.** No speculative APIs, endpoints, or trait methods.
-- **All configuration comes from environment variables.** Application settings live under `ARBOTERS_`, with `__` separating nesting levels (for example `ARBOTERS_DATABASE__URL`). OpenTelemetry uses the standard `OTEL_*` variables.
+- **All configuration comes from environment variables.** Application settings live under `ARBOTERS_`, with `__` separating nesting levels (for example `ARBOTERS_DATABASE__URL`). OpenTelemetry uses the standard `OTEL_*` variables. Secrets are declared in `secretspec.toml` and injected only into the process that needs them with `secretspec run`. devenv's secretspec integration stays off in `devenv.yaml`, so secrets never enter the shell. Never put secrets in `.env` files or commit them.
 - **Requests to Lichess and heltour go through `game_monitor::http_client()`**, so every one carries our User-Agent, `arboters/<version> (+https://github.com/Lichess4545/arboters)`.
 - **Telemetry uses `tracing`.** It is exported through OpenTelemetry (OTLP) when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Log as structured fields, not interpolated strings.
 - **Strict linting.** Clippy runs with `pedantic`, `nursery`, and restriction lints (no `unwrap`, `expect`, `panic`, or indexing outside tests), all with `-D warnings`. Never silence a lint broadly. If a lint must be suppressed, use a narrowly scoped `#[expect(...)]`.
@@ -47,9 +47,11 @@ Arboters is a Lichess4545 league bot for Zulip, written in Rust. It is the succe
 
 Run everything inside `devenv shell`.
 
-- `devenv up` starts Postgres, runs migrations, and runs arboters under bacon on an allocated port.
+- `devenv up` starts the surrounding services (Postgres). It never starts arboters; run that yourself.
 - `bacon` runs `check`, `clippy`, `test`, or `run`. Switch jobs with `c`, `t`, and `r`.
 - `db-migrate`, `db-new-migration <name>`, `db-reset`
+- `subscribe <lichess-user> <zulip-channel> <zulip-topic>` subscribes a Zulip topic to a player's started and finished games in the local database.
+- `run-on-zulip` runs migrations, then arboters with its secrets from secretspec. Start the services first with `devenv up -d`. The first run prompts for missing secrets and saves them through your secretspec provider.
 - `db-prepare` regenerates `.sqlx/` after any query or schema change. Builds use `SQLX_OFFLINE=true`.
 - `devenv test` runs fmt, clippy (`-D warnings`), nextest, and the doc tests.
 
