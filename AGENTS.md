@@ -4,41 +4,44 @@ Arboters is a Lichess4545 league bot for Zulip, written in Rust. It is the succe
 
 ## Rules
 
-- **No comments.** Names and structure are the documentation.
-- **No stringly typed values.** Model domain values as newtypes or enums that validate on construction.
-- **Screaming, hexagonal architecture.** Top-level modules are named for domains (`games`, `subscriptions`, `notifications`, `game_monitor`), not for frameworks. Domains define ports as traits. Adapters (`lichess`, `zulip`, Postgres repositories) implement them. Dependencies point inward.
+- **No LLM generated comments.** Names and structure are the documentation.
+- **Human Comments sparingly.** Names and structure are the documentation.
+- **No stringly typed values.** Model domain values as newtypes or enums that validate on construction. Define string and number newtypes with `nutype`.
+- **Screaming, hexagonal architecture.** Top-level modules are named for domains (`subscriptions`, `notifications`, `game_monitor`), not for frameworks. Domains define ports as traits. Adapters (`zulip`, the Postgres implementations) implement them. Dependencies point inward.
 - **No ORMs.** A data-access layer is a small trait plus an implementation that uses `sqlx` directly with compile-time checked queries.
+- **Plain names, no technical jargon.** Name things for what they do in this system (`Subscriptions`, `GameMonitor`, `Notifier`), not for the pattern or layer behind them. Do not add words like `Repository`, `Manager`, `Service`, `Handler`, `Helper`, `Impl`, `Wrapper`, `Factory`, or `Wire` for no reason. A technical word belongs in a name only when it is the most direct description of the thing, as with `postgres`, `http`, or `json`.
+- **Tests live beside the code, not inside it.** Public API gets doc tests. Every other test goes in `foo/tests.rs`, declared in `foo.rs` with `#[cfg(test)] mod tests;`. Never write an inline `mod tests { ... }` block.
+- **Modules are `foo.rs` beside `foo/`, never `foo/mod.rs`.** `clippy::mod_module_files` enforces it.
+- **Prefer integration tests.** Test DAL code against the real database with `#[sqlx::test]`, and test code that uses the DAL against the real DAL too. Never write an in-memory reimplementation of a DAL: it can drift from the SQL. A test double is acceptable only for a failure that cannot be produced for real, and it must not reimplement behavior. Test adapters for external services we cannot run locally (Lichess, Zulip) against a local HTTP server that speaks their protocol.
 - **Build only what is needed.** No speculative APIs, endpoints, or trait methods.
 - **All configuration comes from environment variables.** Application settings live under `ARBOTERS_`, with `__` separating nesting levels (for example `ARBOTERS_DATABASE__URL`). OpenTelemetry uses the standard `OTEL_*` variables.
+- **Requests to Lichess and heltour go through `game_monitor::http_client()`**, so every one carries our User-Agent, `arboters/<version> (+https://github.com/Lichess4545/arboters)`.
 - **Telemetry uses `tracing`.** It is exported through OpenTelemetry (OTLP) when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Log as structured fields, not interpolated strings.
 - **Strict linting.** Clippy runs with `pedantic`, `nursery`, and restriction lints (no `unwrap`, `expect`, `panic`, or indexing outside tests), all with `-D warnings`. Never silence a lint broadly. If a lint must be suppressed, use a narrowly scoped `#[expect(...)]`.
 - **Actors use `kameo`.** Each actor has a single responsibility, and actors talk to each other through `Recipient<M>` rather than concrete actor types.
 
 ## Layout
 
-| Path | Responsibility |
-| --- | --- |
-| `src/games.rs` | Core chess domain: usernames, games, game events |
-| `src/subscriptions/` | Who wants to be told what, plus its repository port and Postgres adapter |
-| `src/notifications/` | Notifier actor and the `Messenger` port |
-| `src/game_monitor/` | Actor that watches Lichess users and emits game events |
-| `src/lichess/` | Lichess HTTP adapter (game stream) |
-| `src/zulip/` | Zulip adapter implementing `Messenger`; without Zulip settings, notifications are only logged |
-| `src/health.rs` | Liveness (in-process components) and readiness (liveness, database, not shutting down) |
-| `src/http.rs` | `/livez` and `/readyz` probe endpoints |
-| `src/telemetry.rs` | Console logs (JSON, or `pretty` for dev) plus OTLP export |
-| `src/watchlist.rs` | Keeps the game monitor's watched users in sync with subscriptions |
-| `src/app.rs` | Composition root: builds adapters, spawns actors, serves HTTP |
-| `migrations/` | `sqlx` migrations, reversible |
-| `deploy/` | Kubernetes resources in KCL: `arboters/` is the typed workload, `prod/main.k` pins the released version |
-| `flake.nix` | The release build and the layered container image (`arboters`, `arboters-migrate`) |
-| `ci/` | Release hooks and the nixpkgs/rust-overlay pin check |
+| Path                 | Responsibility                                                                                                                                                               |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/heltour/`       | Lichess4545 league concepts as heltour defines them: `league::Tag`, `league::Name`, `team::Name`, `Pairing`                                                                  |
+| `src/lichess/`       | Plain data types Lichess deals in (`lichess::UserId`, `lichess::Game`); depends on nothing else in the crate                                                                 |
+| `src/subscriptions/` | Who wants to be told what: the `Subscriptions` trait and its Postgres implementation, which filter game events into Zulip targets                                            |
+| `src/notifications/` | Notifier actor and the `Messenger` port                                                                                                                                      |
+| `src/game_monitor/`  | Actor that watches the players of heltour's current pairings through the Lichess game stream and emits game events (`GameEvent`, `GameOutcome`)                              |
+| `src/status/`        | Status actor that posts startup, Lichess connection, and shutdown messages to a per-instance topic in `ARBOTERS_STATUS__CHANNEL`; without that channel, they are only logged |
+| `src/zulip/`         | Zulip adapter implementing `Messenger`; without Zulip settings, notifications are only logged                                                                                |
+| `src/app/`           | Wires everything together: config, database pool, `/livez` and `/readyz` probes, telemetry, and the actors                                                                   |
+| `migrations/`        | `sqlx` migrations, reversible                                                                                                                                                |
+| `deploy/`            | Kubernetes resources in KCL: `arboters/` is the typed workload, `prod/main.k` pins the released version                                                                      |
+| `flake.nix`          | The release build and the layered container image (`arboters`, `arboters-migrate`)                                                                                           |
+| `ci/`                | Release hooks and the nixpkgs/rust-overlay pin check                                                                                                                         |
 
 ## Probes
 
-- `/livez` checks only in-process state: the game monitor, the notifier, and the watchlist sync. Never add external dependencies to it.
-- `/readyz` checks liveness, a database ping bounded by `ARBOTERS_HTTP__READINESS_TIMEOUT`, and fails as soon as SIGTERM arrives.
-- On shutdown, readiness flips first, then actors stop gracefully. The HTTP server stops last.
+- Arboters is crash-only. If an actor or the watchlist sync stops, the process exits with an error and Kubernetes restarts it.
+- `/livez` answers 200 unless Lichess reports the configured `ARBOTERS_LICHESS__TOKEN` invalid or owned by an account other than lichess4545. `TokenCheck` tests the token at startup and every `ARBOTERS_LICHESS__TOKEN_CHECK_INTERVAL`. A test that fails to reach Lichess keeps the previous answer, so a Lichess outage never fails liveness. Never add other dependencies to it.
+- `/readyz` pings the database, bounded by `ARBOTERS_HTTP__READINESS_TIMEOUT`.
 
 ## Workflow
 
