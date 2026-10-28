@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      stable: ${{ steps.release.outputs.stable }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/release-tools
+        id: release
+        with:
+          version: ${{ github.ref_name }}
+
+      - name: Require a commit on main
+        run: release-guards assert-on-main "$(git rev-parse "$GITHUB_SHA^{commit}")"
+
+      - name: Log in to ghcr.io
+        env:
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_TOKEN" | nix run nixpkgs#skopeo -- login \
+            --username "$GITHUB_ACTOR" \
+            --password-stdin \
+            --authfile "$RUNNER_TEMP/ghcr-auth.json" \
+            ghcr.io
+          echo "GHCR_AUTHFILE=$RUNNER_TEMP/ghcr-auth.json" >> "$GITHUB_ENV"
+
+      - name: Require an unpublished version
+        run: ci/release-hooks.sh assert-unpublished "$GITHUB_REF_NAME"
+
+      - run: nix flake check --print-build-logs
+
+      - name: Build image
+        run: nix build .#container --print-build-logs
+
+      - name: Push image tags
+        run: |
+          tags=("$VERSION")
+          if [ "$IS_STABLE_RELEASE" = "true" ]; then
+            tags+=(latest)
+          fi
+          for tag in "${tags[@]}"; do
+            nix run nixpkgs#skopeo -- copy \
+              --dest-authfile "$GHCR_AUTHFILE" \
+              docker-archive:result \
+              "docker://$(ci/release-hooks.sh image):$tag"
+          done
+
+      - name: Render release notes
+        run: |
+          release_path=$(nix build .#release --no-link --print-out-paths)
+          cliff_config=$(grep -oP "RELEASE_CLIFF_CONFIG='\K[^']+" "$release_path/bin/release")
+          nix run nixpkgs#git-cliff -- --config "$cliff_config" --latest --strip header \
+            > "$RUNNER_TEMP/release-notes.md"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/release-notes.md")
+          if [ "$IS_STABLE_RELEASE" != "true" ]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "${args[@]}"
+
+  deploy:
+    needs: publish
+    if: needs.publish.outputs.stable == 'true'
+    permissions:
+      contents: write
+      packages: read
+    uses: ./.github/workflows/deploy.yml
+    with:
+      version: ${{ needs.publish.outputs.version }}

@@ -30,6 +30,9 @@ Arboters is a Lichess4545 league bot for Zulip, written in Rust. It is the succe
 | `src/watchlist.rs` | Keeps the game monitor's watched users in sync with subscriptions |
 | `src/app.rs` | Composition root: builds adapters, spawns actors, serves HTTP |
 | `migrations/` | `sqlx` migrations, reversible |
+| `deploy/` | Kubernetes resources in KCL: `arboters/` is the typed workload, `prod/main.k` pins the released version |
+| `flake.nix` | The release build and the layered container image (`arboters`, `arboters-migrate`) |
+| `ci/` | Release hooks and the nixpkgs/rust-overlay pin check |
 
 ## Probes
 
@@ -47,4 +50,15 @@ Run everything inside `devenv shell`.
 - `db-prepare` regenerates `.sqlx/` after any query or schema change. Builds use `SQLX_OFFLINE=true`.
 - `devenv test` runs fmt, clippy (`-D warnings`), nextest, and the doc tests.
 
+- `render-manifests` prints the production Kubernetes YAML from KCL. Never hand-write YAML; change the KCL.
+
 Before handing work back, these must be clean: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo nextest run`, and `cargo test --doc`.
+
+## Release and deploy
+
+- Commit subjects on `main` are conventional commits. `feat` asks for a minor bump, other types ask for a patch, and `!` or `BREAKING CHANGE:` asks for a major. Releases read the version from them.
+- `release` runs the shared `dull-nix` release command. It sets `[workspace.package]` version, renders `CHANGELOG.md`, tags `v*`, and pushes. Never edit the version or the changelog by hand.
+- The `Release` workflow publishes `ghcr.io/lichess4545/arboters:<version>` (plus `latest` for stable releases) and creates the GitHub release. For stable releases, `Deploy` then pins `deploy/prod/main.k` to the new version.
+- `deploy <version>` re-pins production to a version that is already published.
+- `ci/nixpkgs-pin.sh` requires `flake.lock` and `devenv.lock` to agree on nixpkgs and rust-overlay, so dev, CI, and the container share a toolchain. Update both together.
+- Postgres is pinned to major version 18 in `devenv.nix`. Change it only together with production.

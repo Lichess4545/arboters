@@ -19,13 +19,18 @@ in
     pkgs.bacon
     pkgs.cargo-edit
     pkgs.cargo-nextest
-    pkgs.openssl
-    pkgs.pkg-config
+    pkgs.gh
+    pkgs.git-cliff
+    pkgs.jq
+    pkgs.kcl
+    pkgs.kubeconform
+    pkgs.skopeo
     pkgs.sqlx-cli
   ];
 
   services.postgres = {
     enable = true;
+    package = pkgs.postgresql_18;
     listen_addresses = "127.0.0.1";
     initialDatabases = [ database ];
     initialScript = "ALTER ROLE ${database.user} CREATEDB;";
@@ -55,6 +60,30 @@ in
   scripts.db-new-migration.exec = ''sqlx migrate add --source "$DEVENV_ROOT/migrations" -r "$@"'';
   scripts.db-prepare.exec = ''cd "$DEVENV_ROOT" && SQLX_OFFLINE=false cargo sqlx prepare -- --all-targets'';
   scripts.db-reset.exec = ''sqlx database reset -y --source "$DEVENV_ROOT/migrations"'';
+
+  git-hooks.hooks.nixpkgs-pin = {
+    enable = true;
+    entry = "ci/nixpkgs-pin.sh";
+    files = "^(flake|devenv)\\.lock$";
+    pass_filenames = false;
+  };
+
+  scripts.render-manifests.exec = ''cd "$DEVENV_ROOT/deploy" && exec kcl run prod/main.k'';
+
+  scripts.release.exec = ''cd "$DEVENV_ROOT" && exec nix run "$DEVENV_ROOT#release" -- "$@"'';
+
+  scripts.deploy.exec = ''
+    set -eu
+    if [ $# -ne 1 ]; then
+      echo "usage: deploy <version>" >&2
+      exit 2
+    fi
+    version=''${1#v}
+    gh workflow run deploy.yml --repo Lichess4545/arboters -f version="$version"
+    echo "Requested a production deploy of $version. Follow it with:"
+    echo "  gh run list --repo Lichess4545/arboters --workflow deploy.yml"
+    echo "  gh run watch --repo Lichess4545/arboters"
+  '';
 
   enterTest = ''
     cargo fmt --check

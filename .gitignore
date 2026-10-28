@@ -5,3 +5,4 @@ devenv.local.nix
 .pre-commit-config.yaml
 .env
 /.claude/worktrees/
+/result
