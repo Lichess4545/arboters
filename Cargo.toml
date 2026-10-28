@@ -4,14 +4,22 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
 publish = false
+repository = "https://github.com/Lichess4545/arboters"
 
 [dependencies]
 anyhow = "1"
 axum = "0.8"
+backon = { version = "1.6", default-features = false, features = ["std"] }
 figment = { version = "0.10", features = ["env"] }
 futures = "0.3"
+humantime = "2"
 humantime-serde = "1"
 kameo = "0.22"
+nutype = { version = "0.8", features = ["serde"] }
+opentelemetry = "0.33"
+opentelemetry-appender-tracing = "0.33"
+opentelemetry-otlp = "0.33"
+opentelemetry_sdk = "0.33"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
@@ -21,8 +29,10 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 tracing = "0.1"
+tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = { version = "2", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
 zulip-api = "0.0.8"
 
 [dev-dependencies]
@@ -52,4 +62,5 @@ dbg_macro = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
 indexing_slicing = "warn"
+mod_module_files = "warn"
 string_slice = "warn"

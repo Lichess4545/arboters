@@ -1,12 +1,8 @@
 pub mod app;
-pub mod config;
-pub mod database;
 pub mod game_monitor;
-pub mod games;
-pub mod http;
+pub mod heltour;
 pub mod lichess;
 pub mod notifications;
+pub mod status;
 pub mod subscriptions;
-pub mod telemetry;
-pub mod watchlist;
 pub mod zulip;

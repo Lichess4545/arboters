@@ -9,6 +9,8 @@ use url::Url;
 pub struct LichessSettings {
     pub base_url: Url,
     pub token: Option<SecretString>,
+    #[serde(with = "humantime_serde")]
+    pub token_check_interval: Duration,
     pub stream: StreamSettings,
 }
 
@@ -18,6 +20,7 @@ impl Default for LichessSettings {
         Self {
             base_url: Url::parse("https://lichess.org").expect("static url is valid"),
             token: None,
+            token_check_interval: Duration::from_mins(15),
             stream: StreamSettings::default(),
         }
     }
@@ -26,7 +29,6 @@ impl Default for LichessSettings {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StreamSettings {
-    pub max_users_per_connection: usize,
     #[serde(with = "humantime_serde")]
     pub inactivity_timeout: Duration,
     #[serde(with = "humantime_serde")]
@@ -40,7 +42,6 @@ pub struct StreamSettings {
 impl Default for StreamSettings {
     fn default() -> Self {
         Self {
-            max_users_per_connection: 900,
             inactivity_timeout: Duration::from_mins(10),
             initial_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_mins(1),

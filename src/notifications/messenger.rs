@@ -1,5 +1,7 @@
 use crate::subscriptions::NotificationTarget;
 
+use super::rendering::Notification;
+
 #[derive(Debug, thiserror::Error)]
 #[error("failed to deliver notification to {target:?}")]
 pub struct DeliveryError {
@@ -12,6 +14,6 @@ pub trait Messenger: Send + Sync + 'static {
     fn send(
         &self,
         target: &NotificationTarget,
-        content: &str,
+        notification: &Notification,
     ) -> impl Future<Output = Result<(), DeliveryError>> + Send;
 }

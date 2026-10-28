@@ -23,10 +23,19 @@ Arboters is a Lichess4545 league bot for Zulip, written in Rust. It is the succe
 | `src/notifications/` | Notifier actor and the `Messenger` port |
 | `src/game_monitor/` | Actor that watches Lichess users and emits game events |
 | `src/lichess/` | Lichess HTTP adapter (game stream) |
-| `src/zulip/` | Zulip adapter implementing `Messenger` |
+| `src/zulip/` | Zulip adapter implementing `Messenger`; without Zulip settings, notifications are only logged |
+| `src/health.rs` | Liveness (in-process components) and readiness (liveness, database, not shutting down) |
+| `src/http.rs` | `/livez` and `/readyz` probe endpoints |
+| `src/telemetry.rs` | Console logs (JSON, or `pretty` for dev) plus OTLP export |
 | `src/watchlist.rs` | Keeps the game monitor's watched users in sync with subscriptions |
 | `src/app.rs` | Composition root: builds adapters, spawns actors, serves HTTP |
 | `migrations/` | `sqlx` migrations, reversible |
+
+## Probes
+
+- `/livez` checks only in-process state: the game monitor, the notifier, and the watchlist sync. Never add external dependencies to it.
+- `/readyz` checks liveness, a database ping bounded by `ARBOTERS_HTTP__READINESS_TIMEOUT`, and fails as soon as SIGTERM arrives.
+- On shutdown, readiness flips first, then actors stop gracefully. The HTTP server stops last.
 
 ## Workflow
 

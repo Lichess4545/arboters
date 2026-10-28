@@ -1,0 +1,55 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO subscriptions (\n                requester_user_id, league, source_kind, source_name, event,\n                target_user_id, target_channel, target_topic\n            )\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n            ON CONFLICT (\n                requester_user_id, league, source_kind, source_name, event,\n                target_user_id, target_channel, target_topic\n            )\n            DO UPDATE SET requester_user_id = EXCLUDED.requester_user_id\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        {
+          "Custom": {
+            "name": "subscription_source_kind",
+            "kind": {
+              "Enum": [
+                "player",
+                "team"
+              ]
+            }
+          }
+        },
+        "Text",
+        {
+          "Custom": {
+            "name": "subscription_event",
+            "kind": {
+              "Enum": [
+                "game_started",
+                "game_finished"
+              ]
+            }
+          }
+        },
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "48a5fee1dbf7069cc65c275594aa24dc9692df52c33dc160ad6284a4e4f771e4"
+}

@@ -1,0 +1,173 @@
+use std::collections::BTreeSet;
+
+use sqlx::PgPool;
+
+use crate::game_monitor::GameEventKind;
+use crate::heltour::league;
+
+use super::model::{
+    ChannelName, ChatUserId, NewSubscription, NotificationTarget, SubscriptionId,
+    SubscriptionSource, TopicName,
+};
+use super::{Subscriptions, SubscriptionsError};
+
+#[derive(Clone, Debug)]
+pub struct PostgresSubscriptions {
+    pool: PgPool,
+}
+
+impl PostgresSubscriptions {
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "subscription_event", rename_all = "snake_case")]
+enum StoredEvent {
+    GameStarted,
+    GameFinished,
+}
+
+impl From<GameEventKind> for StoredEvent {
+    fn from(kind: GameEventKind) -> Self {
+        match kind {
+            GameEventKind::GameStarted => Self::GameStarted,
+            GameEventKind::GameFinished => Self::GameFinished,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "subscription_source_kind", rename_all = "snake_case")]
+enum StoredSourceKind {
+    Player,
+    Team,
+}
+
+fn stored_source(source: &SubscriptionSource) -> (StoredSourceKind, &str) {
+    match source {
+        SubscriptionSource::Player(user_id) => (StoredSourceKind::Player, user_id.as_str()),
+        SubscriptionSource::Team(team) => (StoredSourceKind::Team, team.as_str()),
+    }
+}
+
+fn stored_user_id(user_id: ChatUserId) -> Result<i64, sqlx::Error> {
+    i64::try_from(user_id.0).map_err(|error| sqlx::Error::Encode(Box::new(error)))
+}
+
+fn undecodable(error: impl std::error::Error + Send + Sync + 'static) -> sqlx::Error {
+    sqlx::Error::Decode(Box::new(error))
+}
+
+struct StoredTarget {
+    user_id: Option<i64>,
+    channel: Option<String>,
+    topic: Option<String>,
+}
+
+impl StoredTarget {
+    fn from_target(target: &NotificationTarget) -> Result<Self, sqlx::Error> {
+        Ok(match target {
+            NotificationTarget::DirectMessage { user_id } => Self {
+                user_id: Some(stored_user_id(*user_id)?),
+                channel: None,
+                topic: None,
+            },
+            NotificationTarget::Channel { channel, topic } => Self {
+                user_id: None,
+                channel: Some(channel.as_str().to_owned()),
+                topic: Some(topic.as_str().to_owned()),
+            },
+        })
+    }
+
+    fn into_target(self) -> Result<NotificationTarget, sqlx::Error> {
+        match (self.user_id, self.channel, self.topic) {
+            (Some(user_id), None, None) => Ok(NotificationTarget::DirectMessage {
+                user_id: ChatUserId(u64::try_from(user_id).map_err(undecodable)?),
+            }),
+            (None, Some(channel), Some(topic)) => Ok(NotificationTarget::Channel {
+                channel: ChannelName::try_new(&channel).map_err(undecodable)?,
+                topic: TopicName::try_new(&topic).map_err(undecodable)?,
+            }),
+            _ => Err(sqlx::Error::Decode(
+                "stored target is neither a direct message nor a channel topic".into(),
+            )),
+        }
+    }
+}
+
+impl Subscriptions for PostgresSubscriptions {
+    async fn subscribe(
+        &self,
+        subscription: NewSubscription,
+    ) -> Result<SubscriptionId, SubscriptionsError> {
+        let (source_kind, source_name) = stored_source(&subscription.source);
+        let target = StoredTarget::from_target(&subscription.target)?;
+        let id = sqlx::query_scalar!(
+            r#"
+            INSERT INTO subscriptions (
+                requester_user_id, league, source_kind, source_name, event,
+                target_user_id, target_channel, target_topic
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (
+                requester_user_id, league, source_kind, source_name, event,
+                target_user_id, target_channel, target_topic
+            )
+            DO UPDATE SET requester_user_id = EXCLUDED.requester_user_id
+            RETURNING id
+            "#,
+            stored_user_id(subscription.requester)?,
+            subscription.league.as_str(),
+            source_kind as StoredSourceKind,
+            source_name,
+            StoredEvent::from(subscription.event) as StoredEvent,
+            target.user_id,
+            target.channel,
+            target.topic,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(SubscriptionId(id))
+    }
+
+    async fn targets_for(
+        &self,
+        league: &league::Tag,
+        event: GameEventKind,
+        sources: &[SubscriptionSource],
+    ) -> Result<BTreeSet<NotificationTarget>, SubscriptionsError> {
+        let mut targets = BTreeSet::new();
+        for source in sources {
+            let (source_kind, source_name) = stored_source(source);
+            let rows = sqlx::query!(
+                r#"
+                SELECT target_user_id, target_channel, target_topic
+                FROM subscriptions
+                WHERE league = $1 AND event = $2 AND source_kind = $3 AND source_name = $4
+                "#,
+                league.as_str(),
+                StoredEvent::from(event) as StoredEvent,
+                source_kind as StoredSourceKind,
+                source_name,
+            )
+            .fetch_all(&self.pool)
+            .await?;
+            for row in rows {
+                let stored = StoredTarget {
+                    user_id: row.target_user_id,
+                    channel: row.target_channel,
+                    topic: row.target_topic,
+                };
+                targets.insert(stored.into_target()?);
+            }
+        }
+        Ok(targets)
+    }
+}
+
+#[cfg(test)]
+mod tests;

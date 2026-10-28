@@ -35,6 +35,7 @@ in
 
   env.DATABASE_URL = databaseUrl;
   env.ARBOTERS_DATABASE__URL = databaseUrl;
+  env.ARBOTERS_LEAGUE = "team4545";
   env.SQLX_OFFLINE = "true";
   env.ARBOTERS_TELEMETRY__LOG_FORMAT = "pretty";
 

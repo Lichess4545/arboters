@@ -1,31 +1,18 @@
+use nutype::nutype;
 use secrecy::SecretString;
 use serde::Deserialize;
 use url::Url;
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(try_from = "String")]
+#[nutype(
+    validate(predicate = is_email),
+    derive(Debug, Clone, PartialEq, Eq, Deref, Deserialize)
+)]
 pub struct BotEmail(String);
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("`{0}` is not an email address")]
-pub struct InvalidBotEmail(String);
-
-impl BotEmail {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl TryFrom<String> for BotEmail {
-    type Error = InvalidBotEmail;
-
-    fn try_from(raw: String) -> Result<Self, Self::Error> {
-        match raw.split_once('@') {
-            Some((local, domain)) if !local.is_empty() && !domain.is_empty() => Ok(Self(raw)),
-            _ => Err(InvalidBotEmail(raw)),
-        }
-    }
+fn is_email(candidate: &str) -> bool {
+    candidate
+        .split_once('@')
+        .is_some_and(|(local, domain)| !local.is_empty() && !domain.is_empty())
 }
 
 #[derive(Clone, Debug, Deserialize)]
