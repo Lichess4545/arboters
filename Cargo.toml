@@ -1,0 +1,55 @@
+[package]
+name = "arboters"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = "0.8"
+figment = { version = "0.10", features = ["env"] }
+futures = "0.3"
+humantime-serde = "1"
+kameo = "0.22"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "net"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = { version = "2", features = ["serde"] }
+zulip-api = "0.0.8"
+
+[dev-dependencies]
+figment = { version = "0.10", features = ["env", "test"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+tower = { version = "0.5", features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unused_qualifications = "warn"
+let_underscore_drop = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+indexing_slicing = "warn"
+string_slice = "warn"
