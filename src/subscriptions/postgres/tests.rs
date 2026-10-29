@@ -161,3 +161,35 @@ fn user_ids_beyond_the_storable_range_are_rejected() {
 
     assert!(result.is_err());
 }
+
+#[sqlx::test]
+async fn league_subscriptions_are_targets_of_the_league_source(pool: PgPool) {
+    let subscriptions = subscribed(
+        pool,
+        vec![subscription(
+            SubscriptionSource::League,
+            channel("4545", "games"),
+        )],
+    )
+    .await;
+
+    assert_eq!(
+        started_targets(&subscriptions, &[SubscriptionSource::League]).await,
+        BTreeSet::from([channel("4545", "games")])
+    );
+}
+
+#[sqlx::test]
+async fn league_subscriptions_of_another_league_are_not_targets(pool: PgPool) {
+    let elsewhere = NewSubscription {
+        league: league("lonewolf"),
+        ..subscription(SubscriptionSource::League, direct_message(7))
+    };
+    let subscriptions = subscribed(pool, vec![elsewhere]).await;
+
+    assert!(
+        started_targets(&subscriptions, &[SubscriptionSource::League])
+            .await
+            .is_empty()
+    );
+}

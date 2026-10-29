@@ -18,6 +18,7 @@ impl fmt::Display for SubscriptionId {
 pub enum SubscriptionSource {
     Player(lichess::UserId),
     Team(team::Name),
+    League,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

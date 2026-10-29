@@ -2,7 +2,7 @@
 
 ## League attribution for notifications
 
-Subscriptions are league-scoped and their source is a player or a team. The notifier looks up player sources in every league whose current pairings pair the game's two players, but not team sources.
+Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose current pairings pair the game's two players, but not team sources. Any game between two paired players counts, including a casual one.
 
 - Look up the players' teams as sources too.
 
