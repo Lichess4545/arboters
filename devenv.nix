@@ -42,6 +42,7 @@ in
   env.SQLX_OFFLINE = "true";
   env.ARBOTERS_TELEMETRY__LOG_FORMAT = "pretty";
   env.ARBOTERS_WATCHLIST__REFRESH_INTERVAL = "30s";
+  env.ARBOTERS_STATUS__CHANNEL = "dev-website-and-candy";
 
   scripts.db-migrate.exec = ''sqlx migrate run --source "$DEVENV_ROOT/migrations"'';
   scripts.db-new-migration.exec = ''sqlx migrate add --source "$DEVENV_ROOT/migrations" -r "$@"'';
