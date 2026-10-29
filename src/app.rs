@@ -11,9 +11,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chat::{LoggingMessenger, Messenger};
 use crate::game_monitor::watchlist;
-use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
+use crate::game_monitor::{GameMonitor, LichessSettings, LichessStream, http_client};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
+use crate::lichess_token_check::{TokenCheck, TokenState};
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
 use crate::zulip::{Inbox, ZulipMessenger};
@@ -45,13 +46,7 @@ async fn run_with<M: Messenger + Clone>(
     let subscriptions = PostgresSubscriptions::new(pool.clone());
     let stream = LichessStream::new(http.clone(), &config.lichess)?;
     let heltour = Heltour::new(http.clone(), &config.heltour)?;
-    let (token_check, lichess_token) = match &config.lichess.token {
-        Some(token) => {
-            let (check, state) = TokenCheck::new(http, &config.lichess, token.clone())?;
-            (Some(check), state)
-        }
-        None => (None, watch::channel(TokenState::Untested).1),
-    };
+    let (token_check, lichess_token) = lichess_token_check(http, &config.lichess)?;
     let status = Status::new(messenger.clone(), config.status.clone())?;
 
     let status = Status::spawn(status);
@@ -191,6 +186,22 @@ impl<M: Messenger> Conversations<M> {
         stop(&self.inbox).await;
         stop(&self.commands).await;
     }
+}
+
+fn lichess_token_check(
+    http: reqwest::Client,
+    lichess: &LichessSettings,
+) -> Result<(Option<TokenCheck>, watch::Receiver<TokenState>), url::ParseError> {
+    let Some(token) = &lichess.token else {
+        return Ok((None, watch::channel(TokenState::Untested).1));
+    };
+    let (check, state) = TokenCheck::new(
+        http,
+        &lichess.base_url,
+        token.clone(),
+        lichess.token_check_interval,
+    )?;
+    Ok((Some(check), state))
 }
 
 async fn stop<A: kameo::Actor>(actor: &ActorRef<A>) {

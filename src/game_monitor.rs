@@ -3,7 +3,6 @@ mod event;
 mod monitor;
 mod settings;
 mod stream;
-mod token_check;
 pub mod watchlist;
 
 use std::collections::BTreeSet;
@@ -17,7 +16,6 @@ pub use event::{Ending, GameEvent, GameEventKind, GameOutcome};
 pub use monitor::GameMonitor;
 pub use settings::LichessSettings;
 pub use stream::LichessStream;
-pub use token_check::{TokenCheck, TokenState};
 
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),
