@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use nutype::nutype;
 use secrecy::SecretString;
 use serde::Deserialize;
@@ -21,4 +23,24 @@ pub struct ZulipSettings {
     pub site: Url,
     pub email: BotEmail,
     pub api_key: SecretString,
+    #[serde(default)]
+    pub inbox: InboxSettings,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct InboxSettings {
+    #[serde(with = "humantime_serde")]
+    pub initial_backoff: Duration,
+    #[serde(with = "humantime_serde")]
+    pub max_backoff: Duration,
+}
+
+impl Default for InboxSettings {
+    fn default() -> Self {
+        Self {
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_mins(1),
+        }
+    }
 }
