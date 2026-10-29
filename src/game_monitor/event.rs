@@ -10,6 +10,22 @@ pub enum GameOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ending {
+    Checkmate,
+    Resignation,
+    Stalemate,
+    Draw,
+    OutOfTime,
+    InsufficientMaterialClaimed,
+    VariantEnd,
+    VictoryClaimed,
+    CheatDetected,
+    Aborted,
+    NeverStarted,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GameEventKind {
     GameStarted,
     GameFinished,
@@ -18,7 +34,11 @@ pub enum GameEventKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GameEvent {
     Started(Game),
-    Finished { game: Game, outcome: GameOutcome },
+    Finished {
+        game: Game,
+        outcome: GameOutcome,
+        ending: Ending,
+    },
 }
 
 impl GameEvent {

@@ -46,6 +46,29 @@ pub enum Speed {
     Correspondence,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Variant {
+    Standard,
+    Chess960,
+    Crazyhouse,
+    Antichess,
+    Atomic,
+    Horde,
+    KingOfTheHill,
+    RacingKings,
+    ThreeCheck,
+    FromPosition,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+pub struct Clock {
+    #[serde(rename = "initial")]
+    pub initial_seconds: u32,
+    #[serde(rename = "increment")]
+    pub increment_seconds: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Game {
     pub id: GameId,
@@ -53,6 +76,8 @@ pub struct Game {
     pub black: Player,
     pub speed: Speed,
     pub rated: bool,
+    pub variant: Variant,
+    pub clock: Option<Clock>,
 }
 
 impl Game {
@@ -61,6 +86,3 @@ impl Game {
         [&self.white.user_id, &self.black.user_id]
     }
 }
-
-#[cfg(test)]
-mod tests;

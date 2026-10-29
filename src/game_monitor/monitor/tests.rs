@@ -15,11 +15,11 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{GameOutcome, LichessSettings, StreamConnected, http_client};
-use crate::lichess::{Game, GameId, Player, Speed};
+use crate::game_monitor::{Ending, GameOutcome, LichessSettings, StreamConnected, http_client};
+use crate::lichess::{Game, GameId, Player, Speed, Variant};
 
-const STARTED: &str = r#"{"id":"g1","rated":true,"speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
-const WHITE_WON: &str = r#"{"id":"g1","rated":true,"speed":"classical","status":30,"winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 
 enum Answer {
     Status(StatusCode),
@@ -273,6 +273,8 @@ fn game() -> Game {
         black: player("bob"),
         speed: Speed::Classical,
         rated: true,
+        variant: Variant::Standard,
+        clock: None,
     }
 }
 
@@ -357,6 +359,7 @@ async fn every_follower_receives_every_game_event() {
     let finished = GameEvent::Finished {
         game: game(),
         outcome: GameOutcome::WhiteWon,
+        ending: Ending::Checkmate,
     };
     assert_eq!(
         [harness.next_event().await, harness.next_event().await],
@@ -384,6 +387,7 @@ async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
     let finished = GameEvent::Finished {
         game: game(),
         outcome: GameOutcome::WhiteWon,
+        ending: Ending::Checkmate,
     };
     assert_eq!(
         [next(&mut events).await, next(&mut events).await],

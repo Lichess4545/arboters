@@ -10,7 +10,7 @@ use crate::chat::{
 };
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
-use crate::lichess::{self, Game, GameId, Player, Speed};
+use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
 
 #[derive(Clone, Debug, Default)]
@@ -73,6 +73,8 @@ fn game() -> Game {
         black: player("bob"),
         speed: Speed::Rapid,
         rated: true,
+        variant: Variant::Standard,
+        clock: None,
     }
 }
 

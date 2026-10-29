@@ -13,7 +13,7 @@ use kameo::error::SendError;
 
 use crate::lichess;
 
-pub use event::{GameEvent, GameEventKind, GameOutcome};
+pub use event::{Ending, GameEvent, GameEventKind, GameOutcome};
 pub use monitor::GameMonitor;
 pub use settings::LichessSettings;
 pub use stream::LichessStream;

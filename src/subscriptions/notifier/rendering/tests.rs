@@ -1,5 +1,6 @@
 use super::*;
-use crate::lichess::{self, GameId, Player, Speed};
+use crate::game_monitor::Ending;
+use crate::lichess::{self, GameId, Player, Speed, Variant};
 
 fn game() -> Game {
     let player = |name| Player {
@@ -12,13 +13,16 @@ fn game() -> Game {
         black: player("bob"),
         speed: Speed::Classical,
         rated: true,
+        variant: Variant::Standard,
+        clock: None,
     }
 }
 
-fn finished(outcome: GameOutcome) -> String {
+fn finished(outcome: GameOutcome, ending: Ending) -> String {
     render(&GameEvent::Finished {
         game: game(),
         outcome,
+        ending,
     })
     .markdown()
     .to_owned()
@@ -35,15 +39,15 @@ fn a_started_game_announces_white_vs_black_and_the_game_link() {
 #[test]
 fn a_finished_game_with_a_result_announces_its_chess_score() {
     assert_eq!(
-        finished(GameOutcome::WhiteWon),
+        finished(GameOutcome::WhiteWon, Ending::Checkmate),
         "@_**alice** vs @_**bob** is over. The result is 1-0: https://lichess.org/game/abcd1234"
     );
     assert_eq!(
-        finished(GameOutcome::BlackWon),
+        finished(GameOutcome::BlackWon, Ending::Resignation),
         "@_**alice** vs @_**bob** is over. The result is 0-1: https://lichess.org/game/abcd1234"
     );
     assert_eq!(
-        finished(GameOutcome::Draw),
+        finished(GameOutcome::Draw, Ending::Draw),
         "@_**alice** vs @_**bob** is over. The result is ½-½: https://lichess.org/game/abcd1234"
     );
 }
@@ -51,7 +55,7 @@ fn a_finished_game_with_a_result_announces_its_chess_score() {
 #[test]
 fn an_aborted_game_is_announced_as_aborted() {
     assert_eq!(
-        finished(GameOutcome::Aborted),
+        finished(GameOutcome::Aborted, Ending::Aborted),
         "@_**alice** vs @_**bob** was aborted: https://lichess.org/game/abcd1234"
     );
 }
@@ -59,7 +63,7 @@ fn an_aborted_game_is_announced_as_aborted() {
 #[test]
 fn an_undecided_game_is_announced_as_over_without_a_result() {
     assert_eq!(
-        finished(GameOutcome::Undecided),
+        finished(GameOutcome::Undecided, Ending::Unknown),
         "@_**alice** vs @_**bob** is over: https://lichess.org/game/abcd1234"
     );
 }
