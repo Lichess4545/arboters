@@ -160,6 +160,36 @@ impl Message<IncomingMessage> for Listener {
     }
 }
 
+#[derive(Debug)]
+struct Overhearer {
+    overheard: mpsc::UnboundedSender<OverheardMessage>,
+}
+
+impl Actor for Overhearer {
+    type Args = Self;
+    type Error = Infallible;
+
+    fn on_start(
+        overhearer: Self,
+        _: ActorRef<Self>,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        std::future::ready(Ok(overhearer))
+    }
+}
+
+impl Message<OverheardMessage> for Overhearer {
+    type Reply = ();
+
+    fn handle(
+        &mut self,
+        message: OverheardMessage,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> impl Future<Output = ()> + Send {
+        self.overheard.send(message).unwrap();
+        std::future::ready(())
+    }
+}
+
 struct FakeZulip {
     inbox: ActorRef<Inbox>,
     replies: mpsc::UnboundedSender<Reply>,
@@ -232,6 +262,16 @@ impl FakeZulip {
             .await
             .unwrap();
         hearing
+    }
+
+    async fn overhear(&self) -> mpsc::UnboundedReceiver<OverheardMessage> {
+        let (overheard, overhearing) = mpsc::unbounded_channel();
+        let overhearer = Overhearer::spawn(Overhearer { overheard });
+        self.inbox
+            .ask(Overhear(overhearer.recipient()))
+            .await
+            .unwrap();
+        overhearing
     }
 
     fn reply(&self, status: StatusCode, body: Value) {
@@ -376,6 +416,15 @@ async fn the_queue_is_registered_for_messages_and_their_edits_in_raw_markdown() 
         r#"["message","update_message"]"#
     );
     assert_eq!(registration["apply_markdown"], "false");
+}
+
+#[tokio::test]
+async fn the_queue_is_registered_for_messages_in_every_public_channel() {
+    let (mut zulip, _) = FakeZulip::listening(answering()).await;
+
+    let registration = within_a_while(zulip.registrations.recv()).await;
+
+    assert_eq!(registration["all_public_streams"], "true");
 }
 
 #[tokio::test]
@@ -751,4 +800,29 @@ async fn a_mention_by_name_alone_gets_the_id_of_the_one_active_user_with_that_na
             "tell @**Bob Jones|25** or @**all**",
         ]
     );
+}
+
+#[tokio::test]
+async fn an_ordinary_channel_message_is_overheard_and_never_handed_out_as_a_command() {
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let mut overheard = zulip.overhear().await;
+
+    zulip.deliver(json!([
+        channel_message(1, BOT, "gg", &[]),
+        channel_message(2, MEMBER, "@**Arboters** help", &["mentioned"]),
+        channel_message(3, MEMBER, "gg everyone", &["read"]),
+        direct_message(4, MEMBER, "gg"),
+    ]));
+
+    assert_eq!(
+        within_a_while(overheard.recv()).await,
+        OverheardMessage {
+            sender: ChatUserId(MEMBER),
+            channel: ChannelName::try_new("chess").unwrap(),
+            topic: TopicName::try_new("games").unwrap(),
+            text: MessageText::new("gg everyone".to_owned()),
+        }
+    );
+    assert_eq!(within_a_while(heard.recv()).await.text.as_str(), "help");
+    assert_eq!(within_a_while(heard.recv()).await.text.as_str(), "gg");
 }
