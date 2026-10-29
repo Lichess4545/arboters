@@ -6,10 +6,12 @@ use crate::heltour::league;
 
 mod commands;
 mod model;
+mod notifier;
 mod postgres;
 
 pub use commands::{InboxUnavailable, SubscriptionCommands};
 pub use model::{NewSubscription, Remover, Subscription, SubscriptionId, SubscriptionSource};
+pub use notifier::Notifier;
 pub use postgres::PostgresSubscriptions;
 
 #[derive(Debug, thiserror::Error)]

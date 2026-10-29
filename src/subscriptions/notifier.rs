@@ -1,3 +1,5 @@
+mod rendering;
+
 use std::collections::BTreeSet;
 
 use kameo::Actor;
@@ -7,9 +9,9 @@ use kameo::message::{Context, Message};
 use crate::chat::Messenger;
 use crate::game_monitor::{Follow, GameEvent, MonitorUnavailable};
 use crate::heltour::ActiveLeagues;
-use crate::subscriptions::{SubscriptionSource, Subscriptions};
 
-use super::rendering::render;
+use super::{SubscriptionSource, Subscriptions};
+use rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {

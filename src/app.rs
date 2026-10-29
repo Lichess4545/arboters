@@ -12,9 +12,8 @@ use tokio_util::sync::CancellationToken;
 use crate::chat::{LoggingMessenger, Messenger};
 use crate::game_monitor::watchlist::{self, Heltour};
 use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
-use crate::notifications::Notifier;
 use crate::status::{Shutdown, Signal, Status};
-use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands};
+use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
 use crate::zulip::{Inbox, ZulipMessenger};
 use config::Config;
 

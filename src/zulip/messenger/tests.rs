@@ -10,9 +10,6 @@ use tokio::net::TcpListener;
 
 use super::*;
 use crate::chat::{ChannelName, ChatUserId, TopicName};
-use crate::game_monitor::GameEvent;
-use crate::lichess::{self, Game, GameId, Player, Speed};
-use crate::notifications::render;
 use crate::zulip::{BotEmail, InboxSettings};
 
 type CapturedForms = Arc<Mutex<Vec<BTreeMap<String, String>>>>;
@@ -64,17 +61,9 @@ impl FakeZulip {
 }
 
 fn notification() -> Notification {
-    let player = |name| Player {
-        user_id: lichess::UserId::try_new(name).unwrap(),
-        rating: None,
-    };
-    render(&GameEvent::Started(Game {
-        id: GameId::new("abcd1234"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Classical,
-        rated: true,
-    }))
+    Notification::new(
+        "@_**alice** vs @_**bob** has started: https://lichess.org/abcd1234".to_owned(),
+    )
 }
 
 fn form(fields: &[(&str, &str)]) -> BTreeMap<String, String> {
