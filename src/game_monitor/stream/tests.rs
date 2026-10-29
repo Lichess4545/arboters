@@ -8,9 +8,9 @@ use tokio::net::TcpListener;
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::lichess::{GameId, Player, Speed};
+use crate::lichess::{GameId, Player, Speed, Variant};
 
-const GAME_LINE: &str = r#"{"id":"g1","rated":true,"speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const GAME_LINE: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn lichess_answering(answer: MethodRouter, token: Option<&str>) -> LichessStream {
@@ -148,6 +148,8 @@ fn a_created_game_is_not_an_event() {
             black: player("bob"),
             speed: Speed::Classical,
             rated: true,
+            variant: Variant::Standard,
+            clock: None,
         },
         phase: GamePhase::Created,
     };

@@ -6,7 +6,7 @@ use crate::lichess::Game;
 pub fn render(event: &GameEvent) -> Notification {
     let markdown = match event {
         GameEvent::Started(game) => format!("{} has started: {}", pairing(game), game.id.link()),
-        GameEvent::Finished { game, outcome } => match outcome.score() {
+        GameEvent::Finished { game, outcome, .. } => match outcome.score() {
             Some(score) => format!(
                 "{} is over. The result is {score}: {}",
                 pairing(game),
