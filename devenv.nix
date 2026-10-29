@@ -83,7 +83,7 @@ in
     pass_filenames = false;
   };
 
-  scripts.render-manifests.exec = ''cd "$DEVENV_ROOT/deploy" && exec kcl run prod/main.k'';
+  scripts.render-manifests.exec = ''cd "$DEVENV_ROOT/deploy" && exec kcl run --quiet prod/main.k'';
 
   scripts.release.exec = ''cd "$DEVENV_ROOT" && exec nix run "$DEVENV_ROOT#release" -- "$@"'';
 
