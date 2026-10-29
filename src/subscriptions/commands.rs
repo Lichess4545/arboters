@@ -1,4 +1,6 @@
+mod league_lookup;
 mod parsing;
+mod spelling;
 
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
@@ -9,11 +11,12 @@ use crate::chat::{
     ChatUserId, Handling, IncomingMessage, Listen, Messenger, Notification, NotificationTarget,
 };
 use crate::game_monitor::GameEventKind;
-use crate::heltour::{ActiveLeagues, league};
+use crate::heltour::{ActiveLeagues, League, league};
 
 use super::model::{NewSubscription, Remover, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
-use parsing::{Command, IS_OVER, Listener, Mistake, STARTS, Tell, parse};
+use league_lookup::Found;
+use parsing::{Command, Draft, IS_OVER, Listener, Mistake, Problem, STARTS, Tell, parse};
 
 #[derive(Debug)]
 pub struct SubscriptionCommands<R, M> {
@@ -46,7 +49,7 @@ impl<R: Subscriptions, M: Messenger> SubscriptionCommands<R, M> {
             Ok(Command::Tell(tell)) => self.tell(message, tell).await,
             Ok(Command::List) => self.list(message.sender).await,
             Ok(Command::Remove(id)) => self.remove(message, id).await,
-            Err(mistake) => Ok(self.explain(mistake)),
+            Err(mistake) => Ok(self.explain(message, mistake)),
         };
         outcome.unwrap_or_else(|error| {
             tracing::error!(error = %error, cause = ?std::error::Error::source(&error), "subscription command failed");
@@ -59,13 +62,10 @@ impl<R: Subscriptions, M: Messenger> SubscriptionCommands<R, M> {
         message: &IncomingMessage,
         tell: Tell,
     ) -> Result<String, SubscriptionsError> {
-        if !self.active.includes(&tell.league) {
-            return Ok(format!(
-                "`{}` is not an active league. {}",
-                tell.league,
-                self.active_leagues()
-            ));
-        }
+        let league = match league_lookup::find(&self.active, &tell.league) {
+            Found::One(league) => league.tag.clone(),
+            found => return Ok(self.unknown_league(message, &Draft::from(tell), &found)),
+        };
         let target = match tell.listener {
             Listener::Me => NotificationTarget::DirectMessage {
                 user_id: message.sender,
@@ -86,7 +86,7 @@ impl<R: Subscriptions, M: Messenger> SubscriptionCommands<R, M> {
         }
         let subscription = NewSubscription {
             requester: message.sender,
-            league: tell.league,
+            league,
             source: tell
                 .player
                 .map_or(SubscriptionSource::League, SubscriptionSource::Player),
@@ -184,26 +184,118 @@ impl<R: Subscriptions, M: Messenger> SubscriptionCommands<R, M> {
              - `subscription list` lists your subscriptions and their ids.\n\
              - `subscription remove <id>` removes one of your subscriptions. Moderators can remove anyone's.\n\
              \n\
-             Only moderators can subscribe a topic. `<event>` is `{STARTS}` or `{IS_OVER}`. {}{}",
+             Only moderators can subscribe a topic. `<event>` is `{STARTS}` or `{IS_OVER}`, and plain words such as `a game ends` work too. `<league>` is a league's tag, name, or time control. {}{}",
             self.active_leagues(),
             self.example()
         )
     }
 
-    fn explain(&self, mistake: Mistake) -> String {
+    fn explain(&self, message: &IncomingMessage, mistake: Mistake) -> String {
         match mistake {
-            Mistake::Tell => "Use `tell me when <event> in <league> for <lichess-player>`, or leave out `for <lichess-player>` to hear about every game. Send `help` for more.".to_owned(),
-            Mistake::Listener => "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.".to_owned(),
-            Mistake::TopicLink => "A topic link looks like `#**channel>topic**`. To write one, type `#` and pick the topic.".to_owned(),
-            Mistake::Event => format!("`<event>` is `{STARTS}` or `{IS_OVER}`."),
-            Mistake::League => format!("`<league>` is a league tag. {}", self.active_leagues()),
-            Mistake::Player => "That is not a Lichess username.".to_owned(),
+            Mistake::Tell(problem, draft) => self.correct(message, problem, &draft),
             Mistake::Subscription => "Use `tell me when <event> in <league>` to add a subscription, `subscription list` to see yours, or `subscription remove <id>` to remove one.".to_owned(),
             Mistake::Id => {
                 "A subscription id is a number. Use `subscription list` to see yours.".to_owned()
             }
         }
     }
+
+    fn correct(&self, message: &IncomingMessage, problem: Problem, draft: &Draft) -> String {
+        let reason = match problem {
+            Problem::Wording => "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.".to_owned(),
+            Problem::Listener => "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.".to_owned(),
+            Problem::TopicLink => "A topic link looks like `#**channel>topic**`. To write one, type `#` and pick the topic.".to_owned(),
+            Problem::Event => format!("`<event>` is `{STARTS}` or `{IS_OVER}`."),
+            Problem::League => format!(
+                "`<league>` is a league's tag, name, or time control. {}",
+                self.active_leagues()
+            ),
+            Problem::Player => "That is not a Lichess username.".to_owned(),
+        };
+        let league = match draft
+            .league
+            .as_ref()
+            .map(|written| league_lookup::find(&self.active, written))
+        {
+            Some(Found::One(league)) => Some(league),
+            Some(Found::Several(_) | Found::Nothing) | None => None,
+        };
+        format!(
+            "{reason}\nTry `{}`.",
+            suggestion(message, problem, draft, league)
+        )
+    }
+
+    fn unknown_league(
+        &self,
+        message: &IncomingMessage,
+        draft: &Draft,
+        found: &Found<'_>,
+    ) -> String {
+        let written = draft
+            .league
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        match found {
+            Found::Several(leagues) => {
+                let tags: Vec<String> = leagues
+                    .iter()
+                    .map(|league| format!("`{}`", league.tag))
+                    .collect();
+                let tries: Vec<String> = leagues
+                    .iter()
+                    .map(|league| {
+                        format!(
+                            "`{}`",
+                            suggestion(message, Problem::League, draft, Some(league))
+                        )
+                    })
+                    .collect();
+                format!(
+                    "`{written}` could be {}.\nTry {}.",
+                    tags.join(" or "),
+                    tries.join(" or ")
+                )
+            }
+            Found::One(_) | Found::Nothing => format!(
+                "`{written}` is not an active league. {}",
+                self.active_leagues()
+            ),
+        }
+    }
+}
+
+fn suggestion(
+    message: &IncomingMessage,
+    problem: Problem,
+    draft: &Draft,
+    league: Option<&League>,
+) -> String {
+    let listener = match &draft.listener {
+        Some(Listener::Me) => "me".to_owned(),
+        Some(Listener::Here) => "here".to_owned(),
+        Some(Listener::Topic { channel, topic }) => {
+            format!("#**{}>{}**", channel.as_str(), topic.as_str())
+        }
+        None => match message.reply_to {
+            NotificationTarget::Channel { .. } if message.role.moderates() => "here".to_owned(),
+            NotificationTarget::Channel { .. } | NotificationTarget::DirectMessage { .. } => {
+                "me".to_owned()
+            }
+        },
+    };
+    let event = match draft.event {
+        Some(GameEventKind::GameFinished) => IS_OVER,
+        Some(GameEventKind::GameStarted) | None => STARTS,
+    };
+    let league = league.map_or_else(|| "<league>".to_owned(), |league| league.tag.to_string());
+    let player = match (&draft.player, problem) {
+        (Some(player), _) => format!(" for {player}"),
+        (None, Problem::Player) => " for <lichess-player>".to_owned(),
+        (None, _) => String::new(),
+    };
+    format!("tell {listener} when {event} in {league}{player}")
 }
 
 fn describe(

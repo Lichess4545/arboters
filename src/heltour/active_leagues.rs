@@ -13,11 +13,6 @@ pub struct ActiveLeagues {
 
 impl ActiveLeagues {
     #[must_use]
-    pub fn includes(&self, tag: &Tag) -> bool {
-        self.leagues.iter().any(|league| &league.tag == tag)
-    }
-
-    #[must_use]
     pub fn leagues_of(&self, game: &lichess::Game) -> BTreeSet<&Tag> {
         self.pairings
             .iter()
