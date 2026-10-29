@@ -257,6 +257,12 @@ impl Addressed {
         }
     }
 
+    const fn text(&mut self) -> &mut CommandText {
+        match self {
+            Self::Sent { text, .. } | Self::Edited { text, .. } => text,
+        }
+    }
+
     fn with_role(self, role: Role) -> Received {
         match self {
             Self::Sent {
@@ -292,9 +298,12 @@ async fn hand_over(
         Event::Message(delivery) => addressed(bot, delivery),
         Event::Edit(edit) => edited(bot, edit),
     };
-    let Some(addressed) = addressed else {
+    let Some(mut addressed) = addressed else {
         return ControlFlow::Continue(());
     };
+    if let Some(text) = with_user_ids(api, addressed.text()).await {
+        *addressed.text() = text;
+    }
     let sender = addressed.sender();
     let role = match api.role_of(sender).await {
         Ok(role) => role,
@@ -361,6 +370,66 @@ fn edited(bot: &Bot, edit: Edit) -> Option<Addressed> {
         sender,
         text: CommandText::new(text),
     })
+}
+
+async fn with_user_ids(api: &Api, text: &CommandText) -> Option<CommandText> {
+    let mut unnamed = false;
+    mention_ids(text, |_| {
+        unnamed = true;
+        None
+    });
+    if !unnamed {
+        return None;
+    }
+    let members = match api.members().await {
+        Ok(members) => members,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not look up the users a message mentions");
+            return None;
+        }
+    };
+    Some(CommandText::new(mention_ids(text, |name| {
+        let name = name.trim().to_lowercase();
+        let mut named = members
+            .iter()
+            .filter(|member| member.is_active && member.full_name.to_lowercase() == name);
+        match (named.next(), named.next()) {
+            (Some(member), None) => Some(member.user_id),
+            _ => None,
+        }
+    })))
+}
+
+fn mention_ids(text: &str, mut id_of: impl FnMut(&str) -> Option<ChatUserId>) -> String {
+    let mut written = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once('@') {
+        written.push_str(before);
+        written.push('@');
+        let after = after.strip_prefix('_').map_or(after, |after| {
+            written.push('_');
+            after
+        });
+        rest = after;
+        let Some((name, after)) = after
+            .strip_prefix("**")
+            .and_then(|inside| inside.split_once("**"))
+        else {
+            continue;
+        };
+        written.push_str("**");
+        written.push_str(name);
+        if !name.contains('|')
+            && let Some(id) = id_of(name)
+        {
+            written.push('|');
+            written.push_str(&id.0.to_string());
+        }
+        written.push_str("**");
+        rest = after;
+    }
+    written.push_str(rest);
+    written
 }
 
 fn without_mention<'a>(bot: &Bot, content: &'a str) -> &'a str {

@@ -878,17 +878,17 @@ async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
         (
             Role::Member,
             dm_to(MEMBER),
-            "You can list and remove the subscriptions you made.",
+            "You can list and remove the subscriptions you made and the ones that send you direct messages.",
         ),
         (
             Role::Moderator,
             games_topic(),
-            "You are a moderator, so you can remove any subscription from anywhere.",
+            "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.",
         ),
         (
             Role::Moderator,
             dm_to(MEMBER),
-            "You are a moderator, so you can remove any subscription from anywhere.",
+            "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.",
         ),
     ] {
         bot.hear(MEMBER, role, reply_to, "help").await;
@@ -898,4 +898,118 @@ async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
             "{role:?}: {help}"
         );
     }
+}
+
+#[sqlx::test]
+async fn a_moderator_can_subscribe_someone_else_by_direct_message(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.in_topic(
+        MODERATOR,
+        Role::Moderator,
+        "tell @**Member|10** when a game starts in classical for alice",
+    )
+    .await;
+
+    assert_eq!(
+        bot.targets(GameEventKind::GameStarted, player("alice"))
+            .await,
+        BTreeSet::from([dm_to(MEMBER)])
+    );
+    let made = bot.subscriptions_of(MODERATOR).await;
+    assert_eq!(made[0].target, dm_to(MEMBER));
+    assert_eq!(
+        bot.last_reply(),
+        (
+            games_topic(),
+            format!(
+                "Subscription `{}`: tell @_**|10** when a-game-starts in classical for alice.",
+                made[0].id
+            )
+        )
+    );
+}
+
+#[sqlx::test]
+async fn a_member_cannot_subscribe_someone_else(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.direct(
+        MEMBER,
+        Role::Member,
+        "tell @**Other|12** when a game starts in classical",
+    )
+    .await;
+    bot.direct(
+        MEMBER,
+        Role::Member,
+        "tell @**Member|10** when a game ends in classical",
+    )
+    .await;
+
+    let replies = bot.replies();
+    assert_eq!(
+        replies[0].1,
+        "Only moderators can subscribe someone else. Use `tell me` to subscribe yourself."
+    );
+    let made = bot.subscriptions_of(MEMBER).await;
+    assert_eq!(made.len(), 1);
+    assert_eq!(made[0].target, dm_to(MEMBER));
+}
+
+#[sqlx::test]
+async fn a_mention_without_a_user_id_is_answered_with_how_to_pick_the_user(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.direct(
+        MODERATOR,
+        Role::Moderator,
+        "tell @**Nobody** when a game starts in classical",
+    )
+    .await;
+
+    assert_eq!(
+        bot.last_reply().1,
+        "I could not tell who you mentioned. Type `@` and pick them from the list.\n\
+         Try `tell me when a-game-starts in classical`."
+    );
+}
+
+#[sqlx::test]
+async fn subscriptions_that_send_someone_direct_messages_are_theirs_to_list_and_remove(
+    pool: PgPool,
+) {
+    let bot = Bot::start(pool).await;
+    subscribed(&bot, MEMBER).await;
+    bot.direct(
+        MODERATOR,
+        Role::Moderator,
+        "tell @**Member|10** when a game ends in classical",
+    )
+    .await;
+    let theirs = bot.subscriptions_of(MODERATOR).await[0].id;
+    let mine = bot.subscriptions_of(MEMBER).await[0].id;
+
+    bot.direct(MEMBER, Role::Member, "subscription list").await;
+    let listed = bot.last_reply().1;
+    bot.direct(
+        MEMBER,
+        Role::Member,
+        &format!("subscription remove {theirs}"),
+    )
+    .await;
+
+    assert_eq!(
+        listed,
+        format!(
+            "Your subscriptions:\n\
+             - `{mine}`: tell you when a-game-starts in classical for alice\n\
+             - `{theirs}`: tell you when a-game-is-over in classical, made by @_**|11**"
+        )
+    );
+    assert_eq!(bot.subscriptions_of(MODERATOR).await, []);
+    assert_eq!(
+        bot.last_reply().1,
+        format!("Removed subscription `{theirs}`.")
+    );
 }

@@ -93,6 +93,15 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 channel @ NotificationTarget::Channel { .. } => channel.clone(),
             },
             Listener::Topic { channel, topic } => NotificationTarget::Channel { channel, topic },
+            Listener::User(user_id) if user_id == message.sender => {
+                NotificationTarget::DirectMessage { user_id }
+            }
+            Listener::User(user_id) => {
+                if !subscribes_others(message) {
+                    return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
+                }
+                NotificationTarget::DirectMessage { user_id }
+            }
         };
         Ok(NewSubscription {
             requester: message.sender,
@@ -111,6 +120,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         subscription: NewSubscription,
     ) -> Result<String, SubscriptionsError> {
         let description = describe(
+            message.sender,
             &subscription.league,
             &subscription.source,
             subscription.event,
@@ -147,11 +157,17 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 "Subscriptions that post in this topic:",
                 "No subscription posts in this topic.",
             ),
-            Listing::Mine(requester) => (
-                self.subscriptions.requested_by(requester).await?,
-                "Your subscriptions:",
-                "You have no subscriptions.",
-            ),
+            Listing::Mine(user_id) => {
+                let mut yours = self.subscriptions.requested_by(user_id).await?;
+                yours.extend(
+                    self.subscriptions
+                        .posting_to(&NotificationTarget::DirectMessage { user_id })
+                        .await?,
+                );
+                yours.sort_by_key(|subscription| subscription.id);
+                yours.dedup_by_key(|subscription| subscription.id);
+                (yours, "Your subscriptions:", "You have no subscriptions.")
+            }
         };
         if subscriptions.is_empty() {
             return Ok(none.to_owned());
@@ -168,6 +184,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                     "- `{}`: {}{made_by}",
                     subscription.id,
                     describe(
+                        message.sender,
                         &subscription.league,
                         &subscription.source,
                         subscription.event,
@@ -204,8 +221,8 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         Ok(missing)
     }
 
-    fn permissions(message: &IncomingMessage) -> &'static str {
-        match (remover(message), listing(message)) {
+    fn permissions(message: &IncomingMessage) -> String {
+        let removing = match (remover(message), listing(message)) {
             (Remover::Moderator, _) => {
                 "You are a moderator, so you can remove any subscription from anywhere."
             }
@@ -213,8 +230,15 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere."
             }
             (Remover::Owner { .. }, Listing::Mine(_)) => {
-                "You can list and remove the subscriptions you made."
+                "You can list and remove the subscriptions you made and the ones that send you direct messages."
             }
+        };
+        if subscribes_others(message) {
+            format!(
+                "{removing} You can also subscribe someone else with `tell @**user** when <event> in <league>`."
+            )
+        } else {
+            removing.to_owned()
         }
     }
 
@@ -251,8 +275,9 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
              - `tell me when <event> in <league>` sends you a direct message about every game in the league.\n\
              - `tell here when <event> in <league>` posts about every game in the topic where you send it.\n\
              - `tell #**channel>topic** when <event> in <league>` posts about every game in that topic. To write the link, type `#` and pick the topic.\n\
+             - Moderators can send `tell @**user** when <event> in <league>` to send that user a direct message about every game in the league.\n\
              - Add `for <lichess-player>` to the end of a `tell` command to hear about one player's games only.\n\
-             - `subscription list` lists the subscriptions that post in the topic where you send it. In a direct message, it lists the ones you made.\n\
+             - `subscription list` lists the subscriptions that post in the topic where you send it. In a direct message, it lists the ones you made and the ones that send you direct messages.\n\
              - `subscription remove <id>` removes a subscription.\n\
              \n\
              Subscriptions that post in a topic belong to everyone in that topic: anyone can list or remove them by sending the command there.\n\
@@ -279,6 +304,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
             Problem::Wording => "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.".to_owned(),
             Problem::Listener => "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.".to_owned(),
             Problem::TopicLink => "A topic link looks like `#**channel>topic**`. To write one, type `#` and pick the topic.".to_owned(),
+            Problem::Person => "I could not tell who you mentioned. Type `@` and pick them from the list.".to_owned(),
             Problem::Event => format!("`<event>` is `{STARTS}` or `{IS_OVER}`."),
             Problem::League => format!(
                 "`<league>` is a league's tag, name, or time control. {}",
@@ -363,6 +389,10 @@ fn remover(message: &IncomingMessage) -> Remover {
     }
 }
 
+const fn subscribes_others(message: &IncomingMessage) -> bool {
+    message.role.moderates()
+}
+
 fn mention(user: ChatUserId) -> String {
     format!("@_**|{}**", user.0)
 }
@@ -379,6 +409,7 @@ fn suggestion(
         Some(Listener::Topic { channel, topic }) => {
             format!("#**{}>{}**", channel.as_str(), topic.as_str())
         }
+        Some(Listener::User(user_id)) => mention(*user_id),
         None => match message.reply_to {
             NotificationTarget::Channel { .. } => "here".to_owned(),
             NotificationTarget::DirectMessage { .. } => "me".to_owned(),
@@ -398,13 +429,15 @@ fn suggestion(
 }
 
 fn describe(
+    viewer: ChatUserId,
     league: &league::Tag,
     source: &SubscriptionSource,
     event: GameEventKind,
     target: &NotificationTarget,
 ) -> String {
     let listener = match target {
-        NotificationTarget::DirectMessage { .. } => "you".to_owned(),
+        NotificationTarget::DirectMessage { user_id } if *user_id == viewer => "you".to_owned(),
+        NotificationTarget::DirectMessage { user_id } => mention(*user_id),
         NotificationTarget::Channel { channel, topic } => {
             format!("#**{}>{}**", channel.as_str(), topic.as_str())
         }
