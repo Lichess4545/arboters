@@ -61,14 +61,17 @@ async fn run_with<M: Messenger + Clone>(
             SubscriptionCommands::new(subscriptions.clone(), messenger.clone()),
         )
     });
-    let notifier = Notifier::spawn(Notifier::new(subscriptions.clone(), messenger));
     let monitor = GameMonitor::spawn(GameMonitor::new(
         stream,
         config.lichess.stream.clone(),
-        notifier.clone().recipient(),
         status.clone().recipient(),
         lichess_token.clone(),
     ));
+    let notifier = Notifier::spawn((
+        Notifier::new(subscriptions.clone(), messenger),
+        monitor.clone().recipient(),
+    ));
+    notifier.wait_for_startup().await;
     let mut followers = vec![notifier.clone().recipient()];
     followers.extend(
         conversations
