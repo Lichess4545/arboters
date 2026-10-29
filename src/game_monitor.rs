@@ -8,6 +8,9 @@ pub mod watchlist;
 
 use std::collections::BTreeSet;
 
+use kameo::actor::Recipient;
+use kameo::error::SendError;
+
 use crate::lichess;
 
 pub use event::{GameEvent, GameEventKind, GameOutcome};
@@ -31,6 +34,13 @@ pub fn http_client() -> reqwest::Result<reqwest::Client> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Watch(pub BTreeSet<lichess::UserId>);
+
+#[derive(Debug)]
+pub struct Follow<M: Send + 'static>(pub Recipient<M>);
+
+#[derive(Debug, thiserror::Error)]
+#[error("could not follow the game monitor")]
+pub struct MonitorUnavailable(#[from] SendError<Follow<GameEvent>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConnected {

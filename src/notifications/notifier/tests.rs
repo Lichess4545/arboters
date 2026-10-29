@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use kameo::actor::Spawn;
@@ -107,6 +108,27 @@ fn subscription(
     }
 }
 
+#[derive(Debug)]
+struct Monitor;
+
+impl Actor for Monitor {
+    type Args = Self;
+    type Error = Infallible;
+
+    fn on_start(
+        monitor: Self,
+        _: ActorRef<Self>,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        std::future::ready(Ok(monitor))
+    }
+}
+
+impl Message<Follow<GameEvent>> for Monitor {
+    type Reply = ();
+
+    async fn handle(&mut self, _: Follow<GameEvent>, _: &mut Context<Self, Self::Reply>) {}
+}
+
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
@@ -117,7 +139,11 @@ async fn deliveries(
     for subscription in subscriptions {
         stored.subscribe(subscription).await.unwrap();
     }
-    let notifier = Notifier::spawn(Notifier::new(stored, messenger.clone()));
+    let monitor = Monitor::spawn(Monitor);
+    let notifier = Notifier::spawn((
+        Notifier::new(stored, messenger.clone()),
+        monitor.recipient(),
+    ));
     notifier.ask(active).await.unwrap();
     notifier.ask(GameEvent::Started(game())).await.unwrap();
     messenger.deliveries()
