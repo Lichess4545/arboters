@@ -51,7 +51,7 @@ devenv test
 
 ## Work on it
 
-Read [AGENTS.md](AGENTS.md) before you change the code. It has the rules for the code, all the project commands, and the release steps. If you want to change something, open a pull request against `main`.
+Read [AGENTS.md](AGENTS.md) before you change the code. It has the rules for the code, all the project commands, and the release steps. If you want to change something, open a pull request against `main`. If you use AI tools, follow [AI_POLICY.md](AI_POLICY.md).
 
 ## License
 
