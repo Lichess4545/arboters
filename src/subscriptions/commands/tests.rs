@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use kameo::actor::{ReplyRecipient, Spawn};
 use sqlx::PgPool;
 
 use super::*;
-use crate::chat::{ChannelName, CommandText, DeliveryError, Role, TopicName};
+use crate::chat::{ChannelName, CommandText, Role, TopicName};
 use crate::heltour::League;
 use crate::lichess::{self, Clock, Variant};
 use crate::subscriptions::{PostgresSubscriptions, Subscription};
@@ -14,25 +15,6 @@ use crate::subscriptions::{PostgresSubscriptions, Subscription};
 const MEMBER: ChatUserId = ChatUserId(10);
 const OTHER_MEMBER: ChatUserId = ChatUserId(12);
 const MODERATOR: ChatUserId = ChatUserId(11);
-
-#[derive(Clone, Debug, Default)]
-struct RecordingMessenger {
-    deliveries: Arc<Mutex<Vec<(NotificationTarget, Notification)>>>,
-}
-
-impl Messenger for RecordingMessenger {
-    fn send(
-        &self,
-        target: &NotificationTarget,
-        notification: &Notification,
-    ) -> impl Future<Output = Result<(), DeliveryError>> + Send {
-        self.deliveries
-            .lock()
-            .unwrap()
-            .push((target.clone(), notification.clone()));
-        std::future::ready(Ok(()))
-    }
-}
 
 #[derive(Debug, Default)]
 struct FakeInbox {
@@ -81,7 +63,8 @@ impl Message<RegisteredListener> for FakeInbox {
 struct Bot {
     commands: ReplyRecipient<IncomingMessage, Handling>,
     subscriptions: PostgresSubscriptions,
-    messenger: RecordingMessenger,
+    replies: Mutex<Vec<(NotificationTarget, String)>>,
+    next_id: AtomicU64,
 }
 
 fn league() -> league::Tag {
@@ -127,17 +110,17 @@ fn player(name: &str) -> SubscriptionSource {
 impl Bot {
     async fn start(pool: PgPool) -> Self {
         let subscriptions = PostgresSubscriptions::new(pool);
-        let messenger = RecordingMessenger::default();
         let inbox = FakeInbox::spawn(FakeInbox::default());
         let commands = SubscriptionCommands::spawn((
-            SubscriptionCommands::new(subscriptions.clone(), messenger.clone()),
+            SubscriptionCommands::new(subscriptions.clone()),
             inbox.clone().recipient(),
         ));
         commands.ask(active_leagues()).await.unwrap();
         Self {
             commands: inbox.ask(RegisteredListener).await.unwrap().unwrap(),
             subscriptions,
-            messenger,
+            replies: Mutex::default(),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -148,15 +131,56 @@ impl Bot {
         reply_to: NotificationTarget,
         text: &str,
     ) -> Handling {
-        self.commands
+        let id = MessageId(self.next_id.fetch_add(1, Ordering::Relaxed));
+        self.hear_as(id, Revision::Original, sender, role, reply_to, text)
+            .await
+    }
+
+    async fn hear_as(
+        &self,
+        id: MessageId,
+        revision: Revision,
+        sender: ChatUserId,
+        role: Role,
+        reply_to: NotificationTarget,
+        text: &str,
+    ) -> Handling {
+        let handling = self
+            .commands
             .ask(IncomingMessage {
+                id,
+                revision,
                 sender,
                 role,
-                reply_to,
+                reply_to: reply_to.clone(),
                 text: CommandText::new(text),
             })
             .await
-            .unwrap()
+            .unwrap();
+        if let Handling::Answered(answer) = &handling {
+            self.replies
+                .lock()
+                .unwrap()
+                .push((reply_to, answer.markdown().to_owned()));
+        }
+        handling
+    }
+
+    fn last_id(&self) -> MessageId {
+        MessageId(self.next_id.load(Ordering::Relaxed) - 1)
+    }
+
+    async fn edit_last(&self, sender: ChatUserId, role: Role, text: &str) -> Handling {
+        let reply_to = self.replies.lock().unwrap().last().unwrap().0.clone();
+        self.hear_as(
+            self.last_id(),
+            Revision::Edited,
+            sender,
+            role,
+            reply_to,
+            text,
+        )
+        .await
     }
 
     async fn direct(&self, sender: ChatUserId, role: Role, text: &str) -> Handling {
@@ -168,13 +192,7 @@ impl Bot {
     }
 
     fn replies(&self) -> Vec<(NotificationTarget, String)> {
-        self.messenger
-            .deliveries
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(target, notification)| (target.clone(), notification.markdown().to_owned()))
-            .collect()
+        self.replies.lock().unwrap().clone()
     }
 
     fn last_reply(&self) -> (NotificationTarget, String) {
@@ -209,7 +227,7 @@ async fn tell_me_for_a_player_subscribes_the_sender_by_direct_message(pool: PgPo
         )
         .await;
 
-    assert_eq!(handling, Handling::Handled);
+    assert!(matches!(handling, Handling::Answered(_)));
     assert_eq!(
         bot.targets(GameEventKind::GameStarted, player("alice"))
             .await,
@@ -396,7 +414,7 @@ async fn a_malformed_tell_is_answered_with_its_usage_and_what_it_could_have_been
         .direct(MEMBER, Role::Member, "tell me a-game-starts for alice")
         .await;
 
-    assert_eq!(handling, Handling::Handled);
+    assert!(matches!(handling, Handling::Answered(_)));
     assert_eq!(
         bot.last_reply().1,
         "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.\n\
@@ -515,7 +533,7 @@ async fn help_lists_the_commands(pool: PgPool) {
 
     let handling = bot.direct(MEMBER, Role::Member, "help").await;
 
-    assert_eq!(handling, Handling::Handled);
+    assert!(matches!(handling, Handling::Answered(_)));
     let (target, help) = bot.last_reply();
     assert_eq!(target, dm_to(MEMBER));
     for command in [
@@ -661,5 +679,94 @@ async fn removing_a_subscription_that_does_not_exist_says_so(pool: PgPool) {
             dm_to(MODERATOR),
             "There is no subscription `4545`.".to_owned()
         )
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_into_the_same_subscription_keeps_it(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let id = subscribed(&bot, MEMBER).await;
+
+    bot.edit_last(
+        MEMBER,
+        Role::Member,
+        "tell me when a game starts in Classical League for @alice",
+    )
+    .await;
+
+    assert_eq!(
+        bot.subscriptions_of(MEMBER)
+            .await
+            .iter()
+            .map(|subscription| subscription.id)
+            .collect::<Vec<_>>(),
+        [id]
+    );
+    assert_eq!(
+        bot.last_reply().1,
+        format!("Subscription `{id}`: tell you when a-game-starts in classical for alice.")
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_into_another_subscription_replaces_it(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let earlier = subscribed(&bot, MEMBER).await;
+
+    bot.edit_last(
+        MEMBER,
+        Role::Member,
+        "tell me when a game ends in classical for alice",
+    )
+    .await;
+
+    let subscriptions = bot.subscriptions_of(MEMBER).await;
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(subscriptions[0].event, GameEventKind::GameFinished);
+    assert_eq!(
+        bot.last_reply().1,
+        format!(
+            "Subscription `{}`: tell you when a-game-is-over in classical for alice. It replaces subscription `{earlier}`.",
+            subscriptions[0].id
+        )
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let id = subscribed(&bot, MEMBER).await;
+
+    bot.edit_last(MEMBER, Role::Member, "tell me when a game starts in blitz")
+        .await;
+    let refused = bot.last_reply().1;
+    let handling = bot.edit_last(MEMBER, Role::Member, "never mind").await;
+
+    assert_eq!(bot.subscriptions_of(MEMBER).await.len(), 1);
+    assert!(
+        refused.ends_with(&format!("\nSubscription `{id}` is unchanged.")),
+        "{refused}"
+    );
+    assert_eq!(
+        handling,
+        Handling::Answered(Notification::new(format!(
+            "Subscription `{id}` is unchanged. Send `help` to see the commands I know."
+        )))
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    bot.direct(MEMBER, Role::Member, "tell me when a game strts in 99+0")
+        .await;
+
+    bot.edit_last(MEMBER, Role::Member, "tell me when a game starts in rapid")
+        .await;
+
+    let id = bot.subscriptions_of(MEMBER).await[0].id;
+    assert_eq!(
+        bot.last_reply().1,
+        format!("Subscription `{id}`: tell you when a-game-starts in rapid.")
     );
 }

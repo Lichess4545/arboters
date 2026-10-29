@@ -2,10 +2,10 @@ use secrecy::ExposeSecret;
 use zulip_api::api::{ApiKey, User};
 use zulip_api::client::Client;
 use zulip_api::response::{ApiResult, ErrorCode, Response as _};
-use zulip_api::send_message;
 use zulip_api::{MessageTo, MessageType};
+use zulip_api::{edit_message, send_message};
 
-use crate::chat::{DeliveryError, Messenger, Notification, NotificationTarget};
+use crate::chat::{DeliveryError, MessageId, Messenger, Notification, NotificationTarget};
 
 use super::settings::ZulipSettings;
 
@@ -66,28 +66,72 @@ fn request_for(target: &NotificationTarget, notification: &Notification) -> send
     }
 }
 
+fn failure(
+    target: &NotificationTarget,
+) -> impl Fn(Box<dyn std::error::Error + Send + Sync>) -> DeliveryError + '_ {
+    |cause| DeliveryError {
+        target: target.clone(),
+        cause,
+    }
+}
+
+fn rejection(response: &impl zulip_api::response::Response) -> ZulipRejection {
+    ZulipRejection {
+        code: response.code(),
+        reason: response.msg().to_owned(),
+    }
+}
+
+impl ZulipMessenger {
+    pub async fn post(
+        &self,
+        target: &NotificationTarget,
+        notification: &Notification,
+    ) -> Result<MessageId, DeliveryError> {
+        let failed = failure(target);
+        let response = self
+            .client
+            .send_message(&request_for(target, notification))
+            .await
+            .map_err(|error| failed(Box::new(error)))?;
+        match (response.result(), response.id()) {
+            (ApiResult::Success, Some(id)) => Ok(MessageId(id)),
+            (ApiResult::Success, None) => {
+                Err(failed("zulip sent the message without its id".into()))
+            }
+            (ApiResult::Error, _) => Err(failed(Box::new(rejection(&response)))),
+        }
+    }
+
+    pub async fn edit(
+        &self,
+        target: &NotificationTarget,
+        message: MessageId,
+        notification: &Notification,
+    ) -> Result<(), DeliveryError> {
+        let failed = failure(target);
+        let request = edit_message::Request::new()
+            .with_message_id(message.0)
+            .with_content(notification.markdown().to_owned());
+        let response = self
+            .client
+            .edit_message(&request)
+            .await
+            .map_err(|error| failed(Box::new(error)))?;
+        match response.result() {
+            ApiResult::Success => Ok(()),
+            ApiResult::Error => Err(failed(Box::new(rejection(&response)))),
+        }
+    }
+}
+
 impl Messenger for ZulipMessenger {
     async fn send(
         &self,
         target: &NotificationTarget,
         notification: &Notification,
     ) -> Result<(), DeliveryError> {
-        let failed = |cause: Box<dyn std::error::Error + Send + Sync>| DeliveryError {
-            target: target.clone(),
-            cause,
-        };
-        let response = self
-            .client
-            .send_message(&request_for(target, notification))
-            .await
-            .map_err(|error| failed(Box::new(error)))?;
-        match response.result() {
-            ApiResult::Success => Ok(()),
-            ApiResult::Error => Err(failed(Box::new(ZulipRejection {
-                code: response.code(),
-                reason: response.msg().to_owned(),
-            }))),
-        }
+        self.post(target, notification).await.map(|_| ())
     }
 }
 
