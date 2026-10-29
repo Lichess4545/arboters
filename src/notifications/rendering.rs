@@ -43,7 +43,7 @@ pub fn render(event: &GameEvent) -> Notification {
 }
 
 fn pairing(game: &Game) -> String {
-    format!("**{}** vs **{}**", game.white.user_id, game.black.user_id)
+    format!("@_**{}** vs @_**{}**", game.white.user_id, game.black.user_id)
 }
 
 impl GameOutcome {
