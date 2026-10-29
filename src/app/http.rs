@@ -10,7 +10,7 @@ use sqlx::{Connection, PgPool};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
-use crate::game_monitor::TokenState;
+use crate::lichess_token_check::TokenState;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]

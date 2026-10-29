@@ -14,8 +14,6 @@ use url::Url;
 
 use crate::lichess;
 
-use super::settings::LichessSettings;
-
 const TOKEN_TEST_PATH: &str = "api/token/test";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -47,15 +45,16 @@ pub struct TokenCheck {
 impl TokenCheck {
     pub fn new(
         http: reqwest::Client,
-        settings: &LichessSettings,
+        base_url: &Url,
         token: SecretString,
+        interval: Duration,
     ) -> Result<(Self, watch::Receiver<TokenState>), url::ParseError> {
         let (state, observed) = watch::channel(TokenState::Untested);
         let check = Self {
             http,
-            endpoint: settings.base_url.join(TOKEN_TEST_PATH)?,
+            endpoint: base_url.join(TOKEN_TEST_PATH)?,
             token,
-            interval: settings.token_check_interval,
+            interval,
             state,
         };
         Ok((check, observed))

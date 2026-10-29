@@ -10,9 +10,9 @@ use kameo::actor::Spawn;
 use tokio::net::TcpListener;
 
 use super::*;
-use crate::game_monitor::http_client;
 
 const PATIENCE: Duration = Duration::from_secs(5);
+const CLIENT_USER_AGENT: &str = "arboters-test";
 const VALID: &str = r#"{"lip_secret": {"userId": "arbiter", "scopes": "", "expires": null}}"#;
 const INVALID: &str = r#"{"lip_secret": null}"#;
 
@@ -67,15 +67,14 @@ async fn checking_against(answers: &[(StatusCode, &'static str)]) -> Checking {
         }),
     );
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = LichessSettings {
-        base_url: Url::parse(&format!("http://{address}")).unwrap(),
-        token_check_interval: Duration::from_millis(50),
-        ..LichessSettings::default()
-    };
     let (check, state) = TokenCheck::new(
-        http_client().unwrap(),
-        &settings,
+        reqwest::Client::builder()
+            .user_agent(CLIENT_USER_AGENT)
+            .build()
+            .unwrap(),
+        &Url::parse(&format!("http://{address}")).unwrap(),
         SecretString::from("lip_secret"),
+        Duration::from_millis(50),
     )
     .unwrap();
     Checking {
@@ -101,7 +100,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 }
 
 #[tokio::test]
-async fn the_token_is_sent_for_testing_with_our_user_agent() {
+async fn the_token_is_sent_for_testing_through_the_given_client() {
     let checking = checking_against(&[(StatusCode::OK, VALID)]).await;
     eventually("the token is tested", || {
         checking.lichess.request_count() >= 1
@@ -110,14 +109,7 @@ async fn the_token_is_sent_for_testing_with_our_user_agent() {
 
     let Request { body, headers } = checking.lichess.requests.lock().unwrap().remove(0);
     assert_eq!(body, "lip_secret");
-    assert_eq!(
-        headers[USER_AGENT],
-        format!(
-            "arboters/{} (+https://github.com/Lichess4545/arboters)",
-            env!("CARGO_PKG_VERSION")
-        )
-        .as_str()
-    );
+    assert_eq!(headers[USER_AGENT], CLIENT_USER_AGENT);
 }
 
 #[tokio::test]
