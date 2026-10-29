@@ -88,3 +88,18 @@ fn the_status_topic_cannot_be_configured_because_each_instance_names_its_own() {
         assert!(load(jail).is_err(), "ARBOTERS_STATUS__TOPIC was accepted");
     });
 }
+
+#[test]
+fn a_response_waits_five_seconds_before_it_fires_again_unless_configured_otherwise() {
+    in_clean_environment(|jail| {
+        assert_eq!(
+            load(jail).unwrap().responses.cooldown,
+            Duration::from_secs(5)
+        );
+        jail.set_env("ARBOTERS_RESPONSES__COOLDOWN", "2m");
+        assert_eq!(
+            load(jail).unwrap().responses.cooldown,
+            Duration::from_mins(2)
+        );
+    });
+}

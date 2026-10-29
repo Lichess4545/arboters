@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO responses (phrase, matching, markdown, source_message_id, added_by_user_id)\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (lower(phrase), source_message_id)\n            DO UPDATE SET\n                phrase = EXCLUDED.phrase,\n                matching = EXCLUDED.matching,\n                markdown = EXCLUDED.markdown,\n                added_by_user_id = EXCLUDED.added_by_user_id\n            RETURNING id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "responses",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        {
+          "Custom": {
+            "name": "response_matching",
+            "kind": {
+              "Enum": [
+                "any_case",
+                "exact_case"
+              ]
+            }
+          }
+        },
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a5fc7e7925b7f47700de16afff93ee7264f51dda329af48d427c94dc7ddccd10"
+}
