@@ -256,6 +256,7 @@ impl Api {
             .form(&[
                 ("event_types", r#"["message","update_message"]"#),
                 ("apply_markdown", "false"),
+                ("all_public_streams", "true"),
             ])
             .send()
             .await?;
