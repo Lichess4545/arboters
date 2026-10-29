@@ -1,6 +1,7 @@
 use nutype::nutype;
+use serde::Deserialize;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 pub struct ChatUserId(pub u64);
 
 #[nutype(
@@ -13,7 +14,7 @@ pub struct ChannelName(String);
 #[nutype(
     sanitize(trim),
     validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deref)
+    derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deref, Deserialize)
 )]
 pub struct TopicName(String);
 
