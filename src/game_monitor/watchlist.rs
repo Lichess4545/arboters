@@ -8,27 +8,17 @@ use serde::Deserialize;
 use tokio::time::MissedTickBehavior;
 use url::Url;
 
-use crate::heltour::{Pairing, league};
+use crate::heltour::{CurrentPairings, Pairing};
 
 use super::Watch;
 
 const FIND_PAIRING_PATH: &str = "find_pairing/";
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct HeltourSettings {
     pub base_url: Url,
     pub token: Option<SecretString>,
-}
-
-impl Default for HeltourSettings {
-    #[expect(clippy::expect_used)]
-    fn default() -> Self {
-        Self {
-            base_url: Url::parse("https://www.lichess4545.com/api/").expect("static url is valid"),
-            token: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -71,16 +61,8 @@ impl Heltour {
         })
     }
 
-    async fn pairings(
-        &self,
-        league: &league::Tag,
-        timeout: Duration,
-    ) -> Result<Vec<Pairing>, PairingsError> {
-        let mut request = self
-            .http
-            .get(self.find_pairing.clone())
-            .query(&[("league", league.as_str())])
-            .timeout(timeout);
+    async fn pairings(&self, timeout: Duration) -> Result<Vec<Pairing>, PairingsError> {
+        let mut request = self.http.get(self.find_pairing.clone()).timeout(timeout);
         if let Some(token) = &self.token {
             request = request.header(AUTHORIZATION, format!("Token {}", token.expose_secret()));
         }
@@ -91,28 +73,33 @@ impl Heltour {
 
 pub async fn keep_in_sync(
     heltour: Heltour,
-    league: league::Tag,
     monitor: Recipient<Watch>,
+    notifier: Recipient<CurrentPairings>,
     refresh_interval: Duration,
 ) {
     let mut refreshes = tokio::time::interval(refresh_interval);
     refreshes.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         refreshes.tick().await;
-        let pairings = match heltour.pairings(&league, refresh_interval).await {
+        let pairings = match heltour.pairings(refresh_interval).await {
             Ok(pairings) => pairings,
             Err(error) => {
-                tracing::warn!(error = ?error, league = %league, "keeping previous watchlist");
+                tracing::warn!(error = ?error, "keeping previous watchlist");
                 continue;
             }
         };
         let user_ids: BTreeSet<_> = pairings
-            .into_iter()
-            .flat_map(|pairing| [pairing.white, pairing.black])
+            .iter()
+            .flat_map(|pairing| [pairing.white.clone(), pairing.black.clone()])
             .collect();
-        tracing::debug!(league = %league, players = user_ids.len(), "refreshing game monitor watchlist");
-        if monitor.tell(Watch(user_ids)).await.is_err() {
-            tracing::info!("game monitor has stopped; ending watchlist sync");
+        tracing::debug!(
+            players = user_ids.len(),
+            "refreshing game monitor watchlist"
+        );
+        if monitor.tell(Watch(user_ids)).await.is_err()
+            || notifier.tell(CurrentPairings(pairings)).await.is_err()
+        {
+            tracing::info!("a follower of the watchlist has stopped; ending watchlist sync");
             return;
         }
     }

@@ -49,11 +49,7 @@ async fn run_with<M: Messenger + Clone>(
 
     let status = Status::spawn(status);
     let token_check = token_check.map(TokenCheck::spawn);
-    let notifier = Notifier::spawn(Notifier::new(
-        config.league.clone(),
-        subscriptions.clone(),
-        messenger,
-    ));
+    let notifier = Notifier::spawn(Notifier::new(subscriptions.clone(), messenger));
     let monitor = GameMonitor::spawn(GameMonitor::new(
         stream,
         config.lichess.stream.clone(),
@@ -63,8 +59,8 @@ async fn run_with<M: Messenger + Clone>(
     ));
     let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
         heltour,
-        config.league.clone(),
         monitor.clone().recipient(),
+        notifier.clone().recipient(),
         config.watchlist.refresh_interval,
     ));
 

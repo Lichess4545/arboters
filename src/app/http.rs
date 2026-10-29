@@ -25,7 +25,7 @@ impl Default for HttpSettings {
     fn default() -> Self {
         Self {
             host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 4545,
+            port: 8080,
             readiness_timeout: Duration::from_millis(800),
         }
     }

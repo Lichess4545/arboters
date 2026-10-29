@@ -4,7 +4,8 @@ use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
-use crate::game_monitor::{GameEventKind, GameOutcome};
+use crate::game_monitor::GameEventKind;
+use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed};
 use crate::notifications::{DeliveryError, Notification};
 use crate::subscriptions::{
@@ -49,13 +50,17 @@ impl Messenger for RecordingMessenger {
     }
 }
 
-fn league() -> league::Tag {
-    league::Tag::try_new("team4545").unwrap()
+fn league(tag: &str) -> league::Tag {
+    league::Tag::try_new(tag).unwrap()
+}
+
+fn user_id(name: &str) -> lichess::UserId {
+    lichess::UserId::try_new(name).unwrap()
 }
 
 fn player(name: &str) -> Player {
     Player {
-        user_id: lichess::UserId::try_new(name).unwrap(),
+        user_id: user_id(name),
         rating: None,
     }
 }
@@ -70,59 +75,81 @@ fn game() -> Game {
     }
 }
 
+fn paired_in(tag: &str, white: &str, black: &str) -> CurrentPairings {
+    CurrentPairings(vec![Pairing {
+        league: league(tag),
+        white: user_id(white),
+        black: user_id(black),
+    }])
+}
+
 fn direct_message(user_id: u64) -> NotificationTarget {
     NotificationTarget::DirectMessage {
         user_id: ChatUserId(user_id),
     }
 }
 
-fn subscription(source: &str, event: GameEventKind, target: NotificationTarget) -> NewSubscription {
+fn subscription(
+    tag: &str,
+    source: &str,
+    event: GameEventKind,
+    target: NotificationTarget,
+) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
-        league: league(),
-        source: SubscriptionSource::Player(lichess::UserId::try_new(source).unwrap()),
+        league: league(tag),
+        source: SubscriptionSource::Player(user_id(source)),
         event,
         target,
     }
 }
 
-async fn subscribed(
+async fn deliveries(
     pool: PgPool,
-    new_subscriptions: impl IntoIterator<Item = NewSubscription>,
-) -> PostgresSubscriptions {
-    let subscriptions = PostgresSubscriptions::new(pool);
-    for subscription in new_subscriptions {
-        subscriptions.subscribe(subscription).await.unwrap();
+    subscriptions: impl IntoIterator<Item = NewSubscription>,
+    pairings: CurrentPairings,
+    messenger: RecordingMessenger,
+) -> Vec<(NotificationTarget, Notification)> {
+    let stored = PostgresSubscriptions::new(pool);
+    for subscription in subscriptions {
+        stored.subscribe(subscription).await.unwrap();
     }
-    subscriptions
-}
-
-async fn deliver(notifier: Notifier<PostgresSubscriptions, RecordingMessenger>, event: GameEvent) {
-    Notifier::spawn(notifier).ask(event).await.unwrap();
+    let notifier = Notifier::spawn(Notifier::new(stored, messenger.clone()));
+    notifier.ask(pairings).await.unwrap();
+    notifier.ask(GameEvent::Started(game())).await.unwrap();
+    messenger.deliveries()
 }
 
 #[sqlx::test]
-async fn subscribers_of_both_players_receive_the_rendered_event(pool: PgPool) {
-    let subscriptions = subscribed(
-        pool,
-        [
-            subscription("alice", GameEventKind::GameStarted, direct_message(7)),
-            subscription("bob", GameEventKind::GameStarted, direct_message(8)),
-        ],
-    )
-    .await;
-    let event = GameEvent::Started(game());
-    let messenger = RecordingMessenger::default();
-
-    deliver(
-        Notifier::new(league(), subscriptions, messenger.clone()),
-        event.clone(),
-    )
-    .await;
-
-    let notification = render(&event);
+async fn subscribers_of_both_players_to_the_event_receive_it_rendered(pool: PgPool) {
+    let notification = render(&GameEvent::Started(game()));
     assert_eq!(
-        messenger.deliveries(),
+        deliveries(
+            pool,
+            [
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    direct_message(7)
+                ),
+                subscription(
+                    "classical",
+                    "bob",
+                    GameEventKind::GameStarted,
+                    direct_message(8)
+                ),
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameFinished,
+                    direct_message(9)
+                ),
+            ],
+            paired_in("classical", "alice", "bob"),
+            RecordingMessenger::default(),
+        )
+        .await,
         vec![
             (direct_message(7), notification.clone()),
             (direct_message(8), notification),
@@ -131,86 +158,58 @@ async fn subscribers_of_both_players_receive_the_rendered_event(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn subscribers_to_another_event_kind_are_not_notified(pool: PgPool) {
-    let subscriptions = subscribed(
-        pool,
-        [
-            subscription("alice", GameEventKind::GameStarted, direct_message(7)),
-            subscription("alice", GameEventKind::GameFinished, direct_message(8)),
-        ],
-    )
-    .await;
-    let messenger = RecordingMessenger::default();
-    let event = GameEvent::Finished {
-        game: game(),
-        outcome: GameOutcome::Draw,
-    };
-
-    deliver(
-        Notifier::new(league(), subscriptions, messenger.clone()),
-        event.clone(),
-    )
-    .await;
-
+async fn a_game_is_announced_only_in_the_league_that_pairs_its_players(pool: PgPool) {
     assert_eq!(
-        messenger.deliveries(),
-        vec![(direct_message(8), render(&event))]
-    );
-}
-
-#[sqlx::test]
-async fn subscribers_in_another_league_are_not_notified(pool: PgPool) {
-    let lonewolf = league::Tag::try_new("lonewolf").unwrap();
-    let subscriptions = subscribed(
-        pool,
-        [
-            subscription("alice", GameEventKind::GameStarted, direct_message(7)),
-            NewSubscription {
-                league: lonewolf.clone(),
-                ..subscription("alice", GameEventKind::GameStarted, direct_message(8))
-            },
-        ],
-    )
-    .await;
-    let event = GameEvent::Started(game());
-    let messenger = RecordingMessenger::default();
-
-    deliver(
-        Notifier::new(lonewolf, subscriptions, messenger.clone()),
-        event.clone(),
-    )
-    .await;
-
-    assert_eq!(
-        messenger.deliveries(),
-        vec![(direct_message(8), render(&event))]
+        deliveries(
+            pool,
+            [
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    direct_message(7)
+                ),
+                subscription(
+                    "rapid",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    direct_message(8)
+                ),
+            ],
+            paired_in("rapid", "bob", "alice"),
+            RecordingMessenger::default(),
+        )
+        .await,
+        vec![(direct_message(8), render(&GameEvent::Started(game())))]
     );
 }
 
 #[sqlx::test]
 async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool: PgPool) {
-    let subscriptions = subscribed(
-        pool,
-        [
-            subscription("alice", GameEventKind::GameStarted, direct_message(7)),
-            subscription("alice", GameEventKind::GameStarted, direct_message(8)),
-        ],
-    )
-    .await;
-    let event = GameEvent::Started(game());
-    let messenger = RecordingMessenger {
-        unreachable: Some(direct_message(7)),
-        ..RecordingMessenger::default()
-    };
-
-    deliver(
-        Notifier::new(league(), subscriptions, messenger.clone()),
-        event.clone(),
-    )
-    .await;
-
     assert_eq!(
-        messenger.deliveries(),
-        vec![(direct_message(8), render(&event))]
+        deliveries(
+            pool,
+            [
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    direct_message(7)
+                ),
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    direct_message(8)
+                ),
+            ],
+            paired_in("classical", "alice", "bob"),
+            RecordingMessenger {
+                unreachable: Some(direct_message(7)),
+                ..RecordingMessenger::default()
+            },
+        )
+        .await,
+        vec![(direct_message(8), render(&GameEvent::Started(game())))]
     );
 }
