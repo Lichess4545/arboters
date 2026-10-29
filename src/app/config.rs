@@ -6,7 +6,8 @@ use super::database::DatabaseSettings;
 use super::http::HttpSettings;
 use super::telemetry::TelemetrySettings;
 use crate::game_monitor::LichessSettings;
-use crate::game_monitor::watchlist::{HeltourSettings, WatchlistSettings};
+use crate::game_monitor::watchlist::WatchlistSettings;
+use crate::heltour::HeltourSettings;
 use crate::status::StatusSettings;
 use crate::zulip::ZulipSettings;
 

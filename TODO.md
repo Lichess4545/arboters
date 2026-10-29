@@ -2,7 +2,7 @@
 
 ## League attribution for notifications
 
-Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose current pairings pair the game's two players, but not team sources. Any game between two paired players counts, including a casual one.
+Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose current pairings pair the game's two players, but not team sources. For notifications, any game between two paired players counts, including a casual one. Reporting to heltour does not work that way: the reporter reports only a game that fits the time control, rated setting, and variant of a league that pairs its players.
 
 - Look up the players' teams as sources too.
 
@@ -14,7 +14,12 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 
 ## Heltour pairing and roster adapter
 
-- The watchlist reads heltour's `find_pairing` for every active league. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
+- The watchlist reads heltour's `get_leagues` and `find_pairing`, and the reporter writes `update_pairing`. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
+
+## Reporting games to heltour
+
+- Not yet ported from Chesster: the warnings about invalid games (the Slack messages and heltour's `game_warning`), and the announcements of game links and results in the league's channels.
+- A valid game's link is reported when it starts. If the game then ends in a way that does not count, such as an abort, the link stays on the pairing, as with Chesster.
 
 ## Subscription commands
 
@@ -28,3 +33,4 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 
 - `Deploy` pins `deploy/prod/main.k`, but nothing applies it to the cluster yet. Choose Argo CD with a KCL plugin, Flux on rendered YAML, or `kubectl apply` from CI.
 - The pod expects a Secret named `arboters` holding `ARBOTERS_DATABASE__URL`, `ARBOTERS_LICHESS__TOKEN`, `ARBOTERS_HELTOUR__TOKEN`, `ARBOTERS_STATUS__CHANNEL`, the `ARBOTERS_ZULIP__*` settings, and optionally the `OTEL_*` variables.
+- The reporter always runs, so production reports games to heltour as soon as this is deployed, alongside Chesster. heltour's strict `update_pairing` refuses a second game or result for a pairing, so whichever reports first wins.

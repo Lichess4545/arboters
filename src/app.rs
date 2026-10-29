@@ -3,15 +3,17 @@ mod database;
 mod http;
 pub mod telemetry;
 
-use kameo::actor::{ActorRef, Spawn};
+use kameo::actor::{ActorRef, Recipient, Spawn};
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::chat::{LoggingMessenger, Messenger};
-use crate::game_monitor::watchlist::{self, Heltour};
+use crate::game_monitor::watchlist;
 use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
+use crate::heltour::{ActiveLeagues, Heltour};
+use crate::league_games::Reporter;
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
 use crate::zulip::{Inbox, ZulipMessenger};
@@ -70,13 +72,11 @@ async fn run_with<M: Messenger + Clone>(
         Notifier::new(subscriptions.clone(), messenger),
         monitor.clone().recipient(),
     ));
+    let reporter = Reporter::spawn((Reporter::new(heltour.clone()), monitor.clone().recipient()));
     notifier.wait_for_startup().await;
-    let mut followers = vec![notifier.clone().recipient()];
-    followers.extend(
-        conversations
-            .as_ref()
-            .map(|conversations| conversations.commands.clone().recipient()),
-    );
+    reporter.wait_for_startup().await;
+    let mut followers = vec![notifier.clone().recipient(), reporter.clone().recipient()];
+    followers.extend(conversations.iter().map(Conversations::follower));
     let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
         heltour,
         monitor.clone().recipient(),
@@ -105,6 +105,7 @@ async fn run_with<M: Messenger + Clone>(
         () = status.wait_for_shutdown() => Err(anyhow::anyhow!("status stopped unexpectedly")),
         () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
         () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
+        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("heltour reporter stopped unexpectedly")),
         () = stopped(token_check.as_ref()) => Err(anyhow::anyhow!("lichess token check stopped unexpectedly")),
         error = Conversations::stopped(conversations.as_ref()) => Err(error),
         exit = &mut watchlist_sync => match exit {
@@ -119,6 +120,7 @@ async fn run_with<M: Messenger + Clone>(
     }
     stop(&monitor).await;
     stop(&notifier).await;
+    stop(&reporter).await;
     if let Some(token_check) = &token_check {
         stop(token_check).await;
     }
@@ -169,6 +171,10 @@ impl<M: Messenger> Conversations<M> {
         let inbox = Inbox::spawn(inbox);
         let commands = SubscriptionCommands::spawn((commands, inbox.clone().recipient()));
         Self { inbox, commands }
+    }
+
+    fn follower(&self) -> Recipient<ActiveLeagues> {
+        self.commands.clone().recipient()
     }
 
     async fn stopped(conversations: Option<&Self>) -> anyhow::Error {
