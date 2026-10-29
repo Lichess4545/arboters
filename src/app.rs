@@ -51,12 +51,8 @@ async fn run_with<M: Messenger + Clone>(
 
     let status = Status::spawn(status);
     let token_check = token_check.map(TokenCheck::spawn);
-    let conversations = inbox.map(|inbox| {
-        Conversations::spawn(
-            inbox,
-            SubscriptionCommands::new(subscriptions.clone(), messenger.clone()),
-        )
-    });
+    let conversations = inbox
+        .map(|inbox| Conversations::spawn(inbox, SubscriptionCommands::new(subscriptions.clone())));
     let monitor = GameMonitor::spawn(GameMonitor::new(
         stream,
         config.lichess.stream.clone(),
@@ -156,13 +152,13 @@ fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> any
     }
 }
 
-struct Conversations<M: Messenger> {
+struct Conversations {
     inbox: ActorRef<Inbox>,
-    commands: ActorRef<SubscriptionCommands<PostgresSubscriptions, M>>,
+    commands: ActorRef<SubscriptionCommands<PostgresSubscriptions>>,
 }
 
-impl<M: Messenger> Conversations<M> {
-    fn spawn(inbox: Inbox, commands: SubscriptionCommands<PostgresSubscriptions, M>) -> Self {
+impl Conversations {
+    fn spawn(inbox: Inbox, commands: SubscriptionCommands<PostgresSubscriptions>) -> Self {
         let inbox = Inbox::spawn(inbox);
         let commands = SubscriptionCommands::spawn((commands, inbox.clone().recipient()));
         Self { inbox, commands }

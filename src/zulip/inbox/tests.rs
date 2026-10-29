@@ -1,24 +1,35 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use kameo::actor::Spawn;
 use secrecy::SecretString;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
 use super::*;
 use crate::chat::{ChannelName, Role, TopicName};
+use crate::game_monitor::GameEventKind;
+use crate::heltour::{ActiveLeagues, League, league};
+use crate::lichess::Variant;
+use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands, Subscriptions};
 use crate::zulip::BotEmail;
 
 const BOT: u64 = 99;
 const MEMBER: u64 = 10;
 const MODERATOR: u64 = 11;
+const ANSWER: &str = "Subscription `1`: tell you when a-game-starts in classical.";
+
+fn answering() -> Handling {
+    Handling::Answered(Notification::new(ANSWER.to_owned()))
+}
 
 type Form = BTreeMap<String, String>;
 type Reply = (StatusCode, Value);
@@ -30,6 +41,8 @@ struct FakeState {
     registered: Arc<std::sync::Mutex<u32>>,
     polls: mpsc::UnboundedSender<(String, String)>,
     sent: mpsc::UnboundedSender<Form>,
+    sent_ids: Arc<AtomicU64>,
+    edits: mpsc::UnboundedSender<(u64, Form)>,
 }
 
 fn form(body: &str) -> Form {
@@ -91,7 +104,17 @@ async fn events(
 
 async fn send_message(State(state): State<FakeState>, body: String) -> Json<Value> {
     state.sent.send(form(&body)).unwrap();
-    Json(success(json!({ "id": 1 })))
+    let id = state.sent_ids.fetch_add(1, Ordering::Relaxed);
+    Json(success(json!({ "id": id })))
+}
+
+async fn edit_message(
+    State(state): State<FakeState>,
+    Path(message_id): Path<u64>,
+    body: String,
+) -> Json<Value> {
+    state.edits.send((message_id, form(&body))).unwrap();
+    Json(success(json!({})))
 }
 
 #[derive(Debug)]
@@ -121,7 +144,7 @@ impl Message<IncomingMessage> for Listener {
         _: &mut Context<Self, Self::Reply>,
     ) -> impl Future<Output = Handling> + Send {
         self.heard.send(message).unwrap();
-        std::future::ready(self.handling)
+        std::future::ready(self.handling.clone())
     }
 }
 
@@ -131,6 +154,7 @@ struct FakeZulip {
     registrations: mpsc::UnboundedReceiver<Form>,
     polls: mpsc::UnboundedReceiver<(String, String)>,
     sent: mpsc::UnboundedReceiver<Form>,
+    edits: mpsc::UnboundedReceiver<(u64, Form)>,
 }
 
 impl FakeZulip {
@@ -139,12 +163,15 @@ impl FakeZulip {
         let (registrations_in, registrations) = mpsc::unbounded_channel();
         let (polls_in, polls) = mpsc::unbounded_channel();
         let (sent_in, sent) = mpsc::unbounded_channel();
+        let (edits_in, edits) = mpsc::unbounded_channel();
         let state = FakeState {
             replies: Arc::new(Mutex::new(replies_out)),
             registrations: registrations_in,
             registered: Arc::default(),
             polls: polls_in,
             sent: sent_in,
+            sent_ids: Arc::new(AtomicU64::new(5000)),
+            edits: edits_in,
         };
         let router = Router::new()
             .route("/api/v1/users/me", get(own_user))
@@ -152,6 +179,7 @@ impl FakeZulip {
             .route("/api/v1/register", post(register))
             .route("/api/v1/events", get(events))
             .route("/api/v1/messages", post(send_message))
+            .route("/api/v1/messages/{message_id}", patch(edit_message))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -173,6 +201,7 @@ impl FakeZulip {
             registrations,
             polls,
             sent,
+            edits,
         }
     }
 
@@ -252,13 +281,57 @@ fn channel_message(id: i64, sender: u64, content: &str, flags: &[&str]) -> Value
     })
 }
 
+fn edit(id: i64, message_id: u64, sender: u64, content: &str, flags: &[&str]) -> Value {
+    json!({
+        "id": id,
+        "type": "update_message",
+        "user_id": sender,
+        "rendering_only": false,
+        "message_id": message_id,
+        "message_ids": [message_id],
+        "flags": flags,
+        "edit_timestamp": 1_594_825_451,
+        "orig_content": "earlier",
+        "content": content,
+        "is_me_message": false,
+    })
+}
+
+fn channel_edit(id: i64, message_id: u64, sender: u64, content: &str, flags: &[&str]) -> Value {
+    let mut edit = edit(id, message_id, sender, content, flags);
+    edit["stream_id"] = json!(1);
+    edit["stream_name"] = json!("chess");
+    edit
+}
+
+fn topic_move(id: i64, message_id: u64, sender: u64) -> Value {
+    json!({
+        "id": id,
+        "type": "update_message",
+        "user_id": sender,
+        "rendering_only": false,
+        "message_id": message_id,
+        "message_ids": [message_id],
+        "flags": ["mentioned"],
+        "edit_timestamp": 1_594_825_451,
+        "stream_id": 1,
+        "stream_name": "chess",
+        "orig_subject": "games",
+        "subject": "old games",
+        "propagate_mode": "change_all",
+    })
+}
+
 fn heard_from(
+    event_id: u64,
     sender: u64,
     role: Role,
     reply_to: NotificationTarget,
     text: &str,
 ) -> IncomingMessage {
     IncomingMessage {
+        id: MessageId(1000 + event_id),
+        revision: Revision::Original,
         sender: ChatUserId(sender),
         role,
         reply_to,
@@ -280,24 +353,28 @@ fn games_topic() -> NotificationTarget {
 }
 
 #[tokio::test]
-async fn the_queue_is_registered_for_message_events_in_raw_markdown() {
-    let (mut zulip, _) = FakeZulip::listening(Handling::Handled).await;
+async fn the_queue_is_registered_for_messages_and_their_edits_in_raw_markdown() {
+    let (mut zulip, _) = FakeZulip::listening(answering()).await;
 
     let registration = within_a_while(zulip.registrations.recv()).await;
 
-    assert_eq!(registration["event_types"], r#"["message"]"#);
+    assert_eq!(
+        registration["event_types"],
+        r#"["message","update_message"]"#
+    );
     assert_eq!(registration["apply_markdown"], "false");
 }
 
 #[tokio::test]
 async fn a_direct_message_is_handed_out_with_its_sender_role_and_conversation() {
-    let (zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
 
     zulip.deliver(json!([direct_message(1, MODERATOR, " subscription list ")]));
 
     assert_eq!(
         within_a_while(heard.recv()).await,
         heard_from(
+            1,
             MODERATOR,
             Role::Moderator,
             dm_to(MODERATOR),
@@ -308,7 +385,7 @@ async fn a_direct_message_is_handed_out_with_its_sender_role_and_conversation() 
 
 #[tokio::test]
 async fn a_channel_message_that_mentions_the_bot_is_handed_out_without_the_mention() {
-    let (zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
 
     zulip.deliver(json!([channel_message(
         1,
@@ -319,13 +396,13 @@ async fn a_channel_message_that_mentions_the_bot_is_handed_out_without_the_menti
 
     assert_eq!(
         within_a_while(heard.recv()).await,
-        heard_from(MEMBER, Role::Member, games_topic(), "subscription list")
+        heard_from(1, MEMBER, Role::Member, games_topic(), "subscription list")
     );
 }
 
 #[tokio::test]
 async fn a_mention_that_names_the_bot_by_id_is_stripped_too() {
-    let (zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
 
     zulip.deliver(json!([channel_message(
         1,
@@ -339,7 +416,7 @@ async fn a_mention_that_names_the_bot_by_id_is_stripped_too() {
 
 #[tokio::test]
 async fn messages_not_addressed_to_the_bot_alone_are_ignored() {
-    let (zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
 
     zulip.deliver(json!([
         channel_message(1, MEMBER, "@**Arboters** help", &["read"]),
@@ -358,7 +435,7 @@ async fn messages_not_addressed_to_the_bot_alone_are_ignored() {
 
 #[tokio::test]
 async fn an_expired_queue_is_registered_again() {
-    let (mut zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -382,7 +459,7 @@ async fn an_expired_queue_is_registered_again() {
 
 #[tokio::test]
 async fn a_failed_poll_is_retried_on_the_same_queue() {
-    let (mut zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -401,7 +478,7 @@ async fn a_failed_poll_is_retried_on_the_same_queue() {
 
 #[tokio::test]
 async fn heartbeats_are_acknowledged_and_the_poll_continues() {
-    let (mut zulip, mut heard) = FakeZulip::listening(Handling::Handled).await;
+    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -430,14 +507,203 @@ async fn a_message_no_listener_recognizes_gets_a_reply_pointing_at_help() {
 }
 
 #[tokio::test]
-async fn a_message_any_listener_handles_gets_no_extra_reply() {
+async fn the_answers_of_every_listener_that_handles_a_message_are_one_reply() {
     let (mut zulip, mut ignoring) = FakeZulip::listening(Handling::Unrecognized).await;
-    let mut handling = zulip.listen(Handling::Handled).await;
+    let _first = zulip.listen(answering()).await;
+    let _second = zulip.listen(answering()).await;
 
     zulip.deliver(json!([direct_message(1, MEMBER, "help")]));
     within_a_while(ignoring.recv()).await;
-    within_a_while(handling.recv()).await;
-    zulip.listen(Handling::Handled).await;
 
+    let reply = within_a_while(zulip.sent.recv()).await;
+    assert_eq!(reply["content"], format!("{ANSWER}\n\n{ANSWER}"));
+    zulip.listen(answering()).await;
     assert!(zulip.sent.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn an_edit_of_an_answered_message_is_handed_out_again_and_edits_the_reply() {
+    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    zulip.deliver(json!([direct_message(1, MEMBER, "tell me")]));
+    within_a_while(heard.recv()).await;
+    within_a_while(zulip.sent.recv()).await;
+
+    zulip.deliver(json!([edit(2, 1001, MEMBER, "help", &[])]));
+
+    assert_eq!(
+        within_a_while(heard.recv()).await,
+        IncomingMessage {
+            revision: Revision::Edited,
+            ..heard_from(1, MEMBER, Role::Member, dm_to(MEMBER), "help")
+        }
+    );
+    let (reply, edited) = within_a_while(zulip.edits.recv()).await;
+    assert_eq!(reply, 5000);
+    assert_eq!(edited["content"], ANSWER);
+    assert!(zulip.sent.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn an_edit_of_an_unrecognized_message_edits_the_pointer_to_help() {
+    let (mut zulip, mut heard) = FakeZulip::listening(Handling::Unrecognized).await;
+    zulip.deliver(json!([channel_message(
+        1,
+        MEMBER,
+        "@**Arboters** hello",
+        &["mentioned"]
+    )]));
+    within_a_while(heard.recv()).await;
+    within_a_while(zulip.sent.recv()).await;
+
+    zulip.deliver(json!([channel_edit(
+        2,
+        1001,
+        MEMBER,
+        "@**Arboters** hi",
+        &["mentioned"]
+    )]));
+
+    let edited = within_a_while(heard.recv()).await;
+    assert_eq!(edited.text.as_str(), "hi");
+    assert_eq!(edited.reply_to, games_topic());
+    let (reply, edited) = within_a_while(zulip.edits.recv()).await;
+    assert_eq!(reply, 5000);
+    assert_eq!(edited["content"], UNRECOGNIZED);
+}
+
+#[tokio::test]
+async fn topic_moves_unaddressed_edits_and_edits_of_unanswered_messages_are_ignored() {
+    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    zulip.deliver(json!([channel_message(
+        1,
+        MEMBER,
+        "@**Arboters** help",
+        &["mentioned"]
+    )]));
+    within_a_while(heard.recv()).await;
+    within_a_while(zulip.sent.recv()).await;
+
+    zulip.deliver(json!([
+        topic_move(2, 1001, MEMBER),
+        channel_edit(3, 1001, MEMBER, "help", &["read"]),
+        channel_edit(4, 1009, MEMBER, "@**Arboters** help", &["mentioned"]),
+        {
+            "id": 5,
+            "type": "update_message",
+            "user_id": null,
+            "rendering_only": true,
+            "message_id": 1001,
+            "message_ids": [1001],
+            "flags": ["mentioned"],
+            "content": "@**Arboters** help",
+        },
+        direct_message(6, MEMBER, "subscription list"),
+    ]));
+
+    assert_eq!(
+        within_a_while(heard.recv()).await.text.as_str(),
+        "subscription list"
+    );
+    assert!(heard.try_recv().is_err());
+    within_a_while(zulip.sent.recv()).await;
+    assert!(zulip.edits.try_recv().is_err());
+}
+
+async fn answered_by_subscription_commands(pool: PgPool) -> (FakeZulip, PostgresSubscriptions) {
+    let zulip = FakeZulip::start().await;
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let commands = SubscriptionCommands::spawn((
+        SubscriptionCommands::new(subscriptions.clone()),
+        zulip.inbox.clone().recipient(),
+    ));
+    commands
+        .ask(ActiveLeagues {
+            leagues: vec![League {
+                tag: league::Tag::try_new("classical").unwrap(),
+                name: league::Name::try_new("Classical League").unwrap(),
+                time_control: None,
+                variant: Variant::Standard,
+                rated: true,
+            }],
+            pairings: Vec::new(),
+        })
+        .await
+        .unwrap();
+    (zulip, subscriptions)
+}
+
+#[sqlx::test]
+async fn an_edit_of_a_refused_command_edits_the_refusal_into_the_new_answer(pool: PgPool) {
+    let (mut zulip, subscriptions) = answered_by_subscription_commands(pool).await;
+    zulip.deliver(json!([direct_message(
+        1,
+        MEMBER,
+        "tell me when a game starts in clasical league"
+    )]));
+    let refusal = within_a_while(zulip.sent.recv()).await;
+
+    zulip.deliver(json!([edit(
+        2,
+        1001,
+        MEMBER,
+        "tell me when a game starts in classical league",
+        &[]
+    )]));
+
+    let (reply, edited) = within_a_while(zulip.edits.recv()).await;
+    let made = subscriptions
+        .requested_by(ChatUserId(MEMBER))
+        .await
+        .unwrap();
+    assert!(
+        refusal["content"].starts_with("`clasical league` is not an active league."),
+        "{refusal:?}"
+    );
+    assert_eq!(reply, 5000);
+    assert_eq!(
+        edited["content"],
+        format!(
+            "Subscription `{}`: tell you when a-game-starts in classical.",
+            made[0].id
+        )
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_into_another_subscription_replaces_the_one_it_made(pool: PgPool) {
+    let (mut zulip, subscriptions) = answered_by_subscription_commands(pool).await;
+    zulip.deliver(json!([direct_message(
+        1,
+        MEMBER,
+        "tell me when a game starts in classical"
+    )]));
+    within_a_while(zulip.sent.recv()).await;
+    let earlier = subscriptions
+        .requested_by(ChatUserId(MEMBER))
+        .await
+        .unwrap()[0]
+        .id;
+
+    zulip.deliver(json!([edit(
+        2,
+        1001,
+        MEMBER,
+        "tell me when a game ends in classical",
+        &[]
+    )]));
+
+    let (_, edited) = within_a_while(zulip.edits.recv()).await;
+    let made = subscriptions
+        .requested_by(ChatUserId(MEMBER))
+        .await
+        .unwrap();
+    assert_eq!(made.len(), 1);
+    assert_eq!(made[0].event, GameEventKind::GameFinished);
+    assert_eq!(
+        edited["content"],
+        format!(
+            "Subscription `{}`: tell you when a-game-is-over in classical. It replaces subscription `{earlier}`.",
+            made[0].id
+        )
+    );
 }
