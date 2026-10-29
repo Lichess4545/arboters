@@ -34,6 +34,8 @@ struct PlayersJson {
 #[serde(rename_all = "camelCase")]
 struct PlayerJson {
     user_id: UserId,
+    // The games-by-users stream spec types rating as an integer:
+    // https://github.com/lichess-org/api/blob/c1644a780141566a68b7dce113151d9cc319b004/doc/specs/schemas/GameStreamGame.yaml#L36-L37
     rating: Option<u16>,
 }
 

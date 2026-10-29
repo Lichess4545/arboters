@@ -20,7 +20,7 @@ use crate::lichess;
 
 const PATIENCE: Duration = Duration::from_secs(5);
 const ALICE_AND_BOB: &str = r#"{"pairings": [{"league": "team4545", "season": "47", "round": 3, "white_team": "Knights", "white_team_number": 1, "black_team": "Rooks", "black_team_number": 2, "white": "Alice", "white_rating": 1850, "black": "bob", "black_rating": 1790, "game_link": "", "result": "", "datetime": null}]}"#;
-const ALICE_BOB_AND_CAROL_DAVE: &str = r#"{"pairings": [{"league": "team4545", "season": "47", "round": 3, "white": "alice", "white_rating": 1850, "black": "bob", "black_rating": 1790, "game_link": "", "result": "", "datetime": null}, {"league": "team4545", "season": "47", "round": 3, "white": "Carol", "white_rating": null, "black": "dave", "black_rating": null, "game_link": "https://lichess.org/abcd1234", "result": "1-0", "datetime": "2026-10-28T19:00:00Z"}]}"#;
+const ALICE_BOB_AND_CAROL_DAVE: &str = r#"{"pairings": [{"league": "team4545", "season": "47", "round": 3, "white": "alice", "white_rating": 1850, "black": "bob", "black_rating": 1790, "game_link": "", "result": "", "datetime": null}, {"league": "team4545", "season": "47", "round": 3, "white": "Carol", "white_rating": null, "black": "dave", "black_rating": null, "game_link": "https://lichess.org/game/abcd1234", "result": "1-0", "datetime": "2026-10-28T19:00:00Z"}]}"#;
 const NO_ACTIVE_ROUND: &str = r#"{"pairings": null, "error": "no_matching_rounds"}"#;
 
 struct Request {
