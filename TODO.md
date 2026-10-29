@@ -35,6 +35,17 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 - `tell #**channel>topic**` does not check that the bot can post in that topic. A failed post is logged with its channel and topic.
 - Zulip flags a message as mentioning the bot when it mentions a user group the bot belongs to, so such a message that is not a command gets the "send `help`" reply.
 
+## Saved responses
+
+`response add "<phrase>" <message link>`, `response add exact "<phrase>" <message link>`, `response list`, and `response remove <id>` work for moderators over Zulip direct messages and mentions. The inbox registers its event queue with `all_public_streams`, so Arboters sees every public channel, and a private channel only when it is subscribed to it.
+
+- The cooldown is kept in memory, so it starts over when Arboters restarts.
+- Listing one phrase's responses, and adding a message again to a phrase in another case, compare phrases with Postgres's `lower()`, which ignores case only for ASCII letters in a database with the C locale. The responder ignores case for every letter.
+- The responder reads every saved response from Postgres for each channel message. If that becomes too slow, keep them in memory and reload them when the commands change them.
+- A channel message with the `mentioned` flag goes only to the commands, so its phrases get no answer.
+- The response commands remember in memory which response each `response add` added. After a restart, an edit of a `response add` adds another response instead of replacing the first.
+- Only new messages are checked for phrases. An edit that adds a phrase to a message gets no answer.
+
 ## Deployment
 
 - `Deploy` pins `deploy/prod/main.k`, but nothing applies it to the cluster yet. Choose Argo CD with a KCL plugin, Flux on rendered YAML, or `kubectl apply` from CI.

@@ -5,6 +5,7 @@ pub mod heltour;
 pub mod league_games;
 pub mod lichess;
 pub mod lichess_token_check;
+pub mod responses;
 pub mod status;
 pub mod subscriptions;
 pub mod zulip;

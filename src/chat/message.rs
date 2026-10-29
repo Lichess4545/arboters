@@ -3,7 +3,7 @@ use nutype::nutype;
 
 use super::target::{ChannelName, ChatUserId, TopicName};
 
-#[nutype(derive(Debug, Clone, PartialEq, Eq, Deref))]
+#[nutype(derive(Debug, Clone, PartialEq, Eq, Deref, Deserialize))]
 pub struct MessageText(String);
 
 #[derive(Clone, Debug, PartialEq, Eq)]

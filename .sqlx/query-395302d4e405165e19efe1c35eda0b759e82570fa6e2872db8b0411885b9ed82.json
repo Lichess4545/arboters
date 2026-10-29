@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, phrase, matching AS \"matching: StoredMatching\", markdown\n            FROM responses\n            WHERE $1::TEXT IS NULL OR lower(phrase) = lower($1)\n            ORDER BY lower(phrase), id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "responses",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "phrase",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "responses",
+            "name": "phrase"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "matching: StoredMatching",
+        "type_info": {
+          "Custom": {
+            "name": "response_matching",
+            "kind": {
+              "Enum": [
+                "any_case",
+                "exact_case"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "responses",
+            "name": "matching"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "markdown",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "responses",
+            "name": "markdown"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "395302d4e405165e19efe1c35eda0b759e82570fa6e2872db8b0411885b9ed82"
+}
