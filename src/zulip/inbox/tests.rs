@@ -688,6 +688,7 @@ async fn answered_by_subscription_commands(pool: PgPool) -> (FakeZulip, Postgres
                 rated: true,
             }],
             pairings: Vec::new(),
+            team_pairings: Vec::new(),
         })
         .await
         .unwrap();

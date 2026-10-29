@@ -9,7 +9,8 @@ use crate::chat::{
     ChannelName, ChatUserId, DeliveryError, Notification, NotificationTarget, TopicName,
 };
 use crate::game_monitor::GameEventKind;
-use crate::heltour::{Pairing, league};
+use crate::heltour::team_pairing::{Board, BoardNumber, HalfPoints};
+use crate::heltour::{Pairing, TeamPairing, league, team};
 use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
 
@@ -86,6 +87,7 @@ fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
             white: user_id(white),
             black: user_id(black),
         }],
+        team_pairings: Vec::new(),
     }
 }
 
@@ -153,7 +155,7 @@ async fn deliveries(
 
 #[sqlx::test]
 async fn subscribers_of_both_players_to_the_event_receive_it_rendered(pool: PgPool) {
-    let notification = render(&GameEvent::Started(game()));
+    let notification = render(&GameEvent::Started(game()), None);
     assert_eq!(
         deliveries(
             pool,
@@ -211,7 +213,7 @@ async fn a_game_is_announced_only_in_the_league_that_pairs_its_players(pool: PgP
             RecordingMessenger::default(),
         )
         .await,
-        vec![(direct_message(8), render(&GameEvent::Started(game())))]
+        vec![(direct_message(8), render(&GameEvent::Started(game()), None))]
     );
 }
 
@@ -241,7 +243,7 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
             },
         )
         .await,
-        vec![(direct_message(8), render(&GameEvent::Started(game())))]
+        vec![(direct_message(8), render(&GameEvent::Started(game()), None))]
     );
 }
 
@@ -261,7 +263,7 @@ fn league_wide(tag: &str, target: NotificationTarget) -> NewSubscription {
 
 #[sqlx::test]
 async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
-    let notification = render(&GameEvent::Started(game()));
+    let notification = render(&GameEvent::Started(game()), None);
     assert_eq!(
         deliveries(
             pool,
@@ -284,5 +286,44 @@ async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: 
             (direct_message(7), notification.clone()),
             (games_topic(), notification),
         ]
+    );
+}
+
+#[sqlx::test]
+async fn a_team_game_is_announced_with_its_match_context(pool: PgPool) {
+    let team = |name: &str| team::DisplayName::try_new(name).unwrap();
+    let active = ActiveLeagues {
+        team_pairings: vec![TeamPairing {
+            league: league("team4545"),
+            white_team: team("Knights"),
+            white_points: HalfPoints::new(4),
+            black_team: team("Rooks"),
+            black_points: HalfPoints::new(4),
+            boards: vec![Board {
+                number: BoardNumber::new(5),
+                white: Some(user_id("bob")),
+                black: Some(user_id("alice")),
+                white_team: team("Rooks"),
+                black_team: team("Knights"),
+                game_link: None,
+                result: None,
+            }],
+        }],
+        ..paired_in("team4545", "alice", "bob")
+    };
+    assert_eq!(
+        deliveries(
+            pool,
+            [league_wide("team4545", games_topic())],
+            active,
+            RecordingMessenger::default(),
+        )
+        .await,
+        vec![(
+            games_topic(),
+            Notification::new(
+                "@_**alice** vs @_**bob** has started: https://lichess.org/game/abcd1234\nKnights and Rooks are tied 2–2. This game can decide the match.".to_owned()
+            )
+        )]
     );
 }

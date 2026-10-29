@@ -18,7 +18,8 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::heltour::{HeltourSettings, League, Pairing, league};
+use crate::heltour::team_pairing::{Board, BoardNumber, BoardResult, HalfPoints};
+use crate::heltour::{HeltourSettings, League, Pairing, TeamPairing, league, team};
 use crate::lichess::{self, Clock, Variant};
 
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -26,6 +27,8 @@ const LEAGUES: &str = r#"{"leagues": [{"tag": "classical", "name": "Classical Le
 const ALICE_AND_BOB: &str = r#"{"pairings": [{"league": "classical", "season": "47", "round": 3, "white": "Alice", "black": "bob", "game_link": "", "result": ""}]}"#;
 const ALICE_BOB_AND_CAROL_DAVE: &str = r#"{"pairings": [{"league": "classical", "season": "47", "round": 3, "white": "alice", "black": "bob", "game_link": "", "result": ""}, {"league": "rapid", "season": "12", "round": 1, "white": "Carol", "black": "dave", "game_link": "", "result": ""}]}"#;
 const NO_ACTIVE_ROUND: &str = r#"{"pairings": null, "error": "no_matching_rounds"}"#;
+const NO_TEAM_PAIRINGS: &str = r#"{"team_pairings": []}"#;
+const KNIGHTS_AND_ROOKS: &str = r#"{"team_pairings": [{"league": "classical", "season": "47", "round": 3, "white_team": "Knights", "white_team_number": 1, "white_points": 1.5, "black_team": "Rooks", "black_team_number": 2, "black_points": 0.5, "boards": [{"board": 1, "white": "Alice", "black": "bob", "white_team": "Knights", "black_team": "Rooks", "game_link": "https://lichess.org/abcd1234", "result": "1/2-1/2"}, {"board": 2, "white": null, "black": "carol", "white_team": "Rooks", "black_team": "Knights", "game_link": "", "result": "0F-1X"}, {"board": 3, "white": "dave", "black": "erin", "white_team": "Knights", "black_team": "Rooks", "game_link": "", "result": ""}]}, {"league": "classical", "season": "47", "round": 3, "white_team": "Bishops", "white_team_number": 3, "white_points": 0.0, "black_team": "Pawns", "black_team_number": 4, "black_points": 0.0, "boards": []}]}"#;
 
 struct Request {
     path: String,
@@ -33,18 +36,22 @@ struct Request {
     headers: HeaderMap,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct FakeHeltour {
     requests: Arc<Mutex<Vec<Request>>>,
     pairings: Arc<Mutex<VecDeque<(StatusCode, &'static str)>>>,
+    team_pairings: (StatusCode, &'static str),
 }
 
 impl FakeHeltour {
     fn answer(&self, request: Request) -> (StatusCode, &'static str) {
-        let leagues = request.path.ends_with("/get_leagues/");
+        let path = request.path.clone();
         self.requests.lock().unwrap().push(request);
-        if leagues {
+        if path.ends_with("/get_leagues/") {
             return (StatusCode::OK, LEAGUES);
+        }
+        if path.ends_with("/get_team_pairings/") {
+            return self.team_pairings;
         }
         let mut pairings = self.pairings.lock().unwrap();
         if pairings.len() > 1 {
@@ -54,15 +61,24 @@ impl FakeHeltour {
         }
     }
 
-    fn request_count(&self) -> usize {
-        self.requests.lock().unwrap().len()
+    fn pairing_request_count(&self) -> usize {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.path.ends_with("/find_pairing/"))
+            .count()
     }
 }
 
-async fn heltour_answering(pairings: &[(StatusCode, &'static str)]) -> (FakeHeltour, Heltour) {
+async fn heltour_answering(
+    pairings: &[(StatusCode, &'static str)],
+    team_pairings: (StatusCode, &'static str),
+) -> (FakeHeltour, Heltour) {
     let fake = FakeHeltour {
+        requests: Arc::default(),
         pairings: Arc::new(Mutex::new(pairings.iter().copied().collect())),
-        ..FakeHeltour::default()
+        team_pairings,
     };
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -78,7 +94,8 @@ async fn heltour_answering(pairings: &[(StatusCode, &'static str)]) -> (FakeHelt
     );
     let router = Router::new()
         .route("/api/find_pairing/", answer.clone())
-        .route("/api/get_leagues/", answer);
+        .route("/api/get_leagues/", answer.clone())
+        .route("/api/get_team_pairings/", answer);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let settings = HeltourSettings {
         base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
@@ -134,7 +151,20 @@ struct Syncing {
 
 impl Syncing {
     async fn start(pairings: &[(StatusCode, &'static str)], refresh_interval: Duration) -> Self {
-        let (heltour, client) = heltour_answering(pairings).await;
+        Self::start_with_team_pairings(
+            pairings,
+            (StatusCode::OK, NO_TEAM_PAIRINGS),
+            refresh_interval,
+        )
+        .await
+    }
+
+    async fn start_with_team_pairings(
+        pairings: &[(StatusCode, &'static str)],
+        team_pairings: (StatusCode, &'static str),
+        refresh_interval: Duration,
+    ) -> Self {
+        let (heltour, client) = heltour_answering(pairings, team_pairings).await;
         let (sender, told) = mpsc::unbounded_channel();
         let recorder = Recorder::spawn(Recorder(sender));
         let sync = tokio::spawn(keep_in_sync(
@@ -235,6 +265,7 @@ async fn the_monitor_is_told_every_paired_player_and_followers_the_active_league
                     pairing("classical", "alice", "bob"),
                     pairing("rapid", "carol", "dave"),
                 ],
+                team_pairings: Vec::new(),
             }
         )
     );
@@ -252,7 +283,14 @@ async fn heltour_is_asked_about_every_league_with_the_api_token_and_our_user_age
         .iter()
         .map(|request| request.path.as_str())
         .collect();
-    assert_eq!(paths, ["/api/find_pairing/", "/api/get_leagues/"]);
+    assert_eq!(
+        paths,
+        [
+            "/api/find_pairing/",
+            "/api/get_leagues/",
+            "/api/get_team_pairings/"
+        ]
+    );
     for request in requests {
         assert_eq!(request.query, None);
         assert_eq!(request.headers[AUTHORIZATION], "Token heltour_secret");
@@ -308,7 +346,7 @@ async fn a_refused_request_keeps_the_previous_watchlist_and_sync_carries_on() {
 
     assert_eq!(syncing.next_watch().await, watching(&["alice", "bob"]));
     eventually("heltour has refused twice", || {
-        syncing.heltour.request_count() >= 6
+        syncing.heltour.pairing_request_count() >= 3
     })
     .await;
     assert!(syncing.told.try_recv().is_err());
@@ -317,7 +355,11 @@ async fn a_refused_request_keeps_the_previous_watchlist_and_sync_carries_on() {
 
 #[tokio::test]
 async fn sync_ends_once_a_follower_has_stopped() {
-    let (_, heltour) = heltour_answering(&[(StatusCode::OK, ALICE_AND_BOB)]).await;
+    let (_, heltour) = heltour_answering(
+        &[(StatusCode::OK, ALICE_AND_BOB)],
+        (StatusCode::OK, NO_TEAM_PAIRINGS),
+    )
+    .await;
     let (sender, _told) = mpsc::unbounded_channel();
     let monitor = Recorder::spawn(Recorder(sender.clone()));
     let stopped = Recorder::spawn(Recorder(sender));
@@ -332,4 +374,80 @@ async fn sync_ends_once_a_follower_has_stopped() {
     );
 
     assert!(tokio::time::timeout(PATIENCE, sync).await.is_ok());
+}
+
+#[tokio::test]
+async fn followers_are_sent_the_team_pairings_with_their_points_and_boards() {
+    let mut syncing = Syncing::start_with_team_pairings(
+        &[(StatusCode::OK, ALICE_AND_BOB)],
+        (StatusCode::OK, KNIGHTS_AND_ROOKS),
+        Duration::from_hours(1),
+    )
+    .await;
+
+    let team = |name: &str| team::DisplayName::try_new(name).unwrap();
+    let board = |number, white: Option<&str>, black, white_team, black_team| Board {
+        number: BoardNumber::new(number),
+        white: white.map(user_id),
+        black: Some(user_id(black)),
+        white_team: team(white_team),
+        black_team: team(black_team),
+        game_link: None,
+        result: None,
+    };
+    assert_eq!(
+        syncing.next().await.1.team_pairings,
+        [
+            TeamPairing {
+                league: tag("classical"),
+                white_team: team("Knights"),
+                white_points: HalfPoints::new(3),
+                black_team: team("Rooks"),
+                black_points: HalfPoints::new(1),
+                boards: vec![
+                    Board {
+                        game_link: Some(Url::parse("https://lichess.org/abcd1234").unwrap()),
+                        result: Some(BoardResult::Draw),
+                        ..board(1, Some("alice"), "bob", "Knights", "Rooks")
+                    },
+                    Board {
+                        result: Some(BoardResult::BlackWonByForfeit),
+                        ..board(2, None, "carol", "Rooks", "Knights")
+                    },
+                    board(3, Some("dave"), "erin", "Knights", "Rooks"),
+                ],
+            },
+            TeamPairing {
+                league: tag("classical"),
+                white_team: team("Bishops"),
+                white_points: HalfPoints::ZERO,
+                black_team: team("Pawns"),
+                black_points: HalfPoints::ZERO,
+                boards: Vec::new(),
+            },
+        ]
+    );
+}
+
+#[tokio::test]
+async fn without_the_team_pairings_followers_are_still_sent_the_leagues_and_pairings() {
+    let mut syncing = Syncing::start_with_team_pairings(
+        &[(StatusCode::OK, ALICE_AND_BOB)],
+        (StatusCode::NOT_FOUND, "Not Found"),
+        Duration::from_hours(1),
+    )
+    .await;
+
+    let (watch, active) = syncing.next().await;
+    assert_eq!(watch, watching(&["alice", "bob"]));
+    assert_eq!(active.leagues.len(), 2);
+    assert_eq!(
+        active.pairings,
+        [Pairing {
+            league: tag("classical"),
+            white: user_id("alice"),
+            black: user_id("bob"),
+        }]
+    );
+    assert_eq!(active.team_pairings, []);
 }

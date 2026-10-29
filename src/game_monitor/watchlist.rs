@@ -34,13 +34,21 @@ pub async fn keep_in_sync(
     refreshes.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop {
         refreshes.tick().await;
-        let active = match heltour.active_leagues(refresh_interval).await {
+        let (active, team_pairings) = tokio::join!(
+            heltour.active_leagues(refresh_interval),
+            heltour.team_pairings(refresh_interval),
+        );
+        let mut active = match active {
             Ok(active) => active,
             Err(error) => {
                 tracing::warn!(error = ?error, "keeping previous watchlist");
                 continue;
             }
         };
+        active.team_pairings = team_pairings.unwrap_or_else(|error| {
+            tracing::warn!(error = ?error, "announcing games without team match context");
+            Vec::new()
+        });
         let user_ids: BTreeSet<_> = active
             .pairings
             .iter()
@@ -48,6 +56,7 @@ pub async fn keep_in_sync(
             .collect();
         tracing::debug!(
             leagues = active.leagues.len(),
+            team_pairings = active.team_pairings.len(),
             players = user_ids.len(),
             "refreshing game monitor watchlist"
         );

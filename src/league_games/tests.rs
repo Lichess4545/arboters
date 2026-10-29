@@ -138,6 +138,7 @@ fn alice_vs_bob_in(league: League) -> ActiveLeagues {
     ActiveLeagues {
         leagues: vec![league],
         pairings: vec![pairing],
+        team_pairings: Vec::new(),
     }
 }
 
@@ -326,6 +327,7 @@ async fn a_game_is_reported_with_its_own_colors_to_each_league_that_pairs_its_pl
             pairing("rapid", "bob", "alice"),
             pairing("blitz", "alice", "bob"),
         ],
+        team_pairings: Vec::new(),
     };
     assert_eq!(
         reports_of(active, vec![GameEvent::Started(game())]).await,

@@ -14,12 +14,19 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 
 ## Heltour pairing and roster adapter
 
-- The watchlist reads heltour's `get_leagues` and `find_pairing`, and the reporter writes `update_pairing`. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
+- The watchlist reads heltour's `get_leagues`, `find_pairing`, and `get_team_pairings`, and the reporter writes `update_pairing`. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
 
 ## Reporting games to heltour
 
 - Not yet ported from Chesster: the warnings about invalid games (the Slack messages and heltour's `game_warning`), and the announcements of game links and results in the league's channels.
 - A valid game's link is reported when it starts. If the game then ends in a way that does not count, such as an abort, the link stays on the pairing, as with Chesster.
+
+## Team match context in announcements
+
+A game whose players sit on exactly one board of a current team pairing is announced with the match score, the other boards in play, and, when it starts, whether it can decide the match. heltour added `get_team_pairings` in `feat/team-pairings-api`. Until that is deployed, every refresh logs a warning and announcements have no team context.
+
+- The score and the boards in play are as heltour had them at the last watchlist refresh. A board is in play when heltour has its game link and no result, so a game started since that refresh is not listed.
+- A finished game's result is added to the score when heltour has no result for its board yet, even when the game does not fit the league's rules and the reporter does not report it.
 
 ## Subscription commands
 

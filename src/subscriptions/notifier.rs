@@ -1,4 +1,5 @@
 mod rendering;
+mod team_match;
 
 use std::collections::BTreeSet;
 
@@ -12,6 +13,7 @@ use crate::heltour::ActiveLeagues;
 
 use super::{SubscriptionSource, Subscriptions};
 use rendering::render;
+use team_match::TeamMatch;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
@@ -53,7 +55,11 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
         if targets.is_empty() {
             return;
         }
-        let notification = render(event);
+        let team_match = self
+            .active
+            .team_board_of(game)
+            .and_then(|(pairing, board)| TeamMatch::of(event, pairing, board));
+        let notification = render(event, team_match.as_ref());
         for target in &targets {
             match self.messenger.send(target, &notification).await {
                 Ok(()) => tracing::debug!(game_id = %game.id, ?target, "notification delivered"),

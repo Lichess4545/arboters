@@ -12,9 +12,11 @@ use crate::lichess;
 use super::active_leagues::ActiveLeagues;
 use super::league::{self, League};
 use super::pairing::Pairing;
+use super::team_pairing::TeamPairing;
 
 const FIND_PAIRING_PATH: &str = "find_pairing/";
 const GET_LEAGUES_PATH: &str = "get_leagues/";
+const GET_TEAM_PAIRINGS_PATH: &str = "get_team_pairings/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -28,6 +30,10 @@ pub struct HeltourSettings {
 #[derive(Debug, thiserror::Error)]
 #[error("could not read the active leagues from heltour")]
 pub struct ActiveLeaguesError(#[from] reqwest::Error);
+
+#[derive(Debug, thiserror::Error)]
+#[error("could not read the team pairings from heltour")]
+pub struct TeamPairingsError(#[from] reqwest::Error);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PairingResult {
@@ -88,6 +94,11 @@ struct GetLeaguesAnswer {
 }
 
 #[derive(Deserialize)]
+struct GetTeamPairingsAnswer {
+    team_pairings: Vec<TeamPairing>,
+}
+
+#[derive(Deserialize)]
 struct UpdatePairingAnswer {
     error: Option<Refusal>,
 }
@@ -97,6 +108,7 @@ pub struct Heltour {
     http: reqwest::Client,
     find_pairing: Url,
     get_leagues: Url,
+    get_team_pairings: Url,
     update_pairing: Url,
     token: Option<SecretString>,
 }
@@ -107,6 +119,7 @@ impl Heltour {
             http,
             find_pairing: settings.base_url.join(FIND_PAIRING_PATH)?,
             get_leagues: settings.base_url.join(GET_LEAGUES_PATH)?,
+            get_team_pairings: settings.base_url.join(GET_TEAM_PAIRINGS_PATH)?,
             update_pairing: settings.base_url.join(UPDATE_PAIRING_PATH)?,
             token: settings.token.clone(),
         })
@@ -134,7 +147,20 @@ impl Heltour {
         Ok(ActiveLeagues {
             leagues: leagues.leagues,
             pairings: pairings.pairings.unwrap_or_default(),
+            team_pairings: Vec::new(),
         })
+    }
+
+    pub async fn team_pairings(
+        &self,
+        timeout: Duration,
+    ) -> Result<Vec<TeamPairing>, TeamPairingsError> {
+        let request = self
+            .http
+            .get(self.get_team_pairings.clone())
+            .timeout(timeout);
+        let answer: GetTeamPairingsAnswer = self.answer(request).await?;
+        Ok(answer.team_pairings)
     }
 
     pub async fn update_pairing(&self, update: &PairingUpdate) -> Result<(), UpdatePairingError> {

@@ -89,6 +89,7 @@ fn active_leagues() -> ActiveLeagues {
             league("blitz960", "Blitz 960", 15),
         ],
         pairings: Vec::new(),
+        team_pairings: Vec::new(),
     }
 }
 
