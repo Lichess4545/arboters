@@ -118,6 +118,7 @@ const CLASSICAL_CLOCK: Clock = Clock {
 fn classical(tag_name: &str) -> League {
     League {
         tag: tag(tag_name),
+        name: league::Name::try_new(tag_name).unwrap(),
         time_control: Some(CLASSICAL_CLOCK),
         variant: Variant::Standard,
         rated: true,

@@ -215,6 +215,7 @@ async fn the_monitor_is_told_every_paired_player_and_followers_the_active_league
                 leagues: vec![
                     League {
                         tag: tag("classical"),
+                        name: league::Name::try_new("Classical League").unwrap(),
                         time_control: Some(Clock {
                             initial_seconds: 2700,
                             increment_seconds: 45,
@@ -224,6 +225,7 @@ async fn the_monitor_is_told_every_paired_player_and_followers_the_active_league
                     },
                     League {
                         tag: tag("rapid"),
+                        name: league::Name::try_new("Rapid Battle").unwrap(),
                         time_control: None,
                         variant: Variant::Chess960,
                         rated: false,

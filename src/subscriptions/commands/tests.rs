@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use super::*;
 use crate::chat::{ChannelName, CommandText, DeliveryError, Role, TopicName};
 use crate::heltour::League;
-use crate::lichess::{self, Variant};
+use crate::lichess::{self, Clock, Variant};
 use crate::subscriptions::{PostgresSubscriptions, Subscription};
 
 const MEMBER: ChatUserId = ChatUserId(10);
@@ -89,14 +89,22 @@ fn league() -> league::Tag {
 }
 
 fn active_leagues() -> ActiveLeagues {
-    let league = |tag| League {
+    let league = |tag, name, minutes| League {
         tag: league::Tag::try_new(tag).unwrap(),
-        time_control: None,
+        name: league::Name::try_new(name).unwrap(),
+        time_control: Some(Clock {
+            initial_seconds: minutes * 60,
+            increment_seconds: minutes,
+        }),
         variant: Variant::Standard,
         rated: true,
     };
     ActiveLeagues {
-        leagues: vec![league("classical"), league("rapid")],
+        leagues: vec![
+            league("classical", "Classical League", 45),
+            league("rapid", "Rapid Battle", 15),
+            league("blitz960", "Blitz 960", 15),
+        ],
         pairings: Vec::new(),
     }
 }
@@ -374,14 +382,14 @@ async fn a_league_heltour_does_not_list_as_active_is_refused(pool: PgPool) {
         bot.last_reply(),
         (
             dm_to(MEMBER),
-            "`blitz` is not an active league. The active leagues are `classical`, `rapid`."
+            "`blitz` is not an active league. The active leagues are `classical`, `rapid`, `blitz960`."
                 .to_owned()
         )
     );
 }
 
 #[sqlx::test]
-async fn a_malformed_tell_is_answered_with_its_usage(pool: PgPool) {
+async fn a_malformed_tell_is_answered_with_its_usage_and_what_it_could_have_been(pool: PgPool) {
     let bot = Bot::start(pool).await;
 
     let handling = bot
@@ -389,12 +397,105 @@ async fn a_malformed_tell_is_answered_with_its_usage(pool: PgPool) {
         .await;
 
     assert_eq!(handling, Handling::Handled);
-    assert!(
-        bot.last_reply()
-            .1
-            .starts_with("Use `tell me when <event> in <league> for <lichess-player>`"),
-        "{:?}",
-        bot.last_reply()
+    assert_eq!(
+        bot.last_reply().1,
+        "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.\n\
+         Try `tell me when a-game-starts in <league> for alice`."
+    );
+}
+
+#[sqlx::test]
+async fn a_wrong_event_is_answered_with_the_command_filled_in_from_the_rest(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.in_topic(
+        MODERATOR,
+        Role::Moderator,
+        "tell here when a game is scheduled in Classical League",
+    )
+    .await;
+
+    assert_eq!(bot.subscriptions_of(MODERATOR).await, []);
+    assert_eq!(
+        bot.last_reply(),
+        (
+            games_topic(),
+            "`<event>` is `a-game-starts` or `a-game-is-over`.\n\
+             Try `tell here when a-game-starts in classical`."
+                .to_owned()
+        )
+    );
+}
+
+#[sqlx::test]
+async fn a_wrong_listener_suggests_the_listener_the_sender_may_use(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.in_topic(MEMBER, Role::Member, "tell this channel when ends in 45+45")
+        .await;
+    bot.in_topic(
+        MODERATOR,
+        Role::Moderator,
+        "tell this channel when ends in 45+45",
+    )
+    .await;
+
+    let replies: Vec<String> = bot.replies().into_iter().map(|(_, reply)| reply).collect();
+    let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
+    assert_eq!(
+        replies,
+        [
+            format!("{listeners}\nTry `tell me when a-game-is-over in classical`."),
+            format!("{listeners}\nTry `tell here when a-game-is-over in classical`."),
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn a_league_named_by_its_name_time_control_or_a_typo_is_subscribed_by_its_tag(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    for text in [
+        "tell me when a game starts in rapid battle for alice",
+        "tell me when a game ends in 45+45 for alice",
+        "tel me wen a game strats in blitz906 for alice",
+    ] {
+        bot.direct(MEMBER, Role::Member, text).await;
+    }
+
+    let described: Vec<String> = bot
+        .subscriptions_of(MEMBER)
+        .await
+        .iter()
+        .map(|subscription| format!("{} {:?}", subscription.league, subscription.event))
+        .collect();
+    assert_eq!(
+        described,
+        [
+            "rapid GameStarted",
+            "classical GameFinished",
+            "blitz960 GameStarted"
+        ]
+    );
+    let id = bot.subscriptions_of(MEMBER).await[2].id;
+    assert_eq!(
+        bot.last_reply().1,
+        format!("Subscription `{id}`: tell you when a-game-starts in blitz960 for alice.")
+    );
+}
+
+#[sqlx::test]
+async fn a_time_control_of_several_leagues_is_answered_with_each_of_them(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    bot.direct(MEMBER, Role::Member, "tell me when a game ends in 15+15")
+        .await;
+
+    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
+    assert_eq!(
+        bot.last_reply().1,
+        "`15+15` could be `rapid` or `blitz960`.\n\
+         Try `tell me when a-game-is-over in rapid` or `tell me when a-game-is-over in blitz960`."
     );
 }
 
@@ -426,7 +527,7 @@ async fn help_lists_the_commands(pool: PgPool) {
         "`subscription remove <id>`",
         "`a-game-starts`",
         "`a-game-is-over`",
-        "The active leagues are `classical`, `rapid`.",
+        "The active leagues are `classical`, `rapid`, `blitz960`.",
         "`tell me when a-game-starts in classical`",
     ] {
         assert!(help.contains(command), "help is missing {command}: {help}");

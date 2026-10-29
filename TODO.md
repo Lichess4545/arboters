@@ -27,6 +27,7 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 
 - Chesster's `my-team-channel` listener, `my-team` and team-name sources, and the `a-game-is-scheduled` and `a-pairing-is-released` events are still missing. They need the heltour roster adapter and pairing events.
 - `tell` accepts any well-formed Lichess username without checking that the player exists or plays in the league.
+- Small typos are corrected in the command words, the event, `here`, and league tags, but not in league names, which must match apart from case and spacing.
 - Zulip flags a message as mentioning the bot when it mentions a user group the bot belongs to, so such a message that is not a command gets the "send `help`" reply.
 
 ## Deployment

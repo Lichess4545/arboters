@@ -23,9 +23,17 @@ fn is_slug(candidate: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, Deref, Display, Deserialize)
+)]
+pub struct Name(String);
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct League {
     pub tag: Tag,
+    pub name: Name,
     pub time_control: Option<lichess::Clock>,
     pub variant: lichess::Variant,
     pub rated: bool,
