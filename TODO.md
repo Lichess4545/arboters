@@ -28,6 +28,15 @@ A game whose players sit on exactly one board of a current team pairing is annou
 - The score and the boards in play are as heltour had them at the last watchlist refresh. A board is in play when heltour has its game link and no result, so a game started since that refresh is not listed.
 - A finished game's result is added to the score when heltour has no result for its board yet, even when the game does not fit the league's rules and the reporter does not report it.
 
+## Board images in announcements
+
+Zulip shows a link as an inline image when its path ends in an image extension such as `.gif`, `.png`, or `.jpg` and the organization has image previews on, and that works in bot messages. Zulip does not build website (Open Graph) previews for bot messages. Source: zulip/zulip `b22d1eddb760`, `zerver/lib/markdown/__init__.py`, line 553 and lines 1144–1148.
+
+- Options: a thumbnail of the current position when a game starts, `https://lichess1.org/game/export/gif/thumbnail/<id>.gif`; the animated game when it finishes, `https://lichess1.org/game/export/gif/<id>.gif`; or live progress by editing the start message with `https://lichess1.org/export/fen.gif?fen=…&lastMove=…`, which needs move tracking.
+- lichess1.org serves these images with `cache-control: max-age=1382400` (16 days), so a thumbnail URL that is used again may show an old position.
+- lichess.org answered a request for the thumbnail with a Cloudflare 403.
+- The routes are in lila's `conf/routes` (lines 519–523 at `898ad2cd`), but they are not part of the documented Lichess API.
+
 ## Subscription commands
 
 `tell me when ...`, `tell here when ...`, `tell #**channel>topic** when ...`, `subscription list`, `subscription remove <id>`, and `help` work over Zulip direct messages and mentions. The bot must be a Zulip **Generic** bot: an incoming webhook bot can only send messages, so it cannot register the event queue the inbox reads.
