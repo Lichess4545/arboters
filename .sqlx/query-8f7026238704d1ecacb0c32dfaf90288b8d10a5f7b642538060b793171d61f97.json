@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id, league, source_kind AS \"source_kind: StoredSourceKind\", source_name,\n                event AS \"event: StoredEvent\", target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE requester_user_id = $1\n            ORDER BY id\n            ",
+  "query": "\n            SELECT\n                id, requester_user_id, league,\n                source_kind AS \"source_kind: StoredSourceKind\", source_name,\n                event AS \"event: StoredEvent\", target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE target_user_id IS NOT DISTINCT FROM $1\n                AND target_channel IS NOT DISTINCT FROM $2\n                AND target_topic IS NOT DISTINCT FROM $3\n            ORDER BY id\n            ",
   "describe": {
     "columns": [
       {
@@ -16,6 +16,17 @@
       },
       {
         "ordinal": 1,
+        "name": "requester_user_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "requester_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
         "name": "league",
         "type_info": "Text",
         "origin": {
@@ -26,7 +37,7 @@
         }
       },
       {
-        "ordinal": 2,
+        "ordinal": 3,
         "name": "source_kind: StoredSourceKind",
         "type_info": {
           "Custom": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "source_name",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "event: StoredEvent",
         "type_info": {
           "Custom": {
@@ -80,7 +91,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "target_user_id",
         "type_info": "Int8",
         "origin": {
@@ -91,7 +102,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "target_channel",
         "type_info": "Text",
         "origin": {
@@ -102,7 +113,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "target_topic",
         "type_info": "Text",
         "origin": {
@@ -115,10 +126,13 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Text",
+        "Text"
       ]
     },
     "nullable": [
+      false,
       false,
       false,
       false,
@@ -129,5 +143,5 @@
       true
     ]
   },
-  "hash": "6c2126a6ee4ad7fbe3569c2ae29b5b7084687895e20e7866ef1086a358885ae5"
+  "hash": "8f7026238704d1ecacb0c32dfaf90288b8d10a5f7b642538060b793171d61f97"
 }

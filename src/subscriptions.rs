@@ -36,6 +36,11 @@ pub trait Subscriptions: Clone + Send + Sync + 'static {
         requester: ChatUserId,
     ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
 
+    fn posting_to(
+        &self,
+        target: &NotificationTarget,
+    ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
+
     fn remove(
         &self,
         id: SubscriptionId,

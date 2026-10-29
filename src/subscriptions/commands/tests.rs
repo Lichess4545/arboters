@@ -103,6 +103,13 @@ fn games_topic() -> NotificationTarget {
     }
 }
 
+fn other_topic() -> NotificationTarget {
+    NotificationTarget::Channel {
+        channel: ChannelName::try_new("chess").unwrap(),
+        topic: TopicName::try_new("other games").unwrap(),
+    }
+}
+
 fn player(name: &str) -> SubscriptionSource {
     SubscriptionSource::Player(lichess::UserId::try_new(name).unwrap())
 }
@@ -281,12 +288,12 @@ async fn tell_me_without_a_player_subscribes_the_sender_to_the_whole_league(pool
 }
 
 #[sqlx::test]
-async fn a_moderator_can_subscribe_the_topic_to_a_player(pool: PgPool) {
+async fn a_member_can_subscribe_the_topic_to_a_player(pool: PgPool) {
     let bot = Bot::start(pool).await;
 
     bot.in_topic(
-        MODERATOR,
-        Role::Moderator,
+        MEMBER,
+        Role::Member,
         "tell here when a-game-starts in classical for alice",
     )
     .await;
@@ -296,38 +303,25 @@ async fn a_moderator_can_subscribe_the_topic_to_a_player(pool: PgPool) {
             .await,
         BTreeSet::from([games_topic()])
     );
-    assert_eq!(bot.last_reply().0, games_topic());
-}
-
-#[sqlx::test]
-async fn a_member_cannot_subscribe_a_topic(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.in_topic(
-        MEMBER,
-        Role::Member,
-        "tell here when a-game-starts in classical",
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
+    let id = bot.subscriptions_of(MEMBER).await[0].id;
     assert_eq!(
         bot.last_reply(),
         (
             games_topic(),
-            "Only moderators can subscribe a topic. Use `tell me` to subscribe yourself."
-                .to_owned()
+            format!(
+                "Subscription `{id}`: tell #**chess>games** when a-game-starts in classical for alice."
+            )
         )
     );
 }
 
 #[sqlx::test]
-async fn a_moderator_can_subscribe_a_topic_named_by_its_link_from_a_direct_message(pool: PgPool) {
+async fn a_member_can_subscribe_a_topic_named_by_its_link_from_a_direct_message(pool: PgPool) {
     let bot = Bot::start(pool).await;
 
     bot.direct(
-        MODERATOR,
-        Role::Moderator,
+        MEMBER,
+        Role::Member,
         "tell #**chess>games** when a-game-starts in classical",
     )
     .await;
@@ -337,29 +331,7 @@ async fn a_moderator_can_subscribe_a_topic_named_by_its_link_from_a_direct_messa
             .await,
         BTreeSet::from([games_topic()])
     );
-    assert_eq!(bot.last_reply().0, dm_to(MODERATOR));
-}
-
-#[sqlx::test]
-async fn a_member_cannot_subscribe_a_topic_named_by_its_link(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell #**chess>games** when a-game-starts in classical",
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MEMBER),
-            "Only moderators can subscribe a topic. Use `tell me` to subscribe yourself."
-                .to_owned()
-        )
-    );
+    assert_eq!(bot.last_reply().0, dm_to(MEMBER));
 }
 
 #[sqlx::test]
@@ -446,25 +418,21 @@ async fn a_wrong_event_is_answered_with_the_command_filled_in_from_the_rest(pool
 }
 
 #[sqlx::test]
-async fn a_wrong_listener_suggests_the_listener_the_sender_may_use(pool: PgPool) {
+async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
     let bot = Bot::start(pool).await;
 
     bot.in_topic(MEMBER, Role::Member, "tell this channel when ends in 45+45")
         .await;
-    bot.in_topic(
-        MODERATOR,
-        Role::Moderator,
-        "tell this channel when ends in 45+45",
-    )
-    .await;
+    bot.direct(MEMBER, Role::Member, "tell this channel when ends in 45+45")
+        .await;
 
     let replies: Vec<String> = bot.replies().into_iter().map(|(_, reply)| reply).collect();
     let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
     assert_eq!(
         replies,
         [
-            format!("{listeners}\nTry `tell me when a-game-is-over in classical`."),
             format!("{listeners}\nTry `tell here when a-game-is-over in classical`."),
+            format!("{listeners}\nTry `tell me when a-game-is-over in classical`."),
         ]
     );
 }
@@ -769,4 +737,165 @@ async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
         bot.last_reply().1,
         format!("Subscription `{id}`: tell you when a-game-starts in rapid.")
     );
+}
+
+async fn subscribed_in_topic(bot: &Bot, requester: ChatUserId) -> SubscriptionId {
+    bot.in_topic(
+        requester,
+        Role::Member,
+        "tell here when a-game-starts in classical for alice",
+    )
+    .await;
+    bot.subscriptions_of(requester).await[0].id
+}
+
+#[sqlx::test]
+async fn anyone_in_a_topic_can_remove_a_subscription_that_posts_there(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let id = subscribed_in_topic(&bot, OTHER_MEMBER).await;
+
+    bot.in_topic(MEMBER, Role::Member, &format!("subscription remove {id}"))
+        .await;
+
+    assert_eq!(bot.subscriptions_of(OTHER_MEMBER).await, []);
+    assert_eq!(
+        bot.last_reply(),
+        (games_topic(), format!("Removed subscription `{id}`."))
+    );
+}
+
+#[sqlx::test]
+async fn a_subscription_that_posts_in_a_topic_cannot_be_removed_by_others_elsewhere(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let id = subscribed_in_topic(&bot, OTHER_MEMBER).await;
+
+    bot.hear(
+        MEMBER,
+        Role::Member,
+        other_topic(),
+        &format!("subscription remove {id}"),
+    )
+    .await;
+    bot.direct(MEMBER, Role::Member, &format!("subscription remove {id}"))
+        .await;
+
+    assert_eq!(bot.subscriptions_of(OTHER_MEMBER).await.len(), 1);
+    assert_eq!(
+        bot.replies()[1..],
+        [
+            (
+                other_topic(),
+                format!(
+                    "No subscription `{id}` is yours or posts in this topic. Use `subscription list` to see the ones here."
+                )
+            ),
+            (
+                dm_to(MEMBER),
+                format!("You have no subscription `{id}`. Use `subscription list` to see yours.")
+            ),
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn a_requester_can_remove_a_topic_subscription_from_anywhere(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let id = subscribed_in_topic(&bot, MEMBER).await;
+
+    bot.hear(
+        MEMBER,
+        Role::Member,
+        other_topic(),
+        &format!("subscription remove {id}"),
+    )
+    .await;
+
+    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
+}
+
+#[sqlx::test]
+async fn subscription_list_in_a_topic_shows_everyone_s_subscriptions_that_post_there(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    let theirs = subscribed_in_topic(&bot, OTHER_MEMBER).await;
+    bot.in_topic(
+        MEMBER,
+        Role::Member,
+        "tell here when a game ends in classical",
+    )
+    .await;
+    let mine = bot.subscriptions_of(MEMBER).await[0].id;
+    bot.in_topic(
+        MEMBER,
+        Role::Member,
+        "tell me when a game ends in classical",
+    )
+    .await;
+    bot.hear(
+        MEMBER,
+        Role::Member,
+        other_topic(),
+        "tell here when a game ends in rapid",
+    )
+    .await;
+
+    bot.in_topic(MEMBER, Role::Member, "subscription list")
+        .await;
+
+    assert_eq!(
+        bot.last_reply(),
+        (
+            games_topic(),
+            format!(
+                "Subscriptions that post in this topic:\n\
+                 - `{theirs}`: tell #**chess>games** when a-game-starts in classical for alice, made by @_**|12**\n\
+                 - `{mine}`: tell #**chess>games** when a-game-is-over in classical"
+            )
+        )
+    );
+}
+
+#[sqlx::test]
+async fn subscription_list_in_a_topic_without_subscriptions_says_so(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+    subscribed(&bot, MEMBER).await;
+
+    bot.in_topic(MEMBER, Role::Member, "subscription list")
+        .await;
+
+    assert_eq!(bot.last_reply().1, "No subscription posts in this topic.");
+}
+
+#[sqlx::test]
+async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
+    let bot = Bot::start(pool).await;
+
+    for (role, reply_to, permissions) in [
+        (
+            Role::Member,
+            games_topic(),
+            "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere.",
+        ),
+        (
+            Role::Member,
+            dm_to(MEMBER),
+            "You can list and remove the subscriptions you made.",
+        ),
+        (
+            Role::Moderator,
+            games_topic(),
+            "You are a moderator, so you can remove any subscription from anywhere.",
+        ),
+        (
+            Role::Moderator,
+            dm_to(MEMBER),
+            "You are a moderator, so you can remove any subscription from anywhere.",
+        ),
+    ] {
+        bot.hear(MEMBER, role, reply_to, "help").await;
+        let help = bot.last_reply().1;
+        assert!(
+            help.ends_with(&format!("\n{permissions}")),
+            "{role:?}: {help}"
+        );
+    }
 }

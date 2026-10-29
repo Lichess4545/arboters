@@ -55,12 +55,12 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         command: Result<Command, Mistake>,
     ) -> String {
         let outcome = match command {
-            Ok(Command::Help) => Ok(self.help()),
+            Ok(Command::Help) => Ok(self.help(message)),
             Ok(Command::Tell(tell)) => match self.request(message, tell) {
                 Ok(subscription) => self.subscribe(message, subscription).await,
                 Err(refusal) => Ok(self.unchanged(message, refusal)),
             },
-            Ok(Command::List) => self.list(message.sender).await,
+            Ok(Command::List) => self.list(message).await,
             Ok(Command::Remove(id)) => self.remove(message, id).await,
             Err(mistake) => Ok(self.unchanged(message, self.explain(message, mistake))),
         };
@@ -94,12 +94,6 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
             },
             Listener::Topic { channel, topic } => NotificationTarget::Channel { channel, topic },
         };
-        if matches!(target, NotificationTarget::Channel { .. }) && !message.role.moderates() {
-            return Err(
-                "Only moderators can subscribe a topic. Use `tell me` to subscribe yourself."
-                    .to_owned(),
-            );
-        }
         Ok(NewSubscription {
             requester: message.sender,
             league,
@@ -146,16 +140,32 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         Ok(format!("Subscription `{id}`: {description}.{replacement}"))
     }
 
-    async fn list(&self, requester: ChatUserId) -> Result<String, SubscriptionsError> {
-        let subscriptions = self.subscriptions.requested_by(requester).await?;
+    async fn list(&self, message: &IncomingMessage) -> Result<String, SubscriptionsError> {
+        let (subscriptions, heading, none) = match listing(message) {
+            Listing::Topic(topic) => (
+                self.subscriptions.posting_to(topic).await?,
+                "Subscriptions that post in this topic:",
+                "No subscription posts in this topic.",
+            ),
+            Listing::Mine(requester) => (
+                self.subscriptions.requested_by(requester).await?,
+                "Your subscriptions:",
+                "You have no subscriptions.",
+            ),
+        };
         if subscriptions.is_empty() {
-            return Ok("You have no subscriptions.".to_owned());
+            return Ok(none.to_owned());
         }
         let lines: Vec<String> = subscriptions
             .iter()
             .map(|subscription| {
+                let made_by = if subscription.requester == message.sender {
+                    String::new()
+                } else {
+                    format!(", made by {}", mention(subscription.requester))
+                };
                 format!(
-                    "- `{}`: {}",
+                    "- `{}`: {}{made_by}",
                     subscription.id,
                     describe(
                         &subscription.league,
@@ -166,7 +176,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 )
             })
             .collect();
-        Ok(format!("Your subscriptions:\n{}", lines.join("\n")))
+        Ok(format!("{heading}\n{}", lines.join("\n")))
     }
 
     async fn remove(
@@ -175,15 +185,37 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         id: SubscriptionId,
     ) -> Result<String, SubscriptionsError> {
         let remover = remover(message);
+        let missing = match &remover {
+            Remover::Moderator => format!("There is no subscription `{id}`."),
+            Remover::Owner {
+                at: NotificationTarget::Channel { .. },
+                ..
+            } => format!(
+                "No subscription `{id}` is yours or posts in this topic. Use `subscription list` to see the ones here."
+            ),
+            Remover::Owner {
+                at: NotificationTarget::DirectMessage { .. },
+                ..
+            } => format!("You have no subscription `{id}`. Use `subscription list` to see yours."),
+        };
         if self.subscriptions.remove(id, remover).await? {
             return Ok(format!("Removed subscription `{id}`."));
         }
-        Ok(match remover {
-            Remover::Moderator => format!("There is no subscription `{id}`."),
-            Remover::Requester(_) => {
-                format!("You have no subscription `{id}`. Use `subscription list` to see yours.")
+        Ok(missing)
+    }
+
+    fn permissions(message: &IncomingMessage) -> &'static str {
+        match (remover(message), listing(message)) {
+            (Remover::Moderator, _) => {
+                "You are a moderator, so you can remove any subscription from anywhere."
             }
-        })
+            (Remover::Owner { .. }, Listing::Topic(_)) => {
+                "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere."
+            }
+            (Remover::Owner { .. }, Listing::Mine(_)) => {
+                "You can list and remove the subscriptions you made."
+            }
+        }
     }
 
     fn active_leagues(&self) -> String {
@@ -213,19 +245,22 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
             .unwrap_or_default()
     }
 
-    fn help(&self) -> String {
+    fn help(&self, message: &IncomingMessage) -> String {
         format!(
             "I know these commands:\n\
              - `tell me when <event> in <league>` sends you a direct message about every game in the league.\n\
              - `tell here when <event> in <league>` posts about every game in the topic where you send it.\n\
              - `tell #**channel>topic** when <event> in <league>` posts about every game in that topic. To write the link, type `#` and pick the topic.\n\
              - Add `for <lichess-player>` to the end of a `tell` command to hear about one player's games only.\n\
-             - `subscription list` lists your subscriptions and their ids.\n\
-             - `subscription remove <id>` removes one of your subscriptions. Moderators can remove anyone's.\n\
+             - `subscription list` lists the subscriptions that post in the topic where you send it. In a direct message, it lists the ones you made.\n\
+             - `subscription remove <id>` removes a subscription.\n\
              \n\
-             Only moderators can subscribe a topic. `<event>` is `{STARTS}` or `{IS_OVER}`, and plain words such as `a game ends` work too. `<league>` is a league's tag, name, or time control. {}{}",
+             Subscriptions that post in a topic belong to everyone in that topic: anyone can list or remove them by sending the command there.\n\
+             `<event>` is `{STARTS}` or `{IS_OVER}`, and plain words such as `a game ends` work too. `<league>` is a league's tag, name, or time control. {}{}\n\
+             {}",
             self.active_leagues(),
-            self.example()
+            self.example(),
+            Self::permissions(message)
         )
     }
 
@@ -305,12 +340,31 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 }
 
-const fn remover(message: &IncomingMessage) -> Remover {
+enum Listing<'a> {
+    Topic(&'a NotificationTarget),
+    Mine(ChatUserId),
+}
+
+const fn listing(message: &IncomingMessage) -> Listing<'_> {
+    match &message.reply_to {
+        topic @ NotificationTarget::Channel { .. } => Listing::Topic(topic),
+        NotificationTarget::DirectMessage { .. } => Listing::Mine(message.sender),
+    }
+}
+
+fn remover(message: &IncomingMessage) -> Remover {
     if message.role.moderates() {
         Remover::Moderator
     } else {
-        Remover::Requester(message.sender)
+        Remover::Owner {
+            user: message.sender,
+            at: message.reply_to.clone(),
+        }
     }
+}
+
+fn mention(user: ChatUserId) -> String {
+    format!("@_**|{}**", user.0)
 }
 
 fn suggestion(
@@ -326,10 +380,8 @@ fn suggestion(
             format!("#**{}>{}**", channel.as_str(), topic.as_str())
         }
         None => match message.reply_to {
-            NotificationTarget::Channel { .. } if message.role.moderates() => "here".to_owned(),
-            NotificationTarget::Channel { .. } | NotificationTarget::DirectMessage { .. } => {
-                "me".to_owned()
-            }
+            NotificationTarget::Channel { .. } => "here".to_owned(),
+            NotificationTarget::DirectMessage { .. } => "me".to_owned(),
         },
     };
     let event = match draft.event {
