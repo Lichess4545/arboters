@@ -1,6 +1,8 @@
 use nutype::nutype;
 use serde::Deserialize;
 
+use crate::lichess;
+
 /// ```
 /// use arboters::heltour::league::Tag;
 ///
@@ -24,6 +26,9 @@ fn is_slug(candidate: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct League {
     pub tag: Tag,
+    pub time_control: Option<lichess::Clock>,
+    pub variant: lichess::Variant,
+    pub rated: bool,
 }
 
 #[cfg(test)]
