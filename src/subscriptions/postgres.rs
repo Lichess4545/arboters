@@ -124,6 +124,36 @@ impl StoredTarget {
     }
 }
 
+struct StoredSubscription {
+    id: i64,
+    requester_user_id: i64,
+    league: String,
+    source_kind: StoredSourceKind,
+    source_name: String,
+    event: StoredEvent,
+    target_user_id: Option<i64>,
+    target_channel: Option<String>,
+    target_topic: Option<String>,
+}
+
+impl StoredSubscription {
+    fn into_subscription(self) -> Result<Subscription, sqlx::Error> {
+        let target = StoredTarget {
+            user_id: self.target_user_id,
+            channel: self.target_channel,
+            topic: self.target_topic,
+        };
+        Ok(Subscription {
+            id: SubscriptionId(self.id),
+            requester: ChatUserId(u64::try_from(self.requester_user_id).map_err(undecodable)?),
+            league: league::Tag::try_new(&self.league).map_err(undecodable)?,
+            source: source_from(self.source_kind, &self.source_name)?,
+            event: self.event.into(),
+            target: target.into_target()?,
+        })
+    }
+}
+
 impl Subscriptions for PostgresSubscriptions {
     async fn subscribe(
         &self,
@@ -197,10 +227,12 @@ impl Subscriptions for PostgresSubscriptions {
         &self,
         requester: ChatUserId,
     ) -> Result<Vec<Subscription>, SubscriptionsError> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query_as!(
+            StoredSubscription,
             r#"
             SELECT
-                id, league, source_kind AS "source_kind: StoredSourceKind", source_name,
+                id, requester_user_id, league,
+                source_kind AS "source_kind: StoredSourceKind", source_name,
                 event AS "event: StoredEvent", target_user_id, target_channel, target_topic
             FROM subscriptions
             WHERE requester_user_id = $1
@@ -210,22 +242,40 @@ impl Subscriptions for PostgresSubscriptions {
         )
         .fetch_all(&self.pool)
         .await?;
-        let mut subscriptions = Vec::with_capacity(rows.len());
-        for row in rows {
-            let target = StoredTarget {
-                user_id: row.target_user_id,
-                channel: row.target_channel,
-                topic: row.target_topic,
-            };
-            subscriptions.push(Subscription {
-                id: SubscriptionId(row.id),
-                league: league::Tag::try_new(&row.league).map_err(undecodable)?,
-                source: source_from(row.source_kind, &row.source_name)?,
-                event: row.event.into(),
-                target: target.into_target()?,
-            });
-        }
-        Ok(subscriptions)
+        Ok(rows
+            .into_iter()
+            .map(StoredSubscription::into_subscription)
+            .collect::<Result<_, _>>()?)
+    }
+
+    async fn posting_to(
+        &self,
+        target: &NotificationTarget,
+    ) -> Result<Vec<Subscription>, SubscriptionsError> {
+        let target = StoredTarget::from_target(target)?;
+        let rows = sqlx::query_as!(
+            StoredSubscription,
+            r#"
+            SELECT
+                id, requester_user_id, league,
+                source_kind AS "source_kind: StoredSourceKind", source_name,
+                event AS "event: StoredEvent", target_user_id, target_channel, target_topic
+            FROM subscriptions
+            WHERE target_user_id IS NOT DISTINCT FROM $1
+                AND target_channel IS NOT DISTINCT FROM $2
+                AND target_topic IS NOT DISTINCT FROM $3
+            ORDER BY id
+            "#,
+            target.user_id,
+            target.channel,
+            target.topic,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(StoredSubscription::into_subscription)
+            .collect::<Result<_, _>>()?)
     }
 
     async fn remove(
@@ -233,17 +283,38 @@ impl Subscriptions for PostgresSubscriptions {
         id: SubscriptionId,
         remover: Remover,
     ) -> Result<bool, SubscriptionsError> {
-        let requester = match remover {
-            Remover::Requester(requester) => Some(stored_user_id(requester)?),
-            Remover::Moderator => None,
+        let (owner, at) = match &remover {
+            Remover::Owner { user, at } => {
+                (Some(stored_user_id(*user)?), StoredTarget::from_target(at)?)
+            }
+            Remover::Moderator => (
+                None,
+                StoredTarget {
+                    user_id: None,
+                    channel: None,
+                    topic: None,
+                },
+            ),
         };
         let deleted = sqlx::query!(
             r#"
             DELETE FROM subscriptions
-            WHERE id = $1 AND ($2::BIGINT IS NULL OR requester_user_id = $2)
+            WHERE id = $1
+                AND (
+                    $2::BIGINT IS NULL
+                    OR requester_user_id = $2
+                    OR (
+                        target_user_id IS NOT DISTINCT FROM $3::BIGINT
+                        AND target_channel IS NOT DISTINCT FROM $4::TEXT
+                        AND target_topic IS NOT DISTINCT FROM $5::TEXT
+                    )
+                )
             "#,
             id.0,
-            requester,
+            owner,
+            at.user_id,
+            at.channel,
+            at.topic,
         )
         .execute(&self.pool)
         .await?;

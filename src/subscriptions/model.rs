@@ -33,14 +33,18 @@ pub struct NewSubscription {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Subscription {
     pub id: SubscriptionId,
+    pub requester: ChatUserId,
     pub league: league::Tag,
     pub source: SubscriptionSource,
     pub event: GameEventKind,
     pub target: NotificationTarget,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Remover {
-    Requester(ChatUserId),
+    Owner {
+        user: ChatUserId,
+        at: NotificationTarget,
+    },
     Moderator,
 }
