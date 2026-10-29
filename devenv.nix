@@ -48,23 +48,6 @@ in
   scripts.db-prepare.exec = ''cd "$DEVENV_ROOT" && SQLX_OFFLINE=false cargo sqlx prepare -- --all-targets'';
   scripts.db-reset.exec = ''sqlx database reset -y --source "$DEVENV_ROOT/migrations"'';
 
-  scripts.subscribe.exec = ''
-    set -eu
-    if [ $# -ne 3 ] || ! [[ "$1" =~ ^[A-Za-z0-9_-]{2,30}$ ]]; then
-      echo "usage: subscribe <lichess-user> <zulip-channel> <zulip-topic>" >&2
-      exit 2
-    fi
-    psql "$DATABASE_URL" -q -v ON_ERROR_STOP=1 -v league="$ARBOTERS_LEAGUE" -v player="$1" -v channel="$2" -v topic="$3" <<'SQL'
-    INSERT INTO subscriptions (requester_user_id, league, source_kind, source_name, event, target_channel, target_topic)
-    SELECT 0, :'league', 'player', lower(:'player'), event, trim(:'channel'), trim(:'topic')
-    FROM unnest(enum_range(NULL::subscription_event)) AS event
-    ON CONFLICT DO NOTHING;
-    SELECT id, source_name AS player, event, target_channel AS channel, target_topic AS topic
-    FROM subscriptions
-    ORDER BY id;
-    SQL
-  '';
-
   scripts.run-on-zulip.exec = ''
     set -eu
     cd "$DEVENV_ROOT"

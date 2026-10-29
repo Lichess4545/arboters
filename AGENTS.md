@@ -50,7 +50,6 @@ Run everything inside `devenv shell`.
 - `devenv up` starts the surrounding services (Postgres). It never starts arboters; run that yourself.
 - `bacon` runs `check`, `clippy`, `test`, or `run`. Switch jobs with `c`, `t`, and `r`.
 - `db-migrate`, `db-new-migration <name>`, `db-reset`
-- `subscribe <lichess-user> <zulip-channel> <zulip-topic>` subscribes a Zulip topic to a player's started and finished games in the local database.
 - `run-on-zulip` runs migrations, then arboters with its secrets from secretspec. Start the services first with `devenv up -d`. The first run prompts for missing secrets and saves them through your secretspec provider.
 - `db-prepare` regenerates `.sqlx/` after any query or schema change. Builds use `SQLX_OFFLINE=true`.
 - `devenv test` runs fmt, clippy (`-D warnings`), nextest, and the doc tests.
