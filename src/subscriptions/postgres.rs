@@ -2,13 +2,11 @@ use std::collections::BTreeSet;
 
 use sqlx::PgPool;
 
+use crate::chat::{ChannelName, ChatUserId, NotificationTarget, TopicName};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::league;
 
-use super::model::{
-    ChannelName, ChatUserId, NewSubscription, NotificationTarget, SubscriptionId,
-    SubscriptionSource, TopicName,
-};
+use super::model::{NewSubscription, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
 
 #[derive(Clone, Debug)]

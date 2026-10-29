@@ -9,9 +9,10 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
+use crate::chat::{LoggingMessenger, Messenger};
 use crate::game_monitor::watchlist::{self, Heltour};
 use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
-use crate::notifications::{LoggingMessenger, Messenger, Notifier};
+use crate::notifications::Notifier;
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::PostgresSubscriptions;
 use crate::zulip::ZulipMessenger;
