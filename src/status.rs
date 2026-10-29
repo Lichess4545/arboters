@@ -9,9 +9,10 @@ use serde::Deserialize;
 use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::chat::{
+    ChannelName, Messenger, Notification, NotificationTarget, TopicName, TopicNameError,
+};
 use crate::game_monitor::StreamConnected;
-use crate::notifications::{Messenger, Notification};
-use crate::subscriptions::{ChannelName, NotificationTarget, TopicName, TopicNameError};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");

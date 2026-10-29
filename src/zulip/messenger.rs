@@ -5,8 +5,7 @@ use zulip_api::response::{ApiResult, ErrorCode, Response as _};
 use zulip_api::send_message;
 use zulip_api::{MessageTo, MessageType};
 
-use crate::notifications::{DeliveryError, Messenger, Notification};
-use crate::subscriptions::NotificationTarget;
+use crate::chat::{DeliveryError, Messenger, Notification, NotificationTarget};
 
 use super::settings::ZulipSettings;
 

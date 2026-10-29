@@ -5,11 +5,11 @@ use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 
+use crate::chat::Messenger;
 use crate::game_monitor::GameEvent;
 use crate::heltour::CurrentPairings;
 use crate::subscriptions::{SubscriptionSource, Subscriptions};
 
-use super::messenger::Messenger;
 use super::rendering::render;
 
 #[derive(Debug)]

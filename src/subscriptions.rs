@@ -1,15 +1,13 @@
 use std::collections::BTreeSet;
 
+use crate::chat::NotificationTarget;
 use crate::game_monitor::GameEventKind;
 use crate::heltour::league;
 
 mod model;
 mod postgres;
 
-pub use model::{
-    ChannelName, ChatUserId, NewSubscription, NotificationTarget, SubscriptionId,
-    SubscriptionSource, TopicName, TopicNameError,
-};
+pub use model::{NewSubscription, SubscriptionId, SubscriptionSource};
 pub use postgres::PostgresSubscriptions;
 
 #[derive(Debug, thiserror::Error)]

@@ -1,7 +1,6 @@
-use crate::subscriptions::NotificationTarget;
-
 use super::messenger::{DeliveryError, Messenger};
-use super::rendering::Notification;
+use super::notification::Notification;
+use super::target::NotificationTarget;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LoggingMessenger;

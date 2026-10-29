@@ -9,10 +9,10 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
 use super::*;
+use crate::chat::{ChannelName, ChatUserId, TopicName};
 use crate::game_monitor::GameEvent;
 use crate::lichess::{self, Game, GameId, Player, Speed};
 use crate::notifications::render;
-use crate::subscriptions::{ChannelName, ChatUserId, TopicName};
 use crate::zulip::BotEmail;
 
 type CapturedForms = Arc<Mutex<Vec<BTreeMap<String, String>>>>;

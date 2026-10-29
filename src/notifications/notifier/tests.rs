@@ -4,13 +4,11 @@ use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
+use crate::chat::{ChatUserId, DeliveryError, Notification, NotificationTarget};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed};
-use crate::notifications::{DeliveryError, Notification};
-use crate::subscriptions::{
-    ChatUserId, NewSubscription, NotificationTarget, PostgresSubscriptions,
-};
+use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
