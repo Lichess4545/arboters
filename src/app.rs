@@ -10,7 +10,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::game_monitor::watchlist::{self, Heltour};
-use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenHealth, http_client};
+use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
 use crate::notifications::{LoggingMessenger, Messenger, Notifier};
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::PostgresSubscriptions;
@@ -40,10 +40,10 @@ async fn run_with<M: Messenger + Clone>(
     let heltour = Heltour::new(http.clone(), &config.heltour)?;
     let (token_check, lichess_token) = match &config.lichess.token {
         Some(token) => {
-            let (check, health) = TokenCheck::new(http, &config.lichess, token.clone())?;
-            (Some(check), health)
+            let (check, state) = TokenCheck::new(http, &config.lichess, token.clone())?;
+            (Some(check), state)
         }
-        None => (None, watch::channel(TokenHealth::Usable).1),
+        None => (None, watch::channel(TokenState::Untested).1),
     };
     let status = Status::new(messenger.clone(), config.status.clone())?;
 
@@ -59,6 +59,7 @@ async fn run_with<M: Messenger + Clone>(
         config.lichess.stream.clone(),
         notifier.clone().recipient(),
         status.clone().recipient(),
+        lichess_token.clone(),
     ));
     let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
         heltour,

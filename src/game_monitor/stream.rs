@@ -14,13 +14,16 @@ use crate::lichess::{Game, UserId};
 
 use super::event::{GameEvent, GameOutcome};
 use super::settings::LichessSettings;
+use super::token_check::TokenState;
 
 mod json;
 
 const GAMES_BY_USERS_PATH: &str = "api/stream/games-by-users";
 const MAX_LINE_BYTES: usize = 64 * 1024;
 const ANONYMOUS_USERS_PER_CONNECTION: usize = 300;
+const TOKEN_USERS_PER_CONNECTION: usize = 500;
 const LICHESS4545_USERS_PER_CONNECTION: usize = 900;
+const LICHESS4545: &str = "lichess4545";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GamePhase {
@@ -87,7 +90,6 @@ pub struct LichessStream {
     endpoint: Url,
     token: Option<SecretString>,
     inactivity_timeout: Duration,
-    users_per_connection: usize,
 }
 
 impl LichessStream {
@@ -97,17 +99,18 @@ impl LichessStream {
             endpoint: settings.base_url.join(GAMES_BY_USERS_PATH)?,
             token: settings.token.clone(),
             inactivity_timeout: settings.stream.inactivity_timeout,
-            users_per_connection: if settings.token.is_some() {
-                LICHESS4545_USERS_PER_CONNECTION
-            } else {
-                ANONYMOUS_USERS_PER_CONNECTION
-            },
         })
     }
 
     #[must_use]
-    pub const fn users_per_connection(&self) -> usize {
-        self.users_per_connection
+    pub fn users_per_connection(&self, token: &TokenState) -> usize {
+        match (&self.token, token) {
+            (None, _) => ANONYMOUS_USERS_PER_CONNECTION,
+            (Some(_), TokenState::Valid { owner }) if owner.as_str() == LICHESS4545 => {
+                LICHESS4545_USERS_PER_CONNECTION
+            }
+            (Some(_), _) => TOKEN_USERS_PER_CONNECTION,
+        }
     }
 
     async fn open(&self, user_ids: &[UserId]) -> Result<reqwest::Response, FeedError> {

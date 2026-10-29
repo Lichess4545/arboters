@@ -14,7 +14,7 @@ pub use event::{GameEvent, GameEventKind, GameOutcome};
 pub use monitor::GameMonitor;
 pub use settings::LichessSettings;
 pub use stream::LichessStream;
-pub use token_check::{TokenCheck, TokenHealth};
+pub use token_check::{TokenCheck, TokenState};
 
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),

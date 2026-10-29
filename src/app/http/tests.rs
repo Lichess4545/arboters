@@ -15,10 +15,10 @@ fn database_at(address: SocketAddr) -> PgPool {
 }
 
 async fn status(pool: PgPool, path: &str) -> StatusCode {
-    status_with_token(pool, TokenHealth::Usable, path).await
+    status_with_token(pool, TokenState::Untested, path).await
 }
 
-async fn status_with_token(pool: PgPool, lichess_token: TokenHealth, path: &str) -> StatusCode {
+async fn status_with_token(pool: PgPool, lichess_token: TokenState, path: &str) -> StatusCode {
     let request = Request::get(path).body(Body::empty()).unwrap();
     router(pool, TIMEOUT, watch::channel(lichess_token).1)
         .oneshot(request)
@@ -37,10 +37,10 @@ async fn livez_is_ok_while_the_database_is_unreachable() {
 }
 
 #[tokio::test]
-async fn livez_fails_once_the_lichess_token_is_unusable() {
+async fn livez_fails_once_lichess_reports_the_token_invalid() {
     let closed_port = SocketAddr::from(([127, 0, 0, 1], 1));
     assert_eq!(
-        status_with_token(database_at(closed_port), TokenHealth::Unusable, "/livez").await,
+        status_with_token(database_at(closed_port), TokenState::Invalid, "/livez").await,
         StatusCode::SERVICE_UNAVAILABLE
     );
 }

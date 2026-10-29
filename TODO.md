@@ -8,7 +8,7 @@ Subscriptions are league-scoped and their source is a player or a team. The noti
 
 ## Pairings split across stream connections
 
-`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The watchlist is both players of every current heltour pairing, so that holds, but the game monitor splits the watchlist into connections of up to 900 users with the lichess4545 token, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither.
+`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The watchlist is both players of every current heltour pairing, so that holds, but the game monitor splits the watchlist into connections of up to 900 users with a token of lichess4545, 500 with a token of any other account, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither.
 
 - Chunk by pairing, so both players of a pairing share a connection, or stream the pairings' game ids through `/api/stream/games/{streamId}` (1000 ids authenticated, more can be added while open).
 - The watchlist covers only `ARBOTERS_LEAGUE`. Chesster watches the pairings of every league.

@@ -4,6 +4,7 @@ use std::convert::Infallible;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
+use tokio::sync::watch;
 
 use crate::lichess;
 
@@ -11,6 +12,7 @@ use super::connection::Connection;
 use super::event::GameEvent;
 use super::settings::StreamSettings;
 use super::stream::{GameObservation, LichessStream};
+use super::token_check::TokenState;
 use super::{StreamConnected, Watch};
 
 #[derive(Debug)]
@@ -19,7 +21,9 @@ pub struct GameMonitor {
     settings: StreamSettings,
     listener: Recipient<GameEvent>,
     connected: Recipient<StreamConnected>,
+    token: watch::Receiver<TokenState>,
     watched: BTreeSet<lichess::UserId>,
+    users_per_connection: usize,
     connections: Vec<Connection>,
 }
 
@@ -30,13 +34,16 @@ impl GameMonitor {
         settings: StreamSettings,
         listener: Recipient<GameEvent>,
         connected: Recipient<StreamConnected>,
+        token: watch::Receiver<TokenState>,
     ) -> Self {
         Self {
             stream,
             settings,
             listener,
             connected,
+            token,
             watched: BTreeSet::new(),
+            users_per_connection: 0,
             connections: Vec::new(),
         }
     }
@@ -46,7 +53,7 @@ impl GameMonitor {
         let observations = monitor.clone().recipient::<GameObservation>().downgrade();
         let user_ids: Vec<_> = self.watched.iter().cloned().collect();
         self.connections = user_ids
-            .chunks(self.stream.users_per_connection())
+            .chunks(self.users_per_connection)
             .map(|chunk| {
                 Connection::open(
                     self.stream.clone(),
@@ -59,6 +66,7 @@ impl GameMonitor {
             .collect();
         tracing::info!(
             users = self.watched.len(),
+            users_per_connection = self.users_per_connection,
             connections = self.connections.len(),
             "watching lichess users"
         );
@@ -81,11 +89,13 @@ impl Message<Watch> for GameMonitor {
     type Reply = ();
 
     async fn handle(&mut self, Watch(user_ids): Watch, ctx: &mut Context<Self, Self::Reply>) {
-        if user_ids == self.watched {
+        let users_per_connection = self.stream.users_per_connection(&self.token.borrow());
+        if user_ids == self.watched && users_per_connection == self.users_per_connection {
             tracing::debug!(users = user_ids.len(), "watchlist unchanged");
             return;
         }
         self.watched = user_ids;
+        self.users_per_connection = users_per_connection;
         self.reconnect(ctx.actor_ref());
     }
 }

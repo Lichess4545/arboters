@@ -10,7 +10,7 @@ use sqlx::{Connection, PgPool};
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
-use crate::game_monitor::TokenHealth;
+use crate::game_monitor::TokenState;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -42,13 +42,13 @@ impl HttpSettings {
 struct Probes {
     pool: PgPool,
     readiness_timeout: Duration,
-    lichess_token: watch::Receiver<TokenHealth>,
+    lichess_token: watch::Receiver<TokenState>,
 }
 
 pub fn router(
     pool: PgPool,
     readiness_timeout: Duration,
-    lichess_token: watch::Receiver<TokenHealth>,
+    lichess_token: watch::Receiver<TokenState>,
 ) -> Router {
     Router::new()
         .route("/livez", get(liveness))
@@ -77,13 +77,11 @@ pub async fn serve(
 }
 
 async fn liveness(State(probes): State<Probes>) -> StatusCode {
-    let lichess_token = *probes.lichess_token.borrow();
-    match lichess_token {
-        TokenHealth::Usable => StatusCode::OK,
-        TokenHealth::Unusable => {
-            tracing::warn!("liveness probe failed: the lichess token is unusable");
-            StatusCode::SERVICE_UNAVAILABLE
-        }
+    if *probes.lichess_token.borrow() == TokenState::Invalid {
+        tracing::warn!("liveness probe failed: lichess reports the token invalid");
+        StatusCode::SERVICE_UNAVAILABLE
+    } else {
+        StatusCode::OK
     }
 }
 

@@ -153,3 +153,43 @@ fn a_created_game_is_not_an_event() {
     };
     assert_eq!(created.into_event(), None);
 }
+
+fn stream_with_token(token: Option<&str>) -> LichessStream {
+    let settings = LichessSettings {
+        token: token.map(SecretString::from),
+        ..LichessSettings::default()
+    };
+    LichessStream::new(http_client().unwrap(), &settings).unwrap()
+}
+
+fn owned_by(name: &str) -> TokenState {
+    TokenState::Valid {
+        owner: UserId::try_new(name).unwrap(),
+    }
+}
+
+#[test]
+fn without_a_token_a_connection_watches_up_to_300_users() {
+    let stream = stream_with_token(None);
+    assert_eq!(stream.users_per_connection(&TokenState::Untested), 300);
+}
+
+#[test]
+fn with_a_token_not_known_to_be_lichess4545s_a_connection_watches_up_to_500_users() {
+    let stream = stream_with_token(Some("lip_secret"));
+    let tokens = [
+        TokenState::Untested,
+        TokenState::Invalid,
+        owned_by("arbiter"),
+    ];
+    assert_eq!(
+        tokens.map(|token| stream.users_per_connection(&token)),
+        [500; 3]
+    );
+}
+
+#[test]
+fn with_lichess4545s_token_a_connection_watches_up_to_900_users() {
+    let stream = stream_with_token(Some("lip_secret"));
+    assert_eq!(stream.users_per_connection(&owned_by("lichess4545")), 900);
+}
