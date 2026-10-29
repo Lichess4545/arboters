@@ -4,7 +4,9 @@ use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
-use crate::chat::{ChatUserId, DeliveryError, Notification, NotificationTarget};
+use crate::chat::{
+    ChannelName, ChatUserId, DeliveryError, Notification, NotificationTarget, TopicName,
+};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed};
@@ -209,5 +211,47 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
         )
         .await,
         vec![(direct_message(8), render(&GameEvent::Started(game())))]
+    );
+}
+
+fn games_topic() -> NotificationTarget {
+    NotificationTarget::Channel {
+        channel: ChannelName::try_new("chess").unwrap(),
+        topic: TopicName::try_new("games").unwrap(),
+    }
+}
+
+fn league_wide(tag: &str, target: NotificationTarget) -> NewSubscription {
+    NewSubscription {
+        source: SubscriptionSource::League,
+        ..subscription(tag, "alice", GameEventKind::GameStarted, target)
+    }
+}
+
+#[sqlx::test]
+async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
+    let notification = render(&GameEvent::Started(game()));
+    assert_eq!(
+        deliveries(
+            pool,
+            [
+                league_wide("classical", direct_message(7)),
+                league_wide("rapid", direct_message(8)),
+                league_wide("classical", games_topic()),
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    games_topic()
+                ),
+            ],
+            paired_in("classical", "alice", "bob"),
+            RecordingMessenger::default(),
+        )
+        .await,
+        vec![
+            (direct_message(7), notification.clone()),
+            (games_topic(), notification),
+        ]
     );
 }

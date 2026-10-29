@@ -31,14 +31,15 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let players = game
+        let [white, black] = game
             .user_ids()
             .map(|user_id| SubscriptionSource::Player(user_id.clone()));
+        let sources = [white, black, SubscriptionSource::League];
         let mut targets = BTreeSet::new();
         for league in self.pairings.leagues_of(game) {
             match self
                 .subscriptions
-                .targets_for(league, event.kind(), &players)
+                .targets_for(league, event.kind(), &sources)
                 .await
             {
                 Ok(found) => targets.extend(found),

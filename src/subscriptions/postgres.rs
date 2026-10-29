@@ -42,12 +42,17 @@ impl From<GameEventKind> for StoredEvent {
 enum StoredSourceKind {
     Player,
     Team,
+    League,
 }
 
-fn stored_source(source: &SubscriptionSource) -> (StoredSourceKind, &str) {
+fn stored_source<'a>(
+    source: &'a SubscriptionSource,
+    league: &'a league::Tag,
+) -> (StoredSourceKind, &'a str) {
     match source {
         SubscriptionSource::Player(user_id) => (StoredSourceKind::Player, user_id.as_str()),
         SubscriptionSource::Team(team) => (StoredSourceKind::Team, team.as_str()),
+        SubscriptionSource::League => (StoredSourceKind::League, league.as_str()),
     }
 }
 
@@ -102,7 +107,7 @@ impl Subscriptions for PostgresSubscriptions {
         &self,
         subscription: NewSubscription,
     ) -> Result<SubscriptionId, SubscriptionsError> {
-        let (source_kind, source_name) = stored_source(&subscription.source);
+        let (source_kind, source_name) = stored_source(&subscription.source, &subscription.league);
         let target = StoredTarget::from_target(&subscription.target)?;
         let id = sqlx::query_scalar!(
             r#"
@@ -140,7 +145,7 @@ impl Subscriptions for PostgresSubscriptions {
     ) -> Result<BTreeSet<NotificationTarget>, SubscriptionsError> {
         let mut targets = BTreeSet::new();
         for source in sources {
-            let (source_kind, source_name) = stored_source(source);
+            let (source_kind, source_name) = stored_source(source, league);
             let rows = sqlx::query!(
                 r#"
                 SELECT target_user_id, target_channel, target_topic

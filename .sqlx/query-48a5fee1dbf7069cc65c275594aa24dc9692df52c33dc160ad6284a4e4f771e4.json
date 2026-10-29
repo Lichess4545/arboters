@@ -25,7 +25,8 @@
             "kind": {
               "Enum": [
                 "player",
-                "team"
+                "team",
+                "league"
               ]
             }
           }
