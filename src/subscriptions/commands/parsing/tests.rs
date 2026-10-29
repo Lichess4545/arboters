@@ -99,6 +99,21 @@ fn events_can_be_written_in_plain_words() {
 }
 
 #[test]
+fn a_mention_with_a_user_id_names_that_user() {
+    for mention in ["@**Alice Smith|23**", "@_**Alice Smith|23**", "@_**|23**"] {
+        assert_eq!(
+            told(&format!("tell {mention} when ends in classical")).listener,
+            Listener::User(ChatUserId(23)),
+            "{mention}"
+        );
+    }
+    assert_eq!(
+        mistake("tell @**Alice Smith** when ends in classical").0,
+        Problem::Person
+    );
+}
+
+#[test]
 fn here_can_also_be_written_this_topic_or_us() {
     for listener in ["here", "this topic", "us", "This Topic"] {
         assert_eq!(

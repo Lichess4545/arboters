@@ -31,6 +31,7 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 - An edit of a message that did not address the bot when it was sent is ignored, and an edit that also moves the message to another topic answers for the topic it was sent in.
 - Small typos are corrected in the command words, the event, `here`, and league tags, but not in league names, which must match apart from case and spacing.
 - A list shows who made each subscription with Zulip's silent mention by user id, `@_**|id**`, because the subscriptions store only the id.
+- `tell @**user**` needs the user's id. The inbox adds it to a mention by name alone when exactly one active user has that name, and it reads the whole user list from Zulip for each message with such a mention.
 - `tell #**channel>topic**` does not check that the bot can post in that topic. A failed post is logged with its channel and topic.
 - Zulip flags a message as mentioning the bot when it mentions a user group the bot belongs to, so such a message that is not a command gets the "send `help`" reply.
 

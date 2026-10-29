@@ -1,6 +1,6 @@
 use nutype::nutype;
 
-use crate::chat::{ChannelName, TopicName};
+use crate::chat::{ChannelName, ChatUserId, TopicName};
 use crate::game_monitor::GameEventKind;
 use crate::lichess;
 use crate::subscriptions::SubscriptionId;
@@ -57,6 +57,7 @@ pub enum Listener {
         channel: ChannelName,
         topic: TopicName,
     },
+    User(ChatUserId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +65,7 @@ pub enum Problem {
     Wording,
     Listener,
     TopicLink,
+    Person,
     Event,
     League,
     Player,
@@ -79,6 +81,8 @@ pub enum Mistake {
 pub const STARTS: &str = "a-game-starts";
 pub const IS_OVER: &str = "a-game-is-over";
 const TOPIC_LINK: &str = "#**";
+const MENTION: &str = "@**";
+const SILENT_MENTION: &str = "@_**";
 
 const ARTICLES: [&str; 2] = ["a", "the"];
 const EVENT_WORDS: [&str; 7] = ["game", "starts", "begins", "is", "over", "ends", "finishes"];
@@ -105,7 +109,8 @@ enum Verb {
 }
 
 pub fn parse(text: &str) -> Option<Result<Command, Mistake>> {
-    let (text, link) = take_topic_link(text);
+    let (text, link) = take_enclosed(text, TOPIC_LINK);
+    let (text, mention) = take_enclosed(&text.replacen(SILENT_MENTION, MENTION, 1), MENTION);
     let lowered = text.to_lowercase();
     let words: Vec<&str> = lowered.split_whitespace().collect();
     let (verb, rest) = words.split_first()?;
@@ -116,23 +121,33 @@ pub fn parse(text: &str) -> Option<Result<Command, Mistake>> {
     ];
     match closest(verb, verbs) {
         Closest::One(Verb::Help) => Some(Ok(Command::Help)),
-        Closest::One(Verb::Tell) => Some(tell(rest, link.as_deref()).map(Command::Tell)),
+        Closest::One(Verb::Tell) => {
+            Some(tell(rest, link.as_deref(), mention.as_deref()).map(Command::Tell))
+        }
         Closest::One(Verb::Subscription) => Some(subscription(rest)),
         Closest::Tie(_) | Closest::Nothing => None,
     }
 }
 
-fn take_topic_link(text: &str) -> (String, Option<String>) {
-    let Some((before, rest)) = text.split_once(TOPIC_LINK) else {
+fn take_enclosed(text: &str, opener: &str) -> (String, Option<String>) {
+    let Some((before, rest)) = text.split_once(opener) else {
         return (text.to_owned(), None);
     };
-    let Some((link, after)) = rest.split_once("**") else {
+    let Some((inside, after)) = rest.split_once("**") else {
         return (text.to_owned(), None);
     };
     (
-        format!("{before} {TOPIC_LINK} {after}"),
-        Some(link.to_owned()),
+        format!("{before} {opener} {after}"),
+        Some(inside.to_owned()),
     )
+}
+
+fn person(mention: &str) -> Result<Listener, Problem> {
+    mention
+        .rsplit_once('|')
+        .and_then(|(_, id)| id.trim().parse().ok())
+        .map(|id| Listener::User(ChatUserId(id)))
+        .ok_or(Problem::Person)
 }
 
 fn topic(link: &str) -> Result<Listener, Problem> {
@@ -176,7 +191,7 @@ fn sections<'a>(words: &'a [&'a str]) -> Sections<'a> {
     }
 }
 
-fn tell(words: &[&str], link: Option<&str>) -> Result<Tell, Mistake> {
+fn tell(words: &[&str], link: Option<&str>, mention: Option<&str>) -> Result<Tell, Mistake> {
     if words.is_empty() {
         return Err(Mistake::Tell(Problem::Wording, Draft::default()));
     }
@@ -184,7 +199,7 @@ fn tell(words: &[&str], link: Option<&str>) -> Result<Tell, Mistake> {
     let mut draft = Draft::default();
     let mut problems = Vec::new();
 
-    let listener_rest = match take_listener(sections.listener, link) {
+    let listener_rest = match take_listener(sections.listener, link, mention) {
         Ok((listener, rest)) => {
             draft.listener = Some(listener);
             rest
@@ -264,9 +279,11 @@ fn continued<'a>(
 fn take_listener<'a>(
     words: &'a [&'a str],
     link: Option<&str>,
+    mention: Option<&str>,
 ) -> Result<(Listener, &'a [&'a str]), Problem> {
     match words {
         [TOPIC_LINK, rest @ ..] => Ok((link.ok_or(Problem::TopicLink).and_then(topic)?, rest)),
+        [MENTION, rest @ ..] => Ok((mention.ok_or(Problem::Person).and_then(person)?, rest)),
         [word, ..] if word.starts_with(TOPIC_LINK) => Err(Problem::TopicLink),
         ["me", rest @ ..] => Ok((Listener::Me, rest)),
         ["us", rest @ ..] | ["this", "topic", rest @ ..] => Ok((Listener::Here, rest)),

@@ -67,6 +67,18 @@ async fn own_user() -> Json<Value> {
     })))
 }
 
+async fn members() -> Json<Value> {
+    let member = |user_id: u64, full_name: &str, is_active: bool| json!({ "user_id": user_id, "full_name": full_name, "is_active": is_active, "is_bot": false });
+    Json(success(json!({
+        "members": [
+            member(23, "Alice Smith", true),
+            member(24, "Bob Jones", true),
+            member(25, "Bob Jones", true),
+            member(26, "Carol Old", false),
+        ],
+    })))
+}
+
 async fn user(Path(user_id): Path<u64>) -> Json<Value> {
     let role = if user_id == MODERATOR { 300 } else { 400 };
     Json(success(
@@ -174,6 +186,7 @@ impl FakeZulip {
             edits: edits_in,
         };
         let router = Router::new()
+            .route("/api/v1/users", get(members))
             .route("/api/v1/users/me", get(own_user))
             .route("/api/v1/users/{user_id}", get(user))
             .route("/api/v1/register", post(register))
@@ -705,5 +718,37 @@ async fn an_edit_into_another_subscription_replaces_the_one_it_made(pool: PgPool
             "Subscription `{}`: tell you when a-game-is-over in classical. It replaces subscription `{earlier}`.",
             made[0].id
         )
+    );
+}
+
+#[tokio::test]
+async fn a_mention_by_name_alone_gets_the_id_of_the_one_active_user_with_that_name() {
+    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+
+    zulip.deliver(json!([
+        direct_message(
+            1,
+            MEMBER,
+            "tell @**alice smith** and @_**Alice Smith** when"
+        ),
+        direct_message(
+            2,
+            MEMBER,
+            "tell @**Bob Jones** or @**Carol Old** or @**Dave**"
+        ),
+        direct_message(3, MEMBER, "tell @**Bob Jones|25** or @**all**"),
+    ]));
+
+    let mut texts = Vec::new();
+    for _ in 0..3 {
+        texts.push(within_a_while(heard.recv()).await.text.as_str().to_owned());
+    }
+    assert_eq!(
+        texts,
+        [
+            "tell @**alice smith|23** and @_**Alice Smith|23** when",
+            "tell @**Bob Jones** or @**Carol Old** or @**Dave**",
+            "tell @**Bob Jones|25** or @**all**",
+        ]
     );
 }

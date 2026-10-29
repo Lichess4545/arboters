@@ -177,6 +177,18 @@ enum EventKind {
     Other,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct Member {
+    pub user_id: ChatUserId,
+    pub full_name: FullName,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+struct Members {
+    members: Vec<Member>,
+}
+
 #[derive(Deserialize)]
 struct UserEnvelope {
     user: UserRole,
@@ -228,6 +240,11 @@ impl Api {
         let found: UserEnvelope =
             read(self.get(&format!("users/{}", user_id.0))?.send().await?).await?;
         Ok(role_from(found.user.role))
+    }
+
+    pub async fn members(&self) -> Result<Vec<Member>, ApiError> {
+        let Members { members } = read(self.get("users")?.send().await?).await?;
+        Ok(members)
     }
 
     pub async fn register(&self) -> Result<Queue, ApiError> {
