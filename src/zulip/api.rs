@@ -11,6 +11,7 @@ use crate::chat::{ChannelName, ChatUserId, Role, TopicName};
 
 use super::settings::{BotEmail, ZulipSettings};
 
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_POLL_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug)]
@@ -196,7 +197,8 @@ impl Api {
         Ok(self
             .http
             .get(self.endpoint(path)?)
-            .basic_auth(self.email.as_str(), Some(self.key.expose_secret())))
+            .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
+            .timeout(REQUEST_TIMEOUT))
     }
 
     pub async fn own_user(&self) -> Result<Bot, ApiError> {
@@ -214,6 +216,7 @@ impl Api {
             .http
             .post(self.endpoint("register")?)
             .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
+            .timeout(REQUEST_TIMEOUT)
             .form(&[
                 ("event_types", r#"["message"]"#),
                 ("apply_markdown", "false"),

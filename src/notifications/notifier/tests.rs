@@ -75,12 +75,15 @@ fn game() -> Game {
     }
 }
 
-fn paired_in(tag: &str, white: &str, black: &str) -> CurrentPairings {
-    CurrentPairings(vec![Pairing {
-        league: league(tag),
-        white: user_id(white),
-        black: user_id(black),
-    }])
+fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
+    ActiveLeagues {
+        leagues: Vec::new(),
+        pairings: vec![Pairing {
+            league: league(tag),
+            white: user_id(white),
+            black: user_id(black),
+        }],
+    }
 }
 
 fn direct_message(user_id: u64) -> NotificationTarget {
@@ -107,7 +110,7 @@ fn subscription(
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
-    pairings: CurrentPairings,
+    active: ActiveLeagues,
     messenger: RecordingMessenger,
 ) -> Vec<(NotificationTarget, Notification)> {
     let stored = PostgresSubscriptions::new(pool);
@@ -115,7 +118,7 @@ async fn deliveries(
         stored.subscribe(subscription).await.unwrap();
     }
     let notifier = Notifier::spawn(Notifier::new(stored, messenger.clone()));
-    notifier.ask(pairings).await.unwrap();
+    notifier.ask(active).await.unwrap();
     notifier.ask(GameEvent::Started(game())).await.unwrap();
     messenger.deliveries()
 }

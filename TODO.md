@@ -18,7 +18,11 @@ Subscriptions are league-scoped and their source is a player, a team, or the who
 
 ## Subscription commands
 
-- There is no way to create a subscription yet. Port Chesster's `tell <listener> when <event> in <league> for <source>`, `subscription list`, and `subscription remove <id>` as Zulip commands.
+`tell me when ...`, `tell here when ...`, `tell #**channel>topic** when ...`, `subscription list`, `subscription remove <id>`, and `help` work over Zulip direct messages and mentions. The bot must be a Zulip **Generic** bot: an incoming webhook bot can only send messages, so it cannot register the event queue the inbox reads.
+
+- Chesster's `my-team-channel` listener, `my-team` and team-name sources, and the `a-game-is-scheduled` and `a-pairing-is-released` events are still missing. They need the heltour roster adapter and pairing events.
+- `tell` accepts any well-formed Lichess username without checking that the player exists or plays in the league.
+- Zulip flags a message as mentioning the bot when it mentions a user group the bot belongs to, so such a message that is not a command gets the "send `help`" reply.
 
 ## Deployment
 

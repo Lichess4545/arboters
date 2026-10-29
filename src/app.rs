@@ -14,29 +14,34 @@ use crate::game_monitor::watchlist::{self, Heltour};
 use crate::game_monitor::{GameMonitor, LichessStream, TokenCheck, TokenState, http_client};
 use crate::notifications::Notifier;
 use crate::status::{Shutdown, Signal, Status};
-use crate::subscriptions::PostgresSubscriptions;
-use crate::zulip::ZulipMessenger;
+use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands};
+use crate::zulip::{Inbox, ZulipMessenger};
 use config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
     let pool = database::connect(&config.database).await?;
+    let http = http_client()?;
     if let Some(zulip) = &config.zulip {
         let messenger = ZulipMessenger::new(zulip)?;
-        run_with(config, pool, messenger).await
+        let inbox = Inbox::new(http.clone(), zulip, messenger.clone());
+        run_with(config, pool, http, messenger, Some(inbox)).await
     } else {
-        tracing::warn!("zulip is not configured; notifications will only be logged");
-        run_with(config, pool, LoggingMessenger).await
+        tracing::warn!(
+            "zulip is not configured; notifications will only be logged and no commands are read"
+        );
+        run_with(config, pool, http, LoggingMessenger, None).await
     }
 }
 
 async fn run_with<M: Messenger + Clone>(
     config: Config,
     pool: PgPool,
+    http: reqwest::Client,
     messenger: M,
+    inbox: Option<Inbox>,
 ) -> anyhow::Result<()> {
     let listener = http::bind(&config.http).await?;
     let subscriptions = PostgresSubscriptions::new(pool.clone());
-    let http = http_client()?;
     let stream = LichessStream::new(http.clone(), &config.lichess)?;
     let heltour = Heltour::new(http.clone(), &config.heltour)?;
     let (token_check, lichess_token) = match &config.lichess.token {
@@ -50,6 +55,12 @@ async fn run_with<M: Messenger + Clone>(
 
     let status = Status::spawn(status);
     let token_check = token_check.map(TokenCheck::spawn);
+    let conversations = inbox.map(|inbox| {
+        Conversations::spawn(
+            inbox,
+            SubscriptionCommands::new(subscriptions.clone(), messenger.clone()),
+        )
+    });
     let notifier = Notifier::spawn(Notifier::new(subscriptions.clone(), messenger));
     let monitor = GameMonitor::spawn(GameMonitor::new(
         stream,
@@ -58,10 +69,16 @@ async fn run_with<M: Messenger + Clone>(
         status.clone().recipient(),
         lichess_token.clone(),
     ));
+    let mut followers = vec![notifier.clone().recipient()];
+    followers.extend(
+        conversations
+            .as_ref()
+            .map(|conversations| conversations.commands.clone().recipient()),
+    );
     let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
         heltour,
         monitor.clone().recipient(),
-        notifier.clone().recipient(),
+        followers,
         config.watchlist.refresh_interval,
     ));
 
@@ -87,6 +104,7 @@ async fn run_with<M: Messenger + Clone>(
         () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
         () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
         () = stopped(token_check.as_ref()) => Err(anyhow::anyhow!("lichess token check stopped unexpectedly")),
+        error = Conversations::stopped(conversations.as_ref()) => Err(error),
         exit = &mut watchlist_sync => match exit {
             Ok(()) => Err(anyhow::anyhow!("watchlist sync stopped unexpectedly")),
             Err(error) => Err(error.into()),
@@ -94,6 +112,9 @@ async fn run_with<M: Messenger + Clone>(
     };
 
     watchlist_sync.abort();
+    if let Some(conversations) = &conversations {
+        conversations.stop().await;
+    }
     stop(&monitor).await;
     stop(&notifier).await;
     if let Some(token_check) = &token_check {
@@ -117,6 +138,10 @@ async fn run_with<M: Messenger + Clone>(
         Ok(())
     };
 
+    exit_with(down, http_exit)
+}
+
+fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> anyhow::Result<()> {
     match down {
         Ok(_) => {
             http_exit?;
@@ -129,6 +154,34 @@ async fn run_with<M: Messenger + Clone>(
             }
             Err(error)
         }
+    }
+}
+
+struct Conversations<M: Messenger> {
+    inbox: ActorRef<Inbox>,
+    commands: ActorRef<SubscriptionCommands<PostgresSubscriptions, M>>,
+}
+
+impl<M: Messenger> Conversations<M> {
+    fn spawn(inbox: Inbox, commands: SubscriptionCommands<PostgresSubscriptions, M>) -> Self {
+        let inbox = Inbox::spawn(inbox);
+        let commands = SubscriptionCommands::spawn((commands, inbox.clone().recipient()));
+        Self { inbox, commands }
+    }
+
+    async fn stopped(conversations: Option<&Self>) -> anyhow::Error {
+        let Some(conversations) = conversations else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            () = conversations.inbox.wait_for_shutdown() => anyhow::anyhow!("zulip inbox stopped unexpectedly"),
+            () = conversations.commands.wait_for_shutdown() => anyhow::anyhow!("subscription commands stopped unexpectedly"),
+        }
+    }
+
+    async fn stop(&self) {
+        stop(&self.inbox).await;
+        stop(&self.commands).await;
     }
 }
 
