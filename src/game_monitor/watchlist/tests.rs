@@ -11,16 +11,18 @@ use axum::routing::get;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use secrecy::SecretString;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use url::Url;
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::heltour::league;
-use crate::lichess;
+use crate::heltour::{HeltourSettings, League, Pairing, league};
+use crate::lichess::{self, Clock, Variant};
 
 const PATIENCE: Duration = Duration::from_secs(5);
-const LEAGUES: &str = r#"{"leagues": [{"tag": "classical", "name": "Classical League"}, {"tag": "rapid", "name": "Rapid Battle"}]}"#;
+const LEAGUES: &str = r#"{"leagues": [{"tag": "classical", "name": "Classical League", "time_control": {"initial": 2700, "increment": 45}, "variant": "standard", "rated": true}, {"tag": "rapid", "name": "Rapid Battle", "time_control": null, "variant": "chess960", "rated": false}]}"#;
 const ALICE_AND_BOB: &str = r#"{"pairings": [{"league": "classical", "season": "47", "round": 3, "white": "Alice", "black": "bob", "game_link": "", "result": ""}]}"#;
 const ALICE_BOB_AND_CAROL_DAVE: &str = r#"{"pairings": [{"league": "classical", "season": "47", "round": 3, "white": "alice", "black": "bob", "game_link": "", "result": ""}, {"league": "rapid", "season": "12", "round": 1, "white": "Carol", "black": "dave", "game_link": "", "result": ""}]}"#;
 const NO_ACTIVE_ROUND: &str = r#"{"pairings": null, "error": "no_matching_rounds"}"#;
@@ -212,9 +214,20 @@ async fn the_monitor_is_told_every_paired_player_and_followers_the_active_league
             ActiveLeagues {
                 leagues: vec![
                     League {
-                        tag: tag("classical")
+                        tag: tag("classical"),
+                        time_control: Some(Clock {
+                            initial_seconds: 2700,
+                            increment_seconds: 45,
+                        }),
+                        variant: Variant::Standard,
+                        rated: true,
                     },
-                    League { tag: tag("rapid") },
+                    League {
+                        tag: tag("rapid"),
+                        time_control: None,
+                        variant: Variant::Chess960,
+                        rated: false,
+                    },
                 ],
                 pairings: vec![
                     pairing("classical", "alice", "bob"),

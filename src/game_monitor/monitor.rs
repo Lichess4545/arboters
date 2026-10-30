@@ -13,13 +13,13 @@ use super::event::GameEvent;
 use super::settings::StreamSettings;
 use super::stream::{GameObservation, LichessStream};
 use super::token_check::TokenState;
-use super::{StreamConnected, Watch};
+use super::{Follow, StreamConnected, Watch};
 
 #[derive(Debug)]
 pub struct GameMonitor {
     stream: LichessStream,
     settings: StreamSettings,
-    listener: Recipient<GameEvent>,
+    followers: Vec<Recipient<GameEvent>>,
     connected: Recipient<StreamConnected>,
     token: watch::Receiver<TokenState>,
     watched: BTreeSet<lichess::UserId>,
@@ -32,14 +32,13 @@ impl GameMonitor {
     pub const fn new(
         stream: LichessStream,
         settings: StreamSettings,
-        listener: Recipient<GameEvent>,
         connected: Recipient<StreamConnected>,
         token: watch::Receiver<TokenState>,
     ) -> Self {
         Self {
             stream,
             settings,
-            listener,
+            followers: Vec::new(),
             connected,
             token,
             watched: BTreeSet::new(),
@@ -100,6 +99,18 @@ impl Message<Watch> for GameMonitor {
     }
 }
 
+impl Message<Follow<GameEvent>> for GameMonitor {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        Follow(follower): Follow<GameEvent>,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.followers.push(follower);
+    }
+}
+
 impl Message<GameObservation> for GameMonitor {
     type Reply = ();
 
@@ -108,9 +119,15 @@ impl Message<GameObservation> for GameMonitor {
             return;
         };
         tracing::info!(game = %event.game().id, kind = ?event.kind(), "game event observed");
-        if self.listener.tell(event).await.is_err() {
-            tracing::warn!("game event listener is not running; event dropped");
+        let mut following = Vec::with_capacity(self.followers.len());
+        for follower in std::mem::take(&mut self.followers) {
+            if follower.tell(event.clone()).await.is_ok() {
+                following.push(follower);
+            } else {
+                tracing::warn!(game = %event.game().id, "a game event follower has stopped; no longer following it");
+            }
         }
+        self.followers = following;
     }
 }
 

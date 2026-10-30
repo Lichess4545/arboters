@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
-use crate::game_monitor::GameOutcome;
-use crate::lichess::{Color, Game, GameId, Player, Speed, UserId};
+use crate::game_monitor::{Ending, GameOutcome};
+use crate::lichess::{Clock, Color, Game, GameId, Player, Speed, UserId, Variant};
 
 use super::{GameObservation, GamePhase};
 
@@ -18,8 +18,10 @@ pub enum GameJsonError {
 struct GameJson {
     id: GameId,
     rated: bool,
+    variant: Variant,
     speed: Speed,
-    status: StatusJson,
+    clock: Option<Clock>,
+    status: u16,
     players: PlayersJson,
     winner: Option<Color>,
 }
@@ -39,78 +41,41 @@ struct PlayerJson {
     rating: Option<u16>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum StatusJson {
-    Code(u16),
-    Name(GameStatus),
+const fn phase(status: u16, winner: Option<Color>) -> Result<GamePhase, GameJsonError> {
+    let ending = match status {
+        10 => return Ok(GamePhase::Created),
+        20 => return Ok(GamePhase::Started),
+        25 => Ending::Aborted,
+        30 => Ending::Checkmate,
+        31 => Ending::Resignation,
+        32 => Ending::Stalemate,
+        33 => Ending::VictoryClaimed,
+        34 => Ending::Draw,
+        35 => Ending::OutOfTime,
+        36 => Ending::CheatDetected,
+        37 => Ending::NeverStarted,
+        38 => Ending::Unknown,
+        39 => Ending::InsufficientMaterialClaimed,
+        60 => Ending::VariantEnd,
+        unknown => return Err(GameJsonError::UnknownStatusCode(unknown)),
+    };
+    Ok(GamePhase::Finished {
+        outcome: outcome(ending, winner),
+        ending,
+    })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum GameStatus {
-    Created,
-    Started,
-    Aborted,
-    Mate,
-    Resign,
-    Stalemate,
-    Timeout,
-    Draw,
-    #[serde(alias = "outOfTime")]
-    Outoftime,
-    Cheat,
-    #[serde(alias = "nostart")]
-    NoStart,
-    #[serde(alias = "unknownfinish")]
-    UnknownFinish,
-    InsufficientMaterialClaim,
-    #[serde(alias = "variantend")]
-    VariantEnd,
-}
-
-impl TryFrom<StatusJson> for GameStatus {
-    type Error = GameJsonError;
-
-    fn try_from(status: StatusJson) -> Result<Self, Self::Error> {
-        let code = match status {
-            StatusJson::Name(name) => return Ok(name),
-            StatusJson::Code(code) => code,
-        };
-        Ok(match code {
-            10 => Self::Created,
-            20 => Self::Started,
-            25 => Self::Aborted,
-            30 => Self::Mate,
-            31 => Self::Resign,
-            32 => Self::Stalemate,
-            33 => Self::Timeout,
-            34 => Self::Draw,
-            35 => Self::Outoftime,
-            36 => Self::Cheat,
-            37 => Self::NoStart,
-            38 => Self::UnknownFinish,
-            39 => Self::InsufficientMaterialClaim,
-            60 => Self::VariantEnd,
-            unknown => return Err(GameJsonError::UnknownStatusCode(unknown)),
-        })
-    }
-}
-
-const fn phase(status: GameStatus, winner: Option<Color>) -> GamePhase {
-    let outcome = match (status, winner) {
-        (GameStatus::Created, _) => return GamePhase::Created,
-        (GameStatus::Started, _) => return GamePhase::Started,
-        (GameStatus::Aborted | GameStatus::NoStart, _) => GameOutcome::Aborted,
-        (GameStatus::Draw | GameStatus::Stalemate | GameStatus::InsufficientMaterialClaim, _) => {
+const fn outcome(ending: Ending, winner: Option<Color>) -> GameOutcome {
+    match (ending, winner) {
+        (Ending::Aborted | Ending::NeverStarted, _) => GameOutcome::Aborted,
+        (Ending::Draw | Ending::Stalemate | Ending::InsufficientMaterialClaimed, _) => {
             GameOutcome::Draw
         }
         (_, Some(Color::White)) => GameOutcome::WhiteWon,
         (_, Some(Color::Black)) => GameOutcome::BlackWon,
-        (GameStatus::UnknownFinish, None) => GameOutcome::Undecided,
+        (Ending::Unknown, None) => GameOutcome::Undecided,
         (_, None) => GameOutcome::Draw,
-    };
-    GamePhase::Finished(outcome)
+    }
 }
 
 impl From<PlayerJson> for Player {
@@ -124,15 +89,16 @@ impl From<PlayerJson> for Player {
 
 pub fn decode(line: &str) -> Result<GameObservation, GameJsonError> {
     let game: GameJson = serde_json::from_str(line)?;
-    let status = GameStatus::try_from(game.status)?;
     Ok(GameObservation {
-        phase: phase(status, game.winner),
+        phase: phase(game.status, game.winner)?,
         game: Game {
             id: game.id,
             white: game.players.white.into(),
             black: game.players.black.into(),
             speed: game.speed,
             rated: game.rated,
+            variant: game.variant,
+            clock: game.clock,
         },
     })
 }

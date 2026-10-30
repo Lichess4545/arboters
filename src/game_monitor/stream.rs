@@ -12,7 +12,7 @@ use url::Url;
 
 use crate::lichess::{Game, UserId};
 
-use super::event::{GameEvent, GameOutcome};
+use super::event::{Ending, GameEvent, GameOutcome};
 use super::settings::LichessSettings;
 use super::token_check::TokenState;
 
@@ -29,7 +29,10 @@ const LICHESS4545: &str = "lichess4545";
 pub enum GamePhase {
     Created,
     Started,
-    Finished(GameOutcome),
+    Finished {
+        outcome: GameOutcome,
+        ending: Ending,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,9 +47,10 @@ impl GameObservation {
         match self.phase {
             GamePhase::Created => None,
             GamePhase::Started => Some(GameEvent::Started(self.game)),
-            GamePhase::Finished(outcome) => Some(GameEvent::Finished {
+            GamePhase::Finished { outcome, ending } => Some(GameEvent::Finished {
                 game: self.game,
                 outcome,
+                ending,
             }),
         }
     }

@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use super::*;
 use crate::chat::{ChannelName, CommandText, DeliveryError, Role, TopicName};
 use crate::heltour::League;
-use crate::lichess;
+use crate::lichess::{self, Variant};
 use crate::subscriptions::{PostgresSubscriptions, Subscription};
 
 const MEMBER: ChatUserId = ChatUserId(10);
@@ -91,6 +91,9 @@ fn league() -> league::Tag {
 fn active_leagues() -> ActiveLeagues {
     let league = |tag| League {
         tag: league::Tag::try_new(tag).unwrap(),
+        time_control: None,
+        variant: Variant::Standard,
+        rated: true,
     };
     ActiveLeagues {
         leagues: vec![league("classical"), league("rapid")],

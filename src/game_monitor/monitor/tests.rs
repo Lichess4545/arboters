@@ -15,11 +15,11 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{GameOutcome, LichessSettings, StreamConnected, http_client};
-use crate::lichess::{Game, GameId, Player, Speed};
+use crate::game_monitor::{Ending, GameOutcome, LichessSettings, StreamConnected, http_client};
+use crate::lichess::{Game, GameId, Player, Speed, Variant};
 
-const STARTED: &str = r#"{"id":"g1","rated":true,"speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
-const WHITE_WON: &str = r#"{"id":"g1","rated":true,"speed":"classical","status":30,"winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 
 enum Answer {
     Status(StatusCode),
@@ -150,10 +150,27 @@ impl Harness {
     }
 
     async fn next_event(&mut self) -> GameEvent {
-        tokio::time::timeout(Duration::from_secs(5), self.events.recv())
+        next(&mut self.events).await
+    }
+
+    async fn follower(
+        &self,
+    ) -> (
+        ActorRef<Collector<GameEvent>>,
+        mpsc::UnboundedReceiver<GameEvent>,
+    ) {
+        let (sender, events) = mpsc::unbounded_channel();
+        let follower = Collector::spawn(Collector(sender));
+        self.monitor
+            .tell(Follow(follower.clone().recipient()))
             .await
-            .unwrap()
-            .unwrap()
+            .unwrap();
+        (follower, events)
+    }
+
+    async fn watching_alice_and_bob(&self) {
+        self.watch(&["alice", "bob"]).await;
+        eventually("the game is watched", || self.lichess.request_count() == 1).await;
     }
 
     async fn next_connection(&mut self) -> StreamConnected {
@@ -162,6 +179,13 @@ impl Harness {
             .unwrap()
             .unwrap()
     }
+}
+
+async fn next(events: &mut mpsc::UnboundedReceiver<GameEvent>) -> GameEvent {
+    tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 async fn harness(stream: StreamSettings) -> Harness {
@@ -190,10 +214,15 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
     let monitor = GameMonitor::spawn(GameMonitor::new(
         LichessStream::new(http_client().unwrap(), &settings).unwrap(),
         settings.stream,
-        Collector::spawn(Collector(event_sender)).recipient(),
         Collector::spawn(Collector(connection_sender)).recipient(),
         token,
     ));
+    monitor
+        .tell(Follow(
+            Collector::spawn(Collector(event_sender)).recipient(),
+        ))
+        .await
+        .unwrap();
     Harness {
         lichess,
         monitor,
@@ -244,6 +273,8 @@ fn game() -> Game {
         black: player("bob"),
         speed: Speed::Classical,
         rated: true,
+        variant: Variant::Standard,
+        clock: None,
     }
 }
 
@@ -319,21 +350,47 @@ async fn a_changed_watchlist_closes_the_old_connection_and_opens_a_new_one() {
 }
 
 #[tokio::test]
-async fn streamed_starts_and_finishes_are_forwarded_as_game_events() {
+async fn every_follower_receives_every_game_event() {
     let mut harness = harness(settings()).await;
-    harness.watch(&["alice", "bob"]).await;
-    eventually("the game is watched", || {
-        harness.lichess.request_count() == 1
-    })
-    .await;
+    let (_second, mut second_events) = harness.follower().await;
+    harness.watching_alice_and_bob().await;
     harness.lichess.stream_line(0, STARTED);
     harness.lichess.stream_line(0, WHITE_WON);
     let finished = GameEvent::Finished {
         game: game(),
         outcome: GameOutcome::WhiteWon,
+        ending: Ending::Checkmate,
     };
     assert_eq!(
         [harness.next_event().await, harness.next_event().await],
+        [GameEvent::Started(game()), finished.clone()]
+    );
+    assert_eq!(
+        [
+            next(&mut second_events).await,
+            next(&mut second_events).await
+        ],
+        [GameEvent::Started(game()), finished]
+    );
+}
+
+#[tokio::test]
+async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
+    let harness = harness(settings()).await;
+    let (stopped, _) = harness.follower().await;
+    let (_still_following, mut events) = harness.follower().await;
+    stopped.stop_gracefully().await.unwrap();
+    stopped.wait_for_shutdown().await;
+    harness.watching_alice_and_bob().await;
+    harness.lichess.stream_line(0, STARTED);
+    harness.lichess.stream_line(0, WHITE_WON);
+    let finished = GameEvent::Finished {
+        game: game(),
+        outcome: GameOutcome::WhiteWon,
+        ending: Ending::Checkmate,
+    };
+    assert_eq!(
+        [next(&mut events).await, next(&mut events).await],
         [GameEvent::Started(game()), finished]
     );
 }

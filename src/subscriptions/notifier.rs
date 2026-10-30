@@ -1,16 +1,17 @@
+mod rendering;
+
 use std::collections::BTreeSet;
-use std::convert::Infallible;
 
 use kameo::Actor;
-use kameo::actor::ActorRef;
+use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
 
 use crate::chat::Messenger;
-use crate::game_monitor::GameEvent;
+use crate::game_monitor::{Follow, GameEvent, MonitorUnavailable};
 use crate::heltour::ActiveLeagues;
-use crate::subscriptions::{SubscriptionSource, Subscriptions};
 
-use super::rendering::render;
+use super::{SubscriptionSource, Subscriptions};
+use rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
@@ -69,14 +70,17 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 }
 
 impl<R: Subscriptions, M: Messenger> Actor for Notifier<R, M> {
-    type Args = Self;
-    type Error = Infallible;
+    type Args = (Self, Recipient<Follow<GameEvent>>);
+    type Error = MonitorUnavailable;
 
-    fn on_start(
-        notifier: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(notifier))
+    async fn on_start(
+        (notifier, monitor): Self::Args,
+        actor_ref: ActorRef<Self>,
+    ) -> Result<Self, Self::Error> {
+        monitor
+            .tell(Follow(actor_ref.recipient::<GameEvent>()))
+            .await?;
+        Ok(notifier)
     }
 }
 

@@ -1,5 +1,5 @@
 mod game;
 mod user;
 
-pub use game::{Color, Game, GameId, Player, Speed};
+pub use game::{Clock, Color, Game, GameId, Player, Speed, Variant};
 pub use user::UserId;
