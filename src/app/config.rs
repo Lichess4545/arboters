@@ -7,7 +7,6 @@ use super::http::HttpSettings;
 use super::telemetry::TelemetrySettings;
 use crate::game_monitor::LichessSettings;
 use crate::game_monitor::watchlist::{HeltourSettings, WatchlistSettings};
-use crate::heltour::league;
 use crate::status::StatusSettings;
 use crate::zulip::ZulipSettings;
 
@@ -17,13 +16,11 @@ pub const ENV_NESTING_SEPARATOR: &str = "__";
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    pub league: league::Tag,
     #[serde(default)]
     pub http: HttpSettings,
     pub database: DatabaseSettings,
     #[serde(default)]
     pub lichess: LichessSettings,
-    #[serde(default)]
     pub heltour: HeltourSettings,
     pub zulip: Option<ZulipSettings>,
     pub status: Option<StatusSettings>,

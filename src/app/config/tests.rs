@@ -18,7 +18,7 @@ fn in_clean_environment(test: impl FnOnce(&mut Jail)) {
 
 fn load(jail: &mut Jail) -> Result<Config, Box<figment::Error>> {
     jail.set_env("ARBOTERS_DATABASE__URL", "postgres://localhost/arboters");
-    jail.set_env("ARBOTERS_LEAGUE", "team4545");
+    jail.set_env("ARBOTERS_HELTOUR__BASE_URL", "https://heltour.example/api/");
     Config::from_env()
 }
 
@@ -27,16 +27,20 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
     in_clean_environment(|jail| {
         let config = load(jail).unwrap();
         assert!(config.http.host.is_loopback());
-        assert_eq!(config.http.port, 4545);
+        assert_eq!(config.http.port, 8080);
         assert!(config.http.readiness_timeout < KUBELET_PROBE_TIMEOUT);
         assert_eq!(config.lichess.base_url.as_str(), "https://lichess.org/");
         assert_eq!(config.lichess.token_check_interval, Duration::from_mins(15));
-        assert_eq!(
-            config.heltour.base_url.as_str(),
-            "https://www.lichess4545.com/api/"
-        );
         assert_eq!(config.watchlist.refresh_interval, Duration::from_mins(5));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
+    });
+}
+
+#[test]
+fn heltour_has_no_default_location() {
+    in_clean_environment(|jail| {
+        jail.set_env("ARBOTERS_DATABASE__URL", "postgres://localhost/arboters");
+        assert!(Config::from_env().is_err());
     });
 }
 
@@ -44,13 +48,10 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
 fn the_variables_deployments_set_are_recognized() {
     in_clean_environment(|jail| {
         jail.set_env("ARBOTERS_HTTP__HOST", "0.0.0.0");
-        jail.set_env("ARBOTERS_HTTP__PORT", "4545");
+        jail.set_env("ARBOTERS_HTTP__PORT", "8080");
         jail.set_env("ARBOTERS_TELEMETRY__LOG_FORMAT", "pretty");
-        jail.set_env("ARBOTERS_ZULIP__SITE", "https://lichess4545.zulipchat.com");
-        jail.set_env(
-            "ARBOTERS_ZULIP__EMAIL",
-            "arboters@lichess4545.zulipchat.com",
-        );
+        jail.set_env("ARBOTERS_ZULIP__SITE", "https://chess.zulipchat.com");
+        jail.set_env("ARBOTERS_ZULIP__EMAIL", "arboters@chess.zulipchat.com");
         jail.set_env("ARBOTERS_ZULIP__API_KEY", "secret");
         jail.set_env("ARBOTERS_LICHESS__TOKEN", "lip_secret");
         jail.set_env("ARBOTERS_HELTOUR__TOKEN", "secret");

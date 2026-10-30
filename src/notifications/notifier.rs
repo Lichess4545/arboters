@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use kameo::Actor;
@@ -5,7 +6,7 @@ use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 
 use crate::game_monitor::GameEvent;
-use crate::heltour::league;
+use crate::heltour::CurrentPairings;
 use crate::subscriptions::{SubscriptionSource, Subscriptions};
 
 use super::messenger::Messenger;
@@ -13,16 +14,16 @@ use super::rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
-    league: league::Tag,
+    pairings: CurrentPairings,
     subscriptions: R,
     messenger: M,
 }
 
 impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
-    pub const fn new(league: league::Tag, subscriptions: R, messenger: M) -> Self {
+    pub fn new(subscriptions: R, messenger: M) -> Self {
         Self {
-            league,
+            pairings: CurrentPairings::default(),
             subscriptions,
             messenger,
         }
@@ -33,17 +34,20 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
         let players = game
             .user_ids()
             .map(|user_id| SubscriptionSource::Player(user_id.clone()));
-        let targets = match self
-            .subscriptions
-            .targets_for(&self.league, event.kind(), &players)
-            .await
-        {
-            Ok(targets) => targets,
-            Err(error) => {
-                tracing::error!(error = %error, game_id = %game.id, "could not look up notification targets");
-                return;
+        let mut targets = BTreeSet::new();
+        for league in self.pairings.leagues_of(game) {
+            match self
+                .subscriptions
+                .targets_for(league, event.kind(), &players)
+                .await
+            {
+                Ok(found) => targets.extend(found),
+                Err(error) => {
+                    tracing::error!(error = %error, game_id = %game.id, %league, "could not look up notification targets");
+                    return;
+                }
             }
-        };
+        }
         if targets.is_empty() {
             return;
         }
@@ -80,6 +84,14 @@ impl<R: Subscriptions, M: Messenger> Message<GameEvent> for Notifier<R, M> {
 
     async fn handle(&mut self, event: GameEvent, _: &mut Context<Self, Self::Reply>) {
         self.notify(&event).await;
+    }
+}
+
+impl<R: Subscriptions, M: Messenger> Message<CurrentPairings> for Notifier<R, M> {
+    type Reply = ();
+
+    async fn handle(&mut self, pairings: CurrentPairings, _: &mut Context<Self, Self::Reply>) {
+        self.pairings = pairings;
     }
 }
 

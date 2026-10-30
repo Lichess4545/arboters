@@ -38,7 +38,7 @@ in
 
   env.DATABASE_URL = databaseUrl;
   env.ARBOTERS_DATABASE__URL = databaseUrl;
-  env.ARBOTERS_LEAGUE = "team4545";
+  env.ARBOTERS_HELTOUR__BASE_URL = "https://www.lichess4545.com/api/";
   env.SQLX_OFFLINE = "true";
   env.ARBOTERS_TELEMETRY__LOG_FORMAT = "pretty";
   env.ARBOTERS_WATCHLIST__REFRESH_INTERVAL = "30s";

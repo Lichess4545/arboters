@@ -4,11 +4,12 @@ import k8s.api.core.v1 as core
 
 IMAGE_REPOSITORY = "ghcr.io/lichess4545/arboters"
 HTTP_PORT_NAME = "http"
-HTTP_PORT = 4545
+HTTP_PORT = 8080
 UNPRIVILEGED_ID = 65534
 
 schema Release:
     image_version: str
+    heltour_base_url: str
     secret_name: str = "arboters"
 
     check:
@@ -30,6 +31,7 @@ resources = lambda release: Release -> [apps.Deployment] {
     _labels = {"app.kubernetes.io/name": "arboters"}
     _image = "${IMAGE_REPOSITORY}:${release.image_version}"
     _environment = [core.EnvFromSource {secretRef = core.SecretEnvSource {name = release.secret_name}}]
+    _settings = [core.EnvVar {name = "ARBOTERS_HELTOUR__BASE_URL", value = release.heltour_base_url}]
     _hardened = core.SecurityContext {
         allowPrivilegeEscalation = False
         readOnlyRootFilesystem = True
@@ -66,6 +68,7 @@ resources = lambda release: Release -> [apps.Deployment] {
                                 name = "arboters"
                                 image = _image
                                 ports = [core.ContainerPort {name = HTTP_PORT_NAME, containerPort = HTTP_PORT}]
+                                env = _settings
                                 envFrom = _environment
                                 livenessProbe = http_probe("/livez", 10, 3)
                                 readinessProbe = http_probe("/readyz", 5, 2)

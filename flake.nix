@@ -26,7 +26,7 @@
           rustc = toolchain;
         };
         version = (lib.importTOML ./Cargo.toml).workspace.package.version;
-        httpPort = 4545;
+        httpPort = 8080;
 
         src = lib.fileset.toSource {
           root = ./.;

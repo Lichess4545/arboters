@@ -2,20 +2,19 @@
 
 ## League attribution for notifications
 
-Subscriptions are league-scoped and their source is a player or a team. The notifier still looks up only player sources, in the single league set by `ARBOTERS_LEAGUE`.
+Subscriptions are league-scoped and their source is a player or a team. The notifier looks up player sources in every league whose current pairings pair the game's two players, but not team sources.
 
-- Once pairings attribute each game to its league, the notifier should use that league, and look up the players' teams as sources too. After that, remove `ARBOTERS_LEAGUE`.
+- Look up the players' teams as sources too.
 
 ## Pairings split across stream connections
 
-`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The watchlist is both players of every current heltour pairing, so that holds, but the game monitor splits the watchlist into connections of up to 900 users with the lichess4545 token, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither.
+`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The watchlist is both players of every current heltour pairing, so that holds, but the game monitor splits the watchlist into connections of up to 900 users with a token of lichess4545, 500 with a token of any other account, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither. The watchlist covers every active league, so it often needs more than one connection.
 
 - Chunk by pairing, so both players of a pairing share a connection, or stream the pairings' game ids through `/api/stream/games/{streamId}` (1000 ids authenticated, more can be added while open).
-- The watchlist covers only `ARBOTERS_LEAGUE`. Chesster watches the pairings of every league.
 
 ## Heltour pairing and roster adapter
 
-- The watchlist reads heltour's `find_pairing`. Still missing: which league a game belongs to, which team a player is on, and who is on a team. That unblocks league attribution for notifications.
+- The watchlist reads heltour's `find_pairing` for every active league. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
 
 ## Subscription commands
 
@@ -24,4 +23,4 @@ Subscriptions are league-scoped and their source is a player or a team. The noti
 ## Deployment
 
 - `Deploy` pins `deploy/prod/main.k`, but nothing applies it to the cluster yet. Choose Argo CD with a KCL plugin, Flux on rendered YAML, or `kubectl apply` from CI.
-- The pod expects a Secret named `arboters` holding `ARBOTERS_DATABASE__URL`, `ARBOTERS_LEAGUE`, `ARBOTERS_LICHESS__TOKEN`, `ARBOTERS_HELTOUR__TOKEN`, `ARBOTERS_STATUS__CHANNEL`, the `ARBOTERS_ZULIP__*` settings, and optionally the `OTEL_*` variables.
+- The pod expects a Secret named `arboters` holding `ARBOTERS_DATABASE__URL`, `ARBOTERS_LICHESS__TOKEN`, `ARBOTERS_HELTOUR__TOKEN`, `ARBOTERS_STATUS__CHANNEL`, the `ARBOTERS_ZULIP__*` settings, and optionally the `OTEL_*` variables.

@@ -13,10 +13,7 @@ use super::*;
 use crate::game_monitor::http_client;
 
 const PATIENCE: Duration = Duration::from_secs(5);
-const OWNED_BY_LICHESS4545: &str =
-    r#"{"lip_secret": {"userId": "lichess4545", "scopes": "", "expires": null}}"#;
-const OWNED_BY_ANOTHER_ACCOUNT: &str =
-    r#"{"lip_secret": {"userId": "thibault", "scopes": "board:play", "expires": 1893456000000}}"#;
+const VALID: &str = r#"{"lip_secret": {"userId": "arbiter", "scopes": "", "expires": null}}"#;
 const INVALID: &str = r#"{"lip_secret": null}"#;
 
 struct Request {
@@ -51,7 +48,7 @@ impl FakeLichess {
 
 struct Checking {
     lichess: FakeLichess,
-    health: watch::Receiver<TokenHealth>,
+    state: watch::Receiver<TokenState>,
     _check: ActorRef<TokenCheck>,
 }
 
@@ -75,7 +72,7 @@ async fn checking_against(answers: &[(StatusCode, &'static str)]) -> Checking {
         token_check_interval: Duration::from_millis(50),
         ..LichessSettings::default()
     };
-    let (check, health) = TokenCheck::new(
+    let (check, state) = TokenCheck::new(
         http_client().unwrap(),
         &settings,
         SecretString::from("lip_secret"),
@@ -83,13 +80,13 @@ async fn checking_against(answers: &[(StatusCode, &'static str)]) -> Checking {
     .unwrap();
     Checking {
         lichess,
-        health,
+        state,
         _check: TokenCheck::spawn(check),
     }
 }
 
-async fn becomes(health: &mut watch::Receiver<TokenHealth>, expected: TokenHealth) {
-    tokio::time::timeout(PATIENCE, health.wait_for(|health| *health == expected))
+async fn becomes(state: &mut watch::Receiver<TokenState>, expected: TokenState) {
+    tokio::time::timeout(PATIENCE, state.wait_for(|state| *state == expected))
         .await
         .unwrap()
         .unwrap();
@@ -105,7 +102,7 @@ async fn eventually(what: &str, condition: impl Fn() -> bool) {
 
 #[tokio::test]
 async fn the_token_is_sent_for_testing_with_our_user_agent() {
-    let checking = checking_against(&[(StatusCode::OK, OWNED_BY_LICHESS4545)]).await;
+    let checking = checking_against(&[(StatusCode::OK, VALID)]).await;
     eventually("the token is tested", || {
         checking.lichess.request_count() >= 1
     })
@@ -124,49 +121,46 @@ async fn the_token_is_sent_for_testing_with_our_user_agent() {
 }
 
 #[tokio::test]
-async fn a_token_lichess_reports_invalid_is_unusable() {
+async fn a_token_lichess_reports_invalid_is_invalid() {
     let mut checking = checking_against(&[(StatusCode::OK, INVALID)]).await;
-    becomes(&mut checking.health, TokenHealth::Unusable).await;
-}
-
-#[tokio::test]
-async fn a_token_of_another_account_is_unusable() {
-    let mut checking = checking_against(&[(StatusCode::OK, OWNED_BY_ANOTHER_ACCOUNT)]).await;
-    becomes(&mut checking.health, TokenHealth::Unusable).await;
+    becomes(&mut checking.state, TokenState::Invalid).await;
 }
 
 #[tokio::test]
 async fn the_token_is_tested_again_regularly() {
-    let mut checking = checking_against(&[
-        (StatusCode::OK, INVALID),
-        (StatusCode::OK, OWNED_BY_LICHESS4545),
-    ])
+    let mut checking =
+        checking_against(&[(StatusCode::OK, INVALID), (StatusCode::OK, VALID)]).await;
+    becomes(&mut checking.state, TokenState::Invalid).await;
+    becomes(
+        &mut checking.state,
+        TokenState::Valid {
+            owner: lichess::UserId::try_new("arbiter").unwrap(),
+        },
+    )
     .await;
-    becomes(&mut checking.health, TokenHealth::Unusable).await;
-    becomes(&mut checking.health, TokenHealth::Usable).await;
 }
 
 #[tokio::test]
-async fn a_failed_test_keeps_the_previous_health() {
+async fn a_failed_test_keeps_the_previous_state() {
     let mut checking = checking_against(&[
         (StatusCode::OK, INVALID),
         (StatusCode::BAD_GATEWAY, "Bad Gateway"),
     ])
     .await;
-    becomes(&mut checking.health, TokenHealth::Unusable).await;
+    becomes(&mut checking.state, TokenState::Invalid).await;
     eventually("lichess has failed twice", || {
         checking.lichess.request_count() >= 3
     })
     .await;
-    assert_eq!(*checking.health.borrow(), TokenHealth::Unusable);
+    assert_eq!(*checking.state.borrow(), TokenState::Invalid);
 }
 
 #[tokio::test]
-async fn until_lichess_answers_the_token_counts_as_usable() {
+async fn until_lichess_answers_the_token_is_untested() {
     let checking = checking_against(&[(StatusCode::BAD_GATEWAY, "Bad Gateway")]).await;
     eventually("lichess has failed twice", || {
         checking.lichess.request_count() >= 2
     })
     .await;
-    assert_eq!(*checking.health.borrow(), TokenHealth::Usable);
+    assert_eq!(*checking.state.borrow(), TokenState::Untested);
 }

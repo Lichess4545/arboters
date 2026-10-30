@@ -139,6 +139,7 @@ struct Harness {
     monitor: ActorRef<GameMonitor>,
     events: mpsc::UnboundedReceiver<GameEvent>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
+    token: watch::Sender<TokenState>,
 }
 
 impl Harness {
@@ -185,17 +186,20 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
     };
     let (event_sender, events) = mpsc::unbounded_channel();
     let (connection_sender, connections) = mpsc::unbounded_channel();
+    let (token_sender, token) = watch::channel(TokenState::Untested);
     let monitor = GameMonitor::spawn(GameMonitor::new(
         LichessStream::new(http_client().unwrap(), &settings).unwrap(),
         settings.stream,
         Collector::spawn(Collector(event_sender)).recipient(),
         Collector::spawn(Collector(connection_sender)).recipient(),
+        token,
     ));
     Harness {
         lichess,
         monitor,
         events,
         connections,
+        token: token_sender,
     }
 }
 
@@ -256,15 +260,35 @@ async fn without_a_token_each_connection_watches_up_to_300_users() {
 }
 
 #[tokio::test]
-async fn with_a_token_each_connection_watches_up_to_900_users() {
+async fn with_a_token_each_connection_watches_up_to_500_users() {
     let harness = harness_with_token(Some("lip_secret"), settings()).await;
-    let names = player_names(901);
+    let names = player_names(501);
     harness.watch(&names).await;
     eventually("both connections open", || {
         harness.lichess.request_count() == 2
     })
     .await;
-    assert_eq!(harness.lichess.connection_sizes(), [1, 900]);
+    assert_eq!(harness.lichess.connection_sizes(), [1, 500]);
+}
+
+#[tokio::test]
+async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_again() {
+    let harness = harness_with_token(Some("lip_secret"), settings()).await;
+    let names = player_names(901);
+    harness.watch(&names).await;
+    eventually("two connections open", || {
+        harness.lichess.request_count() == 2
+    })
+    .await;
+    harness.token.send_replace(TokenState::Valid {
+        owner: lichess::UserId::try_new("lichess4545").unwrap(),
+    });
+    harness.watch(&names).await;
+    eventually("the watchlist is split again", || {
+        harness.lichess.request_count() == 4
+    })
+    .await;
+    assert_eq!(harness.lichess.connection_sizes(), [1, 401, 500, 900]);
 }
 
 #[tokio::test]

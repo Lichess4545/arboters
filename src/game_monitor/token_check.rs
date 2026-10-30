@@ -17,12 +17,12 @@ use crate::lichess;
 use super::settings::LichessSettings;
 
 const TOKEN_TEST_PATH: &str = "api/token/test";
-const LICHESS4545: &str = "lichess4545";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TokenHealth {
-    Usable,
-    Unusable,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TokenState {
+    Untested,
+    Valid { owner: lichess::UserId },
+    Invalid,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +41,7 @@ pub struct TokenCheck {
     endpoint: Url,
     token: SecretString,
     interval: Duration,
-    health: watch::Sender<TokenHealth>,
+    state: watch::Sender<TokenState>,
 }
 
 impl TokenCheck {
@@ -49,19 +49,19 @@ impl TokenCheck {
         http: reqwest::Client,
         settings: &LichessSettings,
         token: SecretString,
-    ) -> Result<(Self, watch::Receiver<TokenHealth>), url::ParseError> {
-        let (health, observed) = watch::channel(TokenHealth::Usable);
+    ) -> Result<(Self, watch::Receiver<TokenState>), url::ParseError> {
+        let (state, observed) = watch::channel(TokenState::Untested);
         let check = Self {
             http,
             endpoint: settings.base_url.join(TOKEN_TEST_PATH)?,
             token,
             interval: settings.token_check_interval,
-            health,
+            state,
         };
         Ok((check, observed))
     }
 
-    async fn test(&self) -> Result<TokenHealth, TokenTestError> {
+    async fn test(&self) -> Result<TokenState, TokenTestError> {
         let owners: HashMap<String, Option<TokenOwner>> = self
             .http
             .post(self.endpoint.clone())
@@ -73,16 +73,13 @@ impl TokenCheck {
             .error_for_status()?
             .json()
             .await?;
-        Ok(match owners.into_values().next().flatten() {
-            None => {
-                tracing::error!("lichess reports the token invalid");
-                TokenHealth::Unusable
+        Ok(if let Some(owner) = owners.into_values().flatten().next() {
+            TokenState::Valid {
+                owner: owner.user_id,
             }
-            Some(owner) if owner.user_id.as_str() == LICHESS4545 => TokenHealth::Usable,
-            Some(owner) => {
-                tracing::error!(owner = %owner.user_id, expected = LICHESS4545, "the lichess token belongs to another account");
-                TokenHealth::Unusable
-            }
+        } else {
+            tracing::error!("lichess reports the token invalid");
+            TokenState::Invalid
         })
     }
 }
@@ -121,12 +118,12 @@ impl Message<Check> for TokenCheck {
 
     async fn handle(&mut self, _: Check, _: &mut Context<Self, Self::Reply>) {
         match self.test().await {
-            Ok(health) => {
-                tracing::debug!(health = ?health, "lichess token tested");
-                self.health.send_replace(health);
+            Ok(state) => {
+                tracing::debug!(state = ?state, "lichess token tested");
+                self.state.send_replace(state);
             }
             Err(error) => {
-                tracing::warn!(error = ?error, "keeping the previous lichess token health");
+                tracing::warn!(error = ?error, "keeping the previous lichess token state");
             }
         }
     }
