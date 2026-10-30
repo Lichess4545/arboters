@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::ops::ControlFlow;
 
@@ -8,11 +9,11 @@ use kameo::message::{Context, Message};
 use tokio::task::JoinHandle;
 
 use crate::chat::{
-    ChatUserId, CommandText, Handling, IncomingMessage, Listen, Messenger, Notification,
-    NotificationTarget,
+    ChatUserId, CommandText, Handling, IncomingMessage, Listen, MessageId, Notification,
+    NotificationTarget, Revision, Role,
 };
 
-use super::api::{Api, ApiError, Bot, Delivery, Flag, Place};
+use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
 use super::messenger::ZulipMessenger;
 use super::settings::{InboxSettings, ZulipSettings};
 
@@ -24,11 +25,29 @@ pub struct Inbox {
     settings: InboxSettings,
     messenger: ZulipMessenger,
     listeners: Vec<ReplyRecipient<IncomingMessage, Handling>>,
+    conversations: HashMap<MessageId, Conversation>,
     reading: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug)]
-pub struct Received(IncomingMessage);
+struct Conversation {
+    reply_to: NotificationTarget,
+    reply: Option<MessageId>,
+}
+
+#[derive(Debug)]
+pub enum Received {
+    Sent(IncomingMessage),
+    Edited(EditedText),
+}
+
+#[derive(Debug)]
+pub struct EditedText {
+    id: MessageId,
+    sender: ChatUserId,
+    role: Role,
+    text: CommandText,
+}
 
 impl Inbox {
     #[must_use]
@@ -38,30 +57,55 @@ impl Inbox {
             settings: settings.inbox.clone(),
             messenger,
             listeners: Vec::new(),
+            conversations: HashMap::new(),
             reading: None,
         }
     }
 
-    async fn hand_out(&self, message: IncomingMessage) {
-        let mut handled = false;
+    async fn answer(&self, message: &IncomingMessage) -> Notification {
+        let mut answers = Vec::new();
         for listener in &self.listeners {
             match listener.ask(message.clone()).await {
-                Ok(Handling::Handled) => handled = true,
+                Ok(Handling::Answered(answer)) => answers.push(answer.markdown().to_owned()),
                 Ok(Handling::Unrecognized) => {}
                 Err(error) => tracing::warn!(error = ?error, "listener failed to take a message"),
             }
         }
-        if handled {
-            return;
+        if answers.is_empty() {
+            return Notification::new(UNRECOGNIZED.to_owned());
         }
-        let reply = Notification::new(UNRECOGNIZED.to_owned());
-        if let Err(error) = self.messenger.send(&message.reply_to, &reply).await {
-            tracing::warn!(
-                error = %error,
-                cause = %error.cause,
-                "could not reply to an unrecognized message"
-            );
-        }
+        Notification::new(answers.join("\n\n"))
+    }
+
+    async fn reply(&mut self, message: IncomingMessage) {
+        let answer = self.answer(&message).await;
+        let earlier = self
+            .conversations
+            .get(&message.id)
+            .and_then(|conversation| conversation.reply);
+        let reply = match earlier {
+            Some(reply) => match self.messenger.edit(&message.reply_to, reply, &answer).await {
+                Ok(()) => Some(reply),
+                Err(error) => {
+                    tracing::warn!(error = %error, cause = %error.cause, "could not edit a reply");
+                    Some(reply)
+                }
+            },
+            None => match self.messenger.post(&message.reply_to, &answer).await {
+                Ok(reply) => Some(reply),
+                Err(error) => {
+                    tracing::warn!(error = %error, cause = %error.cause, "could not reply to a message");
+                    None
+                }
+            },
+        };
+        self.conversations.insert(
+            message.id,
+            Conversation {
+                reply_to: message.reply_to,
+                reply,
+            },
+        );
     }
 }
 
@@ -102,8 +146,24 @@ impl Message<Listen> for Inbox {
 impl Message<Received> for Inbox {
     type Reply = ();
 
-    async fn handle(&mut self, Received(message): Received, _: &mut Context<Self, Self::Reply>) {
-        self.hand_out(message).await;
+    async fn handle(&mut self, received: Received, _: &mut Context<Self, Self::Reply>) {
+        let message = match received {
+            Received::Sent(message) => message,
+            Received::Edited(edited) => {
+                let Some(conversation) = self.conversations.get(&edited.id) else {
+                    return;
+                };
+                IncomingMessage {
+                    id: edited.id,
+                    revision: Revision::Edited,
+                    sender: edited.sender,
+                    role: edited.role,
+                    reply_to: conversation.reply_to.clone(),
+                    text: edited.text,
+                }
+            }
+        };
+        self.reply(message).await;
     }
 }
 
@@ -160,8 +220,8 @@ async fn read(api: Api, settings: InboxSettings, inbox: WeakRecipient<Received>)
                 Ok(batch) => {
                     retry.reset();
                     queue.acknowledge(&batch);
-                    for delivery in batch.messages {
-                        if hand_over(&api, &bot, delivery, &inbox).await.is_break() {
+                    for event in batch.events {
+                        if hand_over(&api, &bot, event, &inbox).await.is_break() {
                             return;
                         }
                     }
@@ -176,15 +236,75 @@ async fn read(api: Api, settings: InboxSettings, inbox: WeakRecipient<Received>)
     }
 }
 
+enum Addressed {
+    Sent {
+        id: MessageId,
+        sender: ChatUserId,
+        reply_to: NotificationTarget,
+        text: CommandText,
+    },
+    Edited {
+        id: MessageId,
+        sender: ChatUserId,
+        text: CommandText,
+    },
+}
+
+impl Addressed {
+    const fn sender(&self) -> ChatUserId {
+        match self {
+            Self::Sent { sender, .. } | Self::Edited { sender, .. } => *sender,
+        }
+    }
+
+    const fn text(&mut self) -> &mut CommandText {
+        match self {
+            Self::Sent { text, .. } | Self::Edited { text, .. } => text,
+        }
+    }
+
+    fn with_role(self, role: Role) -> Received {
+        match self {
+            Self::Sent {
+                id,
+                sender,
+                reply_to,
+                text,
+            } => Received::Sent(IncomingMessage {
+                id,
+                revision: Revision::Original,
+                sender,
+                role,
+                reply_to,
+                text,
+            }),
+            Self::Edited { id, sender, text } => Received::Edited(EditedText {
+                id,
+                sender,
+                role,
+                text,
+            }),
+        }
+    }
+}
+
 async fn hand_over(
     api: &Api,
     bot: &Bot,
-    delivery: Delivery,
+    event: Event,
     inbox: &WeakRecipient<Received>,
 ) -> ControlFlow<()> {
-    let Some((sender, reply_to, text)) = addressed(bot, delivery) else {
+    let addressed = match event {
+        Event::Message(delivery) => addressed(bot, delivery),
+        Event::Edit(edit) => edited(bot, edit),
+    };
+    let Some(mut addressed) = addressed else {
         return ControlFlow::Continue(());
     };
+    if let Some(text) = with_user_ids(api, addressed.text()).await {
+        *addressed.text() = text;
+    }
+    let sender = addressed.sender();
     let role = match api.role_of(sender).await {
         Ok(role) => role,
         Err(error) => {
@@ -195,43 +315,38 @@ async fn hand_over(
     let Some(inbox) = inbox.upgrade() else {
         return ControlFlow::Break(());
     };
-    let message = IncomingMessage {
-        sender,
-        role,
-        reply_to,
-        text,
-    };
-    match inbox.tell(Received(message)).await {
+    match inbox.tell(addressed.with_role(role)).await {
         Ok(()) => ControlFlow::Continue(()),
         Err(_) => ControlFlow::Break(()),
     }
 }
 
-fn addressed(
-    bot: &Bot,
-    Delivery { message, flags }: Delivery,
-) -> Option<(ChatUserId, NotificationTarget, CommandText)> {
+fn addressed(bot: &Bot, Delivery { message, flags }: Delivery) -> Option<Addressed> {
     let sender = message.sender_id;
     if sender == bot.id {
         return None;
     }
+    let sent = |reply_to, text| Addressed::Sent {
+        id: message.id,
+        sender,
+        reply_to,
+        text,
+    };
     match message.place {
         Place::Private { display_recipient } => display_recipient
             .iter()
             .all(|recipient| recipient.id == sender || recipient.id == bot.id)
             .then(|| {
-                (
-                    sender,
+                sent(
                     NotificationTarget::DirectMessage { user_id: sender },
-                    CommandText::new(message.content),
+                    CommandText::new(&message.content),
                 )
             }),
         Place::Stream {
             display_recipient,
             subject,
         } => flags.contains(&Flag::Mentioned).then(|| {
-            (
-                sender,
+            sent(
                 NotificationTarget::Channel {
                     channel: display_recipient,
                     topic: subject,
@@ -240,6 +355,81 @@ fn addressed(
             )
         }),
     }
+}
+
+fn edited(bot: &Bot, edit: Edit) -> Option<Addressed> {
+    let sender = edit.user_id.filter(|sender| *sender != bot.id)?;
+    let content = edit.content.filter(|_| !edit.rendering_only)?;
+    let text = match edit.stream_id {
+        Some(_) if !edit.flags.contains(&Flag::Mentioned) => return None,
+        Some(_) => without_mention(bot, &content),
+        None => content.as_str(),
+    };
+    Some(Addressed::Edited {
+        id: edit.message_id,
+        sender,
+        text: CommandText::new(text),
+    })
+}
+
+async fn with_user_ids(api: &Api, text: &CommandText) -> Option<CommandText> {
+    let mut unnamed = false;
+    mention_ids(text, |_| {
+        unnamed = true;
+        None
+    });
+    if !unnamed {
+        return None;
+    }
+    let members = match api.members().await {
+        Ok(members) => members,
+        Err(error) => {
+            tracing::warn!(error = %error, "could not look up the users a message mentions");
+            return None;
+        }
+    };
+    Some(CommandText::new(mention_ids(text, |name| {
+        let name = name.trim().to_lowercase();
+        let mut named = members
+            .iter()
+            .filter(|member| member.is_active && member.full_name.to_lowercase() == name);
+        match (named.next(), named.next()) {
+            (Some(member), None) => Some(member.user_id),
+            _ => None,
+        }
+    })))
+}
+
+fn mention_ids(text: &str, mut id_of: impl FnMut(&str) -> Option<ChatUserId>) -> String {
+    let mut written = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some((before, after)) = rest.split_once('@') {
+        written.push_str(before);
+        written.push('@');
+        let after = after.strip_prefix('_').map_or(after, |after| {
+            written.push('_');
+            after
+        });
+        rest = after;
+        let Some((name, after)) = after
+            .strip_prefix("**")
+            .and_then(|inside| inside.split_once("**"))
+        else {
+            continue;
+        };
+        written.push_str("**");
+        written.push_str(name);
+        if !name.contains('|')
+            && let Some(id) = id_of(name)
+        {
+            written.push('|');
+            written.push_str(&id.0.to_string());
+        }
+        written.push_str("**");
+        rest = after;
+    }
+    written.push_str(rest);
+    written
 }
 
 fn without_mention<'a>(bot: &Bot, content: &'a str) -> &'a str {

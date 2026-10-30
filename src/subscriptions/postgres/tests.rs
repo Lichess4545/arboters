@@ -241,6 +241,7 @@ async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool:
         vec![
             Subscription {
                 id: alice,
+                requester: ChatUserId(1),
                 league: league("team4545"),
                 source: player("alice"),
                 event: GameEventKind::GameStarted,
@@ -248,6 +249,7 @@ async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool:
             },
             Subscription {
                 id: league_wide,
+                requester: ChatUserId(1),
                 league: league("team4545"),
                 source: SubscriptionSource::League,
                 event: GameEventKind::GameFinished,
@@ -255,6 +257,7 @@ async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool:
             },
             Subscription {
                 id: knights,
+                requester: ChatUserId(1),
                 league: league("team4545"),
                 source: team("knights"),
                 event: GameEventKind::GameStarted,
@@ -278,6 +281,92 @@ async fn someone_without_subscriptions_has_none_listed(pool: PgPool) {
     assert_eq!(subscriptions.requested_by(ChatUserId(2)).await.unwrap(), []);
 }
 
+fn owner(user: u64, at: NotificationTarget) -> Remover {
+    Remover::Owner {
+        user: ChatUserId(user),
+        at,
+    }
+}
+
+#[sqlx::test]
+async fn the_subscriptions_posting_to_a_target_are_listed_whoever_made_them(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let games = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), channel("4545", "games")),
+        ))
+        .await
+        .unwrap();
+    subscriptions
+        .subscribe(requested_by(
+            2,
+            subscription(player("bob"), channel("4545", "other games")),
+        ))
+        .await
+        .unwrap();
+    subscriptions
+        .subscribe(requested_by(
+            2,
+            subscription(player("bob"), direct_message(2)),
+        ))
+        .await
+        .unwrap();
+    let more_games = subscriptions
+        .subscribe(requested_by(
+            2,
+            subscription(SubscriptionSource::League, channel("4545", "games")),
+        ))
+        .await
+        .unwrap();
+
+    let posting: Vec<(SubscriptionId, ChatUserId)> = subscriptions
+        .posting_to(&channel("4545", "games"))
+        .await
+        .unwrap()
+        .iter()
+        .map(|subscription| (subscription.id, subscription.requester))
+        .collect();
+
+    assert_eq!(
+        posting,
+        [(games, ChatUserId(1)), (more_games, ChatUserId(2))]
+    );
+    assert_eq!(
+        subscriptions
+            .posting_to(&direct_message(2))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[sqlx::test]
+async fn anyone_at_a_subscriptions_target_can_remove_it(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let id = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), channel("4545", "games")),
+        ))
+        .await
+        .unwrap();
+
+    let elsewhere = subscriptions
+        .remove(id, owner(2, channel("4545", "other games")))
+        .await
+        .unwrap();
+    let there = subscriptions
+        .remove(id, owner(2, channel("4545", "games")))
+        .await
+        .unwrap();
+
+    assert!(!elsewhere);
+    assert!(there);
+    assert_eq!(subscriptions.requested_by(ChatUserId(1)).await.unwrap(), []);
+}
+
 #[sqlx::test]
 async fn a_requester_can_remove_their_own_subscription(pool: PgPool) {
     let subscriptions = PostgresSubscriptions::new(pool);
@@ -290,7 +379,7 @@ async fn a_requester_can_remove_their_own_subscription(pool: PgPool) {
         .unwrap();
 
     let removed = subscriptions
-        .remove(id, Remover::Requester(ChatUserId(1)))
+        .remove(id, owner(1, direct_message(1)))
         .await
         .unwrap();
 
@@ -310,7 +399,7 @@ async fn a_requester_cannot_remove_someone_elses_subscription(pool: PgPool) {
         .unwrap();
 
     let removed = subscriptions
-        .remove(id, Remover::Requester(ChatUserId(2)))
+        .remove(id, owner(2, direct_message(2)))
         .await
         .unwrap();
 

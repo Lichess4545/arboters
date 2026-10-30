@@ -2,7 +2,8 @@ use kameo::Reply;
 use kameo::actor::ReplyRecipient;
 use nutype::nutype;
 
-use super::target::{ChatUserId, NotificationTarget};
+use super::notification::Notification;
+use super::target::{ChatUserId, MessageId, NotificationTarget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -37,17 +38,25 @@ impl Role {
 #[nutype(sanitize(trim), derive(Debug, Clone, PartialEq, Eq, Deref))]
 pub struct CommandText(String);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Revision {
+    Original,
+    Edited,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IncomingMessage {
+    pub id: MessageId,
+    pub revision: Revision,
     pub sender: ChatUserId,
     pub role: Role,
     pub reply_to: NotificationTarget,
     pub text: CommandText,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Reply)]
+#[derive(Clone, Debug, PartialEq, Eq, Reply)]
 pub enum Handling {
-    Handled,
+    Answered(Notification),
     Unrecognized,
 }
 

@@ -1,0 +1,145 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                id, requester_user_id, league,\n                source_kind AS \"source_kind: StoredSourceKind\", source_name,\n                event AS \"event: StoredEvent\", target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE requester_user_id = $1\n            ORDER BY id\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "requester_user_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "requester_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "league",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "league"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_kind: StoredSourceKind",
+        "type_info": {
+          "Custom": {
+            "name": "subscription_source_kind",
+            "kind": {
+              "Enum": [
+                "player",
+                "team",
+                "league"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "source_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "source_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "source_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "event: StoredEvent",
+        "type_info": {
+          "Custom": {
+            "name": "subscription_event",
+            "kind": {
+              "Enum": [
+                "game_started",
+                "game_finished"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "event"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "target_user_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "target_user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "target_channel",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "target_channel"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "target_topic",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "subscriptions",
+            "name": "target_topic"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3f0aa9fe14a5fd0b93b5d939b1c273e9b1d76324278a447ee9d9af23ccce3a14"
+}

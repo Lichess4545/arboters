@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::chat::{ChannelName, ChatUserId, Role, TopicName};
+use crate::chat::{ChannelName, ChatUserId, MessageId, Role, TopicName};
 
 use super::settings::{BotEmail, ZulipSettings};
 
@@ -73,7 +73,24 @@ pub struct Queue {
 #[derive(Debug)]
 pub struct Batch {
     pub last_event_id: Option<EventId>,
-    pub messages: Vec<Delivery>,
+    pub events: Vec<Event>,
+}
+
+#[derive(Debug)]
+pub enum Event {
+    Message(Delivery),
+    Edit(Edit),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Edit {
+    pub message_id: MessageId,
+    pub user_id: Option<ChatUserId>,
+    #[serde(default)]
+    pub rendering_only: bool,
+    pub content: Option<String>,
+    pub flags: Vec<Flag>,
+    pub stream_id: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +109,7 @@ pub enum Flag {
 
 #[derive(Debug, Deserialize)]
 pub struct Message {
+    pub id: MessageId,
     pub sender_id: ChatUserId,
     pub content: String,
     #[serde(flatten)]
@@ -154,8 +172,21 @@ struct Numbered {
 #[serde(rename_all = "snake_case")]
 enum EventKind {
     Message,
+    UpdateMessage,
     #[serde(other)]
     Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Member {
+    pub user_id: ChatUserId,
+    pub full_name: FullName,
+    pub is_active: bool,
+}
+
+#[derive(Deserialize)]
+struct Members {
+    members: Vec<Member>,
 }
 
 #[derive(Deserialize)]
@@ -211,6 +242,11 @@ impl Api {
         Ok(role_from(found.user.role))
     }
 
+    pub async fn members(&self) -> Result<Vec<Member>, ApiError> {
+        let Members { members } = read(self.get("users")?.send().await?).await?;
+        Ok(members)
+    }
+
     pub async fn register(&self) -> Result<Queue, ApiError> {
         let response = self
             .http
@@ -218,7 +254,7 @@ impl Api {
             .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
             .timeout(REQUEST_TIMEOUT)
             .form(&[
-                ("event_types", r#"["message"]"#),
+                ("event_types", r#"["message","update_message"]"#),
                 ("apply_markdown", "false"),
             ])
             .send()
@@ -239,7 +275,7 @@ impl Api {
         let Events { events } = read(response).await?;
         let mut batch = Batch {
             last_event_id: None,
-            messages: Vec::new(),
+            events: Vec::new(),
         };
         for event in events {
             let Ok(numbered) = Numbered::deserialize(&event) else {
@@ -247,11 +283,13 @@ impl Api {
                 continue;
             };
             batch.last_event_id = batch.last_event_id.max(Some(numbered.id));
-            if !matches!(numbered.kind, EventKind::Message) {
-                continue;
-            }
-            match Delivery::deserialize(&event) {
-                Ok(delivery) => batch.messages.push(delivery),
+            let read = match numbered.kind {
+                EventKind::Message => Delivery::deserialize(&event).map(Event::Message),
+                EventKind::UpdateMessage => Edit::deserialize(&event).map(Event::Edit),
+                EventKind::Other => continue,
+            };
+            match read {
+                Ok(read) => batch.events.push(read),
                 Err(error) => {
                     tracing::warn!(%error, event_id = numbered.id.0, "unreadable zulip message event ignored");
                 }
