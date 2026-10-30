@@ -4,13 +4,13 @@ use std::ops::ControlFlow;
 
 use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use kameo::Actor;
-use kameo::actor::{ActorRef, ReplyRecipient, WeakRecipient};
+use kameo::actor::{ActorRef, Recipient, ReplyRecipient, WeakRecipient};
 use kameo::message::{Context, Message};
 use tokio::task::JoinHandle;
 
 use crate::chat::{
-    ChatUserId, CommandText, Handling, IncomingMessage, Listen, MessageId, Notification,
-    NotificationTarget, Revision, Role,
+    ChatUserId, CommandText, Handling, IncomingMessage, Listen, MessageId, MessageText,
+    Notification, NotificationTarget, Overhear, OverheardMessage, Revision, Role,
 };
 
 use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
@@ -25,6 +25,7 @@ pub struct Inbox {
     settings: InboxSettings,
     messenger: ZulipMessenger,
     listeners: Vec<ReplyRecipient<IncomingMessage, Handling>>,
+    overhearers: Vec<Recipient<OverheardMessage>>,
     conversations: HashMap<MessageId, Conversation>,
     reading: Option<JoinHandle<()>>,
 }
@@ -49,6 +50,9 @@ pub struct EditedText {
     text: CommandText,
 }
 
+#[derive(Debug)]
+pub struct Overheard(OverheardMessage);
+
 impl Inbox {
     #[must_use]
     pub fn new(http: reqwest::Client, settings: &ZulipSettings, messenger: ZulipMessenger) -> Self {
@@ -57,6 +61,7 @@ impl Inbox {
             settings: settings.inbox.clone(),
             messenger,
             listeners: Vec::new(),
+            overhearers: Vec::new(),
             conversations: HashMap::new(),
             reading: None,
         }
@@ -125,11 +130,13 @@ impl Actor for Inbox {
         mut inbox: Self,
         actor_ref: ActorRef<Self>,
     ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        let received = actor_ref.recipient::<Received>().downgrade();
+        let received = actor_ref.clone().recipient::<Received>().downgrade();
+        let overheard = actor_ref.recipient::<Overheard>().downgrade();
         inbox.reading = Some(tokio::spawn(read(
             inbox.api.clone(),
             inbox.settings.clone(),
             received,
+            overheard,
         )));
         std::future::ready(Ok(inbox))
     }
@@ -140,6 +147,26 @@ impl Message<Listen> for Inbox {
 
     async fn handle(&mut self, Listen(listener): Listen, _: &mut Context<Self, Self::Reply>) {
         self.listeners.push(listener);
+    }
+}
+
+impl Message<Overhear> for Inbox {
+    type Reply = ();
+
+    async fn handle(&mut self, Overhear(overhearer): Overhear, _: &mut Context<Self, Self::Reply>) {
+        self.overhearers.push(overhearer);
+    }
+}
+
+impl Message<Overheard> for Inbox {
+    type Reply = ();
+
+    async fn handle(&mut self, Overheard(message): Overheard, _: &mut Context<Self, Self::Reply>) {
+        for overhearer in &self.overhearers {
+            if let Err(error) = overhearer.tell(message.clone()).await {
+                tracing::warn!(error = ?error, "overhearer failed to take a message");
+            }
+        }
     }
 }
 
@@ -197,7 +224,12 @@ impl Retry {
     }
 }
 
-async fn read(api: Api, settings: InboxSettings, inbox: WeakRecipient<Received>) {
+async fn read(
+    api: Api,
+    settings: InboxSettings,
+    inbox: WeakRecipient<Received>,
+    overheard: WeakRecipient<Overheard>,
+) {
     let mut retry = Retry::new(&settings);
     let bot = loop {
         match api.own_user().await {
@@ -221,6 +253,14 @@ async fn read(api: Api, settings: InboxSettings, inbox: WeakRecipient<Received>)
                     retry.reset();
                     queue.acknowledge(&batch);
                     for event in batch.events {
+                        if let Event::Message(delivery) = &event
+                            && let Some(message) = overhear(&bot, delivery)
+                        {
+                            if pass_on(message, &overheard).await.is_break() {
+                                return;
+                            }
+                            continue;
+                        }
                         if hand_over(&api, &bot, event, &inbox).await.is_break() {
                             return;
                         }
@@ -319,6 +359,35 @@ async fn hand_over(
         Ok(()) => ControlFlow::Continue(()),
         Err(_) => ControlFlow::Break(()),
     }
+}
+
+async fn pass_on(
+    message: OverheardMessage,
+    overheard: &WeakRecipient<Overheard>,
+) -> ControlFlow<()> {
+    let Some(inbox) = overheard.upgrade() else {
+        return ControlFlow::Break(());
+    };
+    match inbox.tell(Overheard(message)).await {
+        Ok(()) => ControlFlow::Continue(()),
+        Err(_) => ControlFlow::Break(()),
+    }
+}
+
+fn overhear(bot: &Bot, Delivery { message, flags }: &Delivery) -> Option<OverheardMessage> {
+    let Place::Stream {
+        display_recipient,
+        subject,
+    } = &message.place
+    else {
+        return None;
+    };
+    (message.sender_id != bot.id && !flags.contains(&Flag::Mentioned)).then(|| OverheardMessage {
+        sender: message.sender_id,
+        channel: display_recipient.clone(),
+        topic: subject.clone(),
+        text: MessageText::new(message.content.clone()),
+    })
 }
 
 fn addressed(bot: &Bot, Delivery { message, flags }: Delivery) -> Option<Addressed> {

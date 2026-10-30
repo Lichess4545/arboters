@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use url::Url;
 
-use crate::chat::{ChannelName, ChatUserId, MessageId, Role, TopicName};
+use crate::chat::{ChannelName, ChatUserId, MessageId, MessageText, Role, TopicName};
 
 use super::settings::{BotEmail, ZulipSettings};
 
@@ -199,6 +199,16 @@ struct UserRole {
     role: u16,
 }
 
+#[derive(Deserialize)]
+struct LinkedMessageEnvelope {
+    message: LinkedMessage,
+}
+
+#[derive(Deserialize)]
+struct LinkedMessage {
+    content: MessageText,
+}
+
 const fn role_from(value: u16) -> Role {
     match value {
         100 => Role::Owner,
@@ -247,6 +257,17 @@ impl Api {
         Ok(members)
     }
 
+    pub async fn markdown_of(&self, id: MessageId) -> Result<MessageText, ApiError> {
+        let found: LinkedMessageEnvelope = read(
+            self.get(&format!("messages/{}", id.0))?
+                .query(&[("apply_markdown", "false")])
+                .send()
+                .await?,
+        )
+        .await?;
+        Ok(found.message.content)
+    }
+
     pub async fn register(&self) -> Result<Queue, ApiError> {
         let response = self
             .http
@@ -256,6 +277,7 @@ impl Api {
             .form(&[
                 ("event_types", r#"["message","update_message"]"#),
                 ("apply_markdown", "false"),
+                ("all_public_streams", "true"),
             ])
             .send()
             .await?;

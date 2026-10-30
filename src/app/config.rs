@@ -8,6 +8,7 @@ use super::telemetry::TelemetrySettings;
 use crate::game_monitor::LichessSettings;
 use crate::game_monitor::watchlist::WatchlistSettings;
 use crate::heltour::HeltourSettings;
+use crate::responses::ResponsesSettings;
 use crate::status::StatusSettings;
 use crate::zulip::ZulipSettings;
 
@@ -25,6 +26,8 @@ pub struct Config {
     pub heltour: HeltourSettings,
     pub zulip: Option<ZulipSettings>,
     pub status: Option<StatusSettings>,
+    #[serde(default)]
+    pub responses: ResponsesSettings,
     #[serde(default)]
     pub watchlist: WatchlistSettings,
     #[serde(default)]
