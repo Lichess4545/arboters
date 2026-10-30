@@ -7,7 +7,8 @@ Arboters is a communications bot for a chess league that runs on [heltour](https
 ## Features
 
 - **Game watching.** Arboters watches the Lichess games of the players in the current heltour pairings.
-- **Game announcements.** When a player's game starts or finishes, Arboters posts a message in each Zulip topic subscribed to that player.
+- **Game announcements.** When a player's game starts or finishes, Arboters posts a message to each Zulip user and topic subscribed to that player or to the league of the game.
+- **Subscriptions from Zulip.** To manage subscriptions, send Arboters a direct message, or mention it in a Zulip message. `tell me when ...` subscribes you to one player's games, or to every game in a league. Moderators can subscribe a topic: `tell here when ...` subscribes the topic you send it in, and `tell #**channel>topic** when ...` subscribes the topic you name. `subscription list` shows your subscriptions, `subscription remove <id>` removes one, and `help` lists the commands.
 - **Status messages.** Arboters posts in a status channel when it starts, connects to Lichess, and stops.
 
 ## Run it on your machine

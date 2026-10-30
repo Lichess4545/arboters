@@ -5,16 +5,16 @@ use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 
+use crate::chat::Messenger;
 use crate::game_monitor::GameEvent;
-use crate::heltour::CurrentPairings;
+use crate::heltour::ActiveLeagues;
 use crate::subscriptions::{SubscriptionSource, Subscriptions};
 
-use super::messenger::Messenger;
 use super::rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
-    pairings: CurrentPairings,
+    active: ActiveLeagues,
     subscriptions: R,
     messenger: M,
 }
@@ -23,7 +23,7 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
     pub fn new(subscriptions: R, messenger: M) -> Self {
         Self {
-            pairings: CurrentPairings::default(),
+            active: ActiveLeagues::default(),
             subscriptions,
             messenger,
         }
@@ -31,14 +31,15 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let players = game
+        let [white, black] = game
             .user_ids()
             .map(|user_id| SubscriptionSource::Player(user_id.clone()));
+        let sources = [white, black, SubscriptionSource::League];
         let mut targets = BTreeSet::new();
-        for league in self.pairings.leagues_of(game) {
+        for league in self.active.leagues_of(game) {
             match self
                 .subscriptions
-                .targets_for(league, event.kind(), &players)
+                .targets_for(league, event.kind(), &sources)
                 .await
             {
                 Ok(found) => targets.extend(found),
@@ -87,11 +88,11 @@ impl<R: Subscriptions, M: Messenger> Message<GameEvent> for Notifier<R, M> {
     }
 }
 
-impl<R: Subscriptions, M: Messenger> Message<CurrentPairings> for Notifier<R, M> {
+impl<R: Subscriptions, M: Messenger> Message<ActiveLeagues> for Notifier<R, M> {
     type Reply = ();
 
-    async fn handle(&mut self, pairings: CurrentPairings, _: &mut Context<Self, Self::Reply>) {
-        self.pairings = pairings;
+    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
+        self.active = active;
     }
 }
 

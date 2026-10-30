@@ -1,6 +1,5 @@
-use crate::subscriptions::NotificationTarget;
-
-use super::rendering::Notification;
+use super::notification::Notification;
+use super::target::NotificationTarget;
 
 #[derive(Debug, thiserror::Error)]
 #[error("failed to deliver notification to {target:?}")]

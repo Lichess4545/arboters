@@ -2,7 +2,7 @@
 
 ## League attribution for notifications
 
-Subscriptions are league-scoped and their source is a player or a team. The notifier looks up player sources in every league whose current pairings pair the game's two players, but not team sources.
+Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose current pairings pair the game's two players, but not team sources. Any game between two paired players counts, including a casual one.
 
 - Look up the players' teams as sources too.
 
@@ -18,7 +18,11 @@ Subscriptions are league-scoped and their source is a player or a team. The noti
 
 ## Subscription commands
 
-- There is no way to create a subscription yet. Port Chesster's `tell <listener> when <event> in <league> for <source>`, `subscription list`, and `subscription remove <id>` as Zulip commands.
+`tell me when ...`, `tell here when ...`, `tell #**channel>topic** when ...`, `subscription list`, `subscription remove <id>`, and `help` work over Zulip direct messages and mentions. The bot must be a Zulip **Generic** bot: an incoming webhook bot can only send messages, so it cannot register the event queue the inbox reads.
+
+- Chesster's `my-team-channel` listener, `my-team` and team-name sources, and the `a-game-is-scheduled` and `a-pairing-is-released` events are still missing. They need the heltour roster adapter and pairing events.
+- `tell` accepts any well-formed Lichess username without checking that the player exists or plays in the league.
+- Zulip flags a message as mentioning the bot when it mentions a user group the bot belongs to, so such a message that is not a command gets the "send `help`" reply.
 
 ## Deployment
 

@@ -1,4 +1,5 @@
 use nutype::nutype;
+use serde::Deserialize;
 
 /// ```
 /// use arboters::heltour::league::Tag;
@@ -20,17 +21,9 @@ fn is_slug(candidate: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deref)
-)]
-pub struct Name(String);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 pub struct League {
     pub tag: Tag,
-    pub name: Name,
 }
 
 #[cfg(test)]

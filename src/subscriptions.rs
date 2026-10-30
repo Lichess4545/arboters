@@ -1,15 +1,15 @@
 use std::collections::BTreeSet;
 
+use crate::chat::{ChatUserId, NotificationTarget};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::league;
 
+mod commands;
 mod model;
 mod postgres;
 
-pub use model::{
-    ChannelName, ChatUserId, NewSubscription, NotificationTarget, SubscriptionId,
-    SubscriptionSource, TopicName, TopicNameError,
-};
+pub use commands::{InboxUnavailable, SubscriptionCommands};
+pub use model::{NewSubscription, Remover, Subscription, SubscriptionId, SubscriptionSource};
 pub use postgres::PostgresSubscriptions;
 
 #[derive(Debug, thiserror::Error)]
@@ -28,4 +28,15 @@ pub trait Subscriptions: Clone + Send + Sync + 'static {
         event: GameEventKind,
         sources: &[SubscriptionSource],
     ) -> impl Future<Output = Result<BTreeSet<NotificationTarget>, SubscriptionsError>> + Send;
+
+    fn requested_by(
+        &self,
+        requester: ChatUserId,
+    ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
+
+    fn remove(
+        &self,
+        id: SubscriptionId,
+        remover: Remover,
+    ) -> impl Future<Output = Result<bool, SubscriptionsError>> + Send;
 }

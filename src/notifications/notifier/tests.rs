@@ -4,13 +4,13 @@ use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
+use crate::chat::{
+    ChannelName, ChatUserId, DeliveryError, Notification, NotificationTarget, TopicName,
+};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed};
-use crate::notifications::{DeliveryError, Notification};
-use crate::subscriptions::{
-    ChatUserId, NewSubscription, NotificationTarget, PostgresSubscriptions,
-};
+use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -75,12 +75,15 @@ fn game() -> Game {
     }
 }
 
-fn paired_in(tag: &str, white: &str, black: &str) -> CurrentPairings {
-    CurrentPairings(vec![Pairing {
-        league: league(tag),
-        white: user_id(white),
-        black: user_id(black),
-    }])
+fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
+    ActiveLeagues {
+        leagues: Vec::new(),
+        pairings: vec![Pairing {
+            league: league(tag),
+            white: user_id(white),
+            black: user_id(black),
+        }],
+    }
 }
 
 fn direct_message(user_id: u64) -> NotificationTarget {
@@ -107,7 +110,7 @@ fn subscription(
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
-    pairings: CurrentPairings,
+    active: ActiveLeagues,
     messenger: RecordingMessenger,
 ) -> Vec<(NotificationTarget, Notification)> {
     let stored = PostgresSubscriptions::new(pool);
@@ -115,7 +118,7 @@ async fn deliveries(
         stored.subscribe(subscription).await.unwrap();
     }
     let notifier = Notifier::spawn(Notifier::new(stored, messenger.clone()));
-    notifier.ask(pairings).await.unwrap();
+    notifier.ask(active).await.unwrap();
     notifier.ask(GameEvent::Started(game())).await.unwrap();
     messenger.deliveries()
 }
@@ -211,5 +214,47 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
         )
         .await,
         vec![(direct_message(8), render(&GameEvent::Started(game())))]
+    );
+}
+
+fn games_topic() -> NotificationTarget {
+    NotificationTarget::Channel {
+        channel: ChannelName::try_new("chess").unwrap(),
+        topic: TopicName::try_new("games").unwrap(),
+    }
+}
+
+fn league_wide(tag: &str, target: NotificationTarget) -> NewSubscription {
+    NewSubscription {
+        source: SubscriptionSource::League,
+        ..subscription(tag, "alice", GameEventKind::GameStarted, target)
+    }
+}
+
+#[sqlx::test]
+async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
+    let notification = render(&GameEvent::Started(game()));
+    assert_eq!(
+        deliveries(
+            pool,
+            [
+                league_wide("classical", direct_message(7)),
+                league_wide("rapid", direct_message(8)),
+                league_wide("classical", games_topic()),
+                subscription(
+                    "classical",
+                    "alice",
+                    GameEventKind::GameStarted,
+                    games_topic()
+                ),
+            ],
+            paired_in("classical", "alice", "bob"),
+            RecordingMessenger::default(),
+        )
+        .await,
+        vec![
+            (direct_message(7), notification.clone()),
+            (games_topic(), notification),
+        ]
     );
 }

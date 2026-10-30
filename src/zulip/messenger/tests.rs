@@ -9,11 +9,11 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
 use super::*;
+use crate::chat::{ChannelName, ChatUserId, TopicName};
 use crate::game_monitor::GameEvent;
 use crate::lichess::{self, Game, GameId, Player, Speed};
 use crate::notifications::render;
-use crate::subscriptions::{ChannelName, ChatUserId, TopicName};
-use crate::zulip::BotEmail;
+use crate::zulip::{BotEmail, InboxSettings};
 
 type CapturedForms = Arc<Mutex<Vec<BTreeMap<String, String>>>>;
 
@@ -44,6 +44,7 @@ impl FakeZulip {
             site: format!("http://{address}").parse().unwrap(),
             email: BotEmail::try_new("bot@chess.zulipchat.com").unwrap(),
             api_key: SecretString::from("key"),
+            inbox: InboxSettings::default(),
         };
         Self {
             messenger: ZulipMessenger::new(&settings).unwrap(),

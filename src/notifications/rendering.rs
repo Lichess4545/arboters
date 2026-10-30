@@ -1,27 +1,6 @@
+use crate::chat::Notification;
 use crate::game_monitor::{GameEvent, GameOutcome};
 use crate::lichess::Game;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notification {
-    markdown: String,
-}
-
-impl Notification {
-    /// ```
-    /// use arboters::notifications::Notification;
-    ///
-    /// assert_eq!(Notification::new("**hello**".to_owned()).markdown(), "**hello**");
-    /// ```
-    #[must_use]
-    pub const fn new(markdown: String) -> Self {
-        Self { markdown }
-    }
-
-    #[must_use]
-    pub fn markdown(&self) -> &str {
-        &self.markdown
-    }
-}
 
 #[must_use]
 pub fn render(event: &GameEvent) -> Notification {
@@ -39,7 +18,7 @@ pub fn render(event: &GameEvent) -> Notification {
             None => format!("{} is over: {}", pairing(game), game.id.link()),
         },
     };
-    Notification { markdown }
+    Notification::new(markdown)
 }
 
 fn pairing(game: &Game) -> String {

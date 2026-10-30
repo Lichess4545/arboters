@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use kameo::actor::Spawn;
 
 use super::*;
-use crate::notifications::DeliveryError;
+use crate::chat::DeliveryError;
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {

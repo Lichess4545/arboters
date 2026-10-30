@@ -2,13 +2,12 @@ use std::collections::BTreeSet;
 
 use sqlx::PgPool;
 
+use crate::chat::{ChannelName, ChatUserId, NotificationTarget, TopicName};
 use crate::game_monitor::GameEventKind;
-use crate::heltour::league;
+use crate::heltour::{league, team};
+use crate::lichess;
 
-use super::model::{
-    ChannelName, ChatUserId, NewSubscription, NotificationTarget, SubscriptionId,
-    SubscriptionSource, TopicName,
-};
+use super::model::{NewSubscription, Remover, Subscription, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
 
 #[derive(Clone, Debug)]
@@ -39,18 +38,44 @@ impl From<GameEventKind> for StoredEvent {
     }
 }
 
+impl From<StoredEvent> for GameEventKind {
+    fn from(event: StoredEvent) -> Self {
+        match event {
+            StoredEvent::GameStarted => Self::GameStarted,
+            StoredEvent::GameFinished => Self::GameFinished,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, sqlx::Type)]
 #[sqlx(type_name = "subscription_source_kind", rename_all = "snake_case")]
 enum StoredSourceKind {
     Player,
     Team,
+    League,
 }
 
-fn stored_source(source: &SubscriptionSource) -> (StoredSourceKind, &str) {
+fn stored_source<'a>(
+    source: &'a SubscriptionSource,
+    league: &'a league::Tag,
+) -> (StoredSourceKind, &'a str) {
     match source {
         SubscriptionSource::Player(user_id) => (StoredSourceKind::Player, user_id.as_str()),
         SubscriptionSource::Team(team) => (StoredSourceKind::Team, team.as_str()),
+        SubscriptionSource::League => (StoredSourceKind::League, league.as_str()),
     }
+}
+
+fn source_from(kind: StoredSourceKind, name: &str) -> Result<SubscriptionSource, sqlx::Error> {
+    Ok(match kind {
+        StoredSourceKind::Player => {
+            SubscriptionSource::Player(lichess::UserId::try_new(name).map_err(undecodable)?)
+        }
+        StoredSourceKind::Team => {
+            SubscriptionSource::Team(team::Name::try_new(name).map_err(undecodable)?)
+        }
+        StoredSourceKind::League => SubscriptionSource::League,
+    })
 }
 
 fn stored_user_id(user_id: ChatUserId) -> Result<i64, sqlx::Error> {
@@ -104,7 +129,7 @@ impl Subscriptions for PostgresSubscriptions {
         &self,
         subscription: NewSubscription,
     ) -> Result<SubscriptionId, SubscriptionsError> {
-        let (source_kind, source_name) = stored_source(&subscription.source);
+        let (source_kind, source_name) = stored_source(&subscription.source, &subscription.league);
         let target = StoredTarget::from_target(&subscription.target)?;
         let id = sqlx::query_scalar!(
             r#"
@@ -142,7 +167,7 @@ impl Subscriptions for PostgresSubscriptions {
     ) -> Result<BTreeSet<NotificationTarget>, SubscriptionsError> {
         let mut targets = BTreeSet::new();
         for source in sources {
-            let (source_kind, source_name) = stored_source(source);
+            let (source_kind, source_name) = stored_source(source, league);
             let rows = sqlx::query!(
                 r#"
                 SELECT target_user_id, target_channel, target_topic
@@ -166,6 +191,63 @@ impl Subscriptions for PostgresSubscriptions {
             }
         }
         Ok(targets)
+    }
+
+    async fn requested_by(
+        &self,
+        requester: ChatUserId,
+    ) -> Result<Vec<Subscription>, SubscriptionsError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                id, league, source_kind AS "source_kind: StoredSourceKind", source_name,
+                event AS "event: StoredEvent", target_user_id, target_channel, target_topic
+            FROM subscriptions
+            WHERE requester_user_id = $1
+            ORDER BY id
+            "#,
+            stored_user_id(requester)?,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut subscriptions = Vec::with_capacity(rows.len());
+        for row in rows {
+            let target = StoredTarget {
+                user_id: row.target_user_id,
+                channel: row.target_channel,
+                topic: row.target_topic,
+            };
+            subscriptions.push(Subscription {
+                id: SubscriptionId(row.id),
+                league: league::Tag::try_new(&row.league).map_err(undecodable)?,
+                source: source_from(row.source_kind, &row.source_name)?,
+                event: row.event.into(),
+                target: target.into_target()?,
+            });
+        }
+        Ok(subscriptions)
+    }
+
+    async fn remove(
+        &self,
+        id: SubscriptionId,
+        remover: Remover,
+    ) -> Result<bool, SubscriptionsError> {
+        let requester = match remover {
+            Remover::Requester(requester) => Some(stored_user_id(requester)?),
+            Remover::Moderator => None,
+        };
+        let deleted = sqlx::query!(
+            r#"
+            DELETE FROM subscriptions
+            WHERE id = $1 AND ($2::BIGINT IS NULL OR requester_user_id = $2)
+            "#,
+            id.0,
+            requester,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(deleted.rows_affected() > 0)
     }
 }
 

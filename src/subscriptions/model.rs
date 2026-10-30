@@ -1,7 +1,6 @@
 use std::fmt;
 
-use nutype::nutype;
-
+use crate::chat::{ChatUserId, NotificationTarget};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{league, team};
 use crate::lichess;
@@ -15,38 +14,11 @@ impl fmt::Display for SubscriptionId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ChatUserId(pub u64);
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deref, Deserialize)
-)]
-pub struct ChannelName(String);
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deref)
-)]
-pub struct TopicName(String);
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NotificationTarget {
-    DirectMessage {
-        user_id: ChatUserId,
-    },
-    Channel {
-        channel: ChannelName,
-        topic: TopicName,
-    },
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SubscriptionSource {
     Player(lichess::UserId),
     Team(team::Name),
+    League,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,4 +28,19 @@ pub struct NewSubscription {
     pub source: SubscriptionSource,
     pub event: GameEventKind,
     pub target: NotificationTarget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Subscription {
+    pub id: SubscriptionId,
+    pub league: league::Tag,
+    pub source: SubscriptionSource,
+    pub event: GameEventKind,
+    pub target: NotificationTarget,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Remover {
+    Requester(ChatUserId),
+    Moderator,
 }

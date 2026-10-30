@@ -161,3 +161,195 @@ fn user_ids_beyond_the_storable_range_are_rejected() {
 
     assert!(result.is_err());
 }
+
+#[sqlx::test]
+async fn league_subscriptions_are_targets_of_the_league_source(pool: PgPool) {
+    let subscriptions = subscribed(
+        pool,
+        vec![subscription(
+            SubscriptionSource::League,
+            channel("4545", "games"),
+        )],
+    )
+    .await;
+
+    assert_eq!(
+        started_targets(&subscriptions, &[SubscriptionSource::League]).await,
+        BTreeSet::from([channel("4545", "games")])
+    );
+}
+
+#[sqlx::test]
+async fn league_subscriptions_of_another_league_are_not_targets(pool: PgPool) {
+    let elsewhere = NewSubscription {
+        league: league("lonewolf"),
+        ..subscription(SubscriptionSource::League, direct_message(7))
+    };
+    let subscriptions = subscribed(pool, vec![elsewhere]).await;
+
+    assert!(
+        started_targets(&subscriptions, &[SubscriptionSource::League])
+            .await
+            .is_empty()
+    );
+}
+
+fn requested_by(requester: u64, subscription: NewSubscription) -> NewSubscription {
+    NewSubscription {
+        requester: ChatUserId(requester),
+        ..subscription
+    }
+}
+
+#[sqlx::test]
+async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let alice = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), direct_message(1)),
+        ))
+        .await
+        .unwrap();
+    subscriptions
+        .subscribe(requested_by(
+            2,
+            subscription(player("bob"), direct_message(2)),
+        ))
+        .await
+        .unwrap();
+    let league_wide = subscriptions
+        .subscribe(NewSubscription {
+            event: GameEventKind::GameFinished,
+            ..requested_by(
+                1,
+                subscription(SubscriptionSource::League, channel("4545", "games")),
+            )
+        })
+        .await
+        .unwrap();
+    let knights = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(team("Knights"), direct_message(1)),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        subscriptions.requested_by(ChatUserId(1)).await.unwrap(),
+        vec![
+            Subscription {
+                id: alice,
+                league: league("team4545"),
+                source: player("alice"),
+                event: GameEventKind::GameStarted,
+                target: direct_message(1),
+            },
+            Subscription {
+                id: league_wide,
+                league: league("team4545"),
+                source: SubscriptionSource::League,
+                event: GameEventKind::GameFinished,
+                target: channel("4545", "games"),
+            },
+            Subscription {
+                id: knights,
+                league: league("team4545"),
+                source: team("knights"),
+                event: GameEventKind::GameStarted,
+                target: direct_message(1),
+            },
+        ]
+    );
+}
+
+#[sqlx::test]
+async fn someone_without_subscriptions_has_none_listed(pool: PgPool) {
+    let subscriptions = subscribed(
+        pool,
+        vec![requested_by(
+            1,
+            subscription(player("alice"), direct_message(1)),
+        )],
+    )
+    .await;
+
+    assert_eq!(subscriptions.requested_by(ChatUserId(2)).await.unwrap(), []);
+}
+
+#[sqlx::test]
+async fn a_requester_can_remove_their_own_subscription(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let id = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), direct_message(1)),
+        ))
+        .await
+        .unwrap();
+
+    let removed = subscriptions
+        .remove(id, Remover::Requester(ChatUserId(1)))
+        .await
+        .unwrap();
+
+    assert!(removed);
+    assert_eq!(subscriptions.requested_by(ChatUserId(1)).await.unwrap(), []);
+}
+
+#[sqlx::test]
+async fn a_requester_cannot_remove_someone_elses_subscription(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let id = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), direct_message(1)),
+        ))
+        .await
+        .unwrap();
+
+    let removed = subscriptions
+        .remove(id, Remover::Requester(ChatUserId(2)))
+        .await
+        .unwrap();
+
+    assert!(!removed);
+    assert_eq!(
+        subscriptions
+            .requested_by(ChatUserId(1))
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[sqlx::test]
+async fn a_moderator_can_remove_anyones_subscription(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+    let id = subscriptions
+        .subscribe(requested_by(
+            1,
+            subscription(player("alice"), direct_message(1)),
+        ))
+        .await
+        .unwrap();
+
+    let removed = subscriptions.remove(id, Remover::Moderator).await.unwrap();
+
+    assert!(removed);
+    assert_eq!(subscriptions.requested_by(ChatUserId(1)).await.unwrap(), []);
+}
+
+#[sqlx::test]
+async fn removing_a_subscription_that_does_not_exist_removes_nothing(pool: PgPool) {
+    let subscriptions = PostgresSubscriptions::new(pool);
+
+    let removed = subscriptions
+        .remove(SubscriptionId(4545), Remover::Moderator)
+        .await
+        .unwrap();
+
+    assert!(!removed);
+}
