@@ -7,12 +7,12 @@ use kameo::message::{Context, Message};
 use tokio::sync::watch;
 
 use crate::lichess;
+use crate::lichess_token_check::TokenState;
 
 use super::connection::Connection;
 use super::event::GameEvent;
 use super::settings::StreamSettings;
 use super::stream::{GameObservation, LichessStream};
-use super::token_check::TokenState;
 use super::{Follow, StreamConnected, Watch};
 
 #[derive(Debug)]

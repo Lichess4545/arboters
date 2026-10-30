@@ -11,10 +11,10 @@ use tokio_util::io::StreamReader;
 use url::Url;
 
 use crate::lichess::{Game, UserId};
+use crate::lichess_token_check::TokenState;
 
 use super::event::{Ending, GameEvent, GameOutcome};
 use super::settings::LichessSettings;
-use super::token_check::TokenState;
 
 mod json;
 
