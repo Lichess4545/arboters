@@ -1,4 +1,9 @@
 use super::*;
+use crate::game_monitor::LichessSettings;
+
+fn parse(text: &str) -> Option<Result<Command, Mistake>> {
+    super::parse(text, &LichessSettings::default().base_url)
+}
 
 fn told(text: &str) -> Tell {
     match parse(text) {
@@ -156,6 +161,20 @@ fn a_player_can_be_a_mention_or_a_lichess_profile_link() {
             "{player}"
         );
     }
+}
+
+#[test]
+fn a_profile_link_is_read_on_the_configured_lichess_site_only() {
+    let local = Url::parse("http://localhost:9663").unwrap();
+    let player = |link: &str| match super::parse(
+        &format!("tell me when ends in classical for {link}"),
+        &local,
+    ) {
+        Some(Ok(Command::Tell(tell))) => tell.player,
+        _ => None,
+    };
+    assert_eq!(player("http://localhost:9663/@/alice"), Some(user("alice")));
+    assert_eq!(player("https://lichess.org/@/alice"), None);
 }
 
 #[test]

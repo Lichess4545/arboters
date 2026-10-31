@@ -16,7 +16,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::*;
 use crate::chat::{ChannelName, Role, TopicName};
-use crate::game_monitor::GameEventKind;
+use crate::game_monitor::{GameEventKind, LichessSettings};
 use crate::heltour::{ActiveLeagues, League, league};
 use crate::lichess::Variant;
 use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands, Subscriptions};
@@ -675,7 +675,7 @@ async fn answered_by_subscription_commands(pool: PgPool) -> (FakeZulip, Postgres
     let zulip = FakeZulip::start().await;
     let subscriptions = PostgresSubscriptions::new(pool);
     let commands = SubscriptionCommands::spawn((
-        SubscriptionCommands::new(subscriptions.clone()),
+        SubscriptionCommands::new(subscriptions.clone(), LichessSettings::default().base_url),
         zulip.inbox.clone().recipient(),
     ));
     commands

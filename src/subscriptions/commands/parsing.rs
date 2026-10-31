@@ -1,4 +1,5 @@
 use nutype::nutype;
+use url::Url;
 
 use crate::chat::{ChannelName, ChatUserId, TopicName};
 use crate::game_monitor::GameEventKind;
@@ -99,7 +100,6 @@ const EVENTS: [(&[&str], GameEventKind); 11] = [
     (&["game", "finishes"], GameEventKind::GameFinished),
     (&["finishes"], GameEventKind::GameFinished),
 ];
-const LICHESS_PROFILE: &str = "lichess.org/@/";
 
 #[derive(Clone, Copy)]
 enum Verb {
@@ -108,7 +108,7 @@ enum Verb {
     Subscription,
 }
 
-pub fn parse(text: &str) -> Option<Result<Command, Mistake>> {
+pub fn parse(text: &str, lichess: &Url) -> Option<Result<Command, Mistake>> {
     let (text, link) = take_enclosed(text, TOPIC_LINK);
     let (text, mention) = take_enclosed(&text.replacen(SILENT_MENTION, MENTION, 1), MENTION);
     let lowered = text.to_lowercase();
@@ -122,7 +122,7 @@ pub fn parse(text: &str) -> Option<Result<Command, Mistake>> {
     match closest(verb, verbs) {
         Closest::One(Verb::Help) => Some(Ok(Command::Help)),
         Closest::One(Verb::Tell) => {
-            Some(tell(rest, link.as_deref(), mention.as_deref()).map(Command::Tell))
+            Some(tell(rest, link.as_deref(), mention.as_deref(), lichess).map(Command::Tell))
         }
         Closest::One(Verb::Subscription) => Some(subscription(rest)),
         Closest::Tie(_) | Closest::Nothing => None,
@@ -191,7 +191,12 @@ fn sections<'a>(words: &'a [&'a str]) -> Sections<'a> {
     }
 }
 
-fn tell(words: &[&str], link: Option<&str>, mention: Option<&str>) -> Result<Tell, Mistake> {
+fn tell(
+    words: &[&str],
+    link: Option<&str>,
+    mention: Option<&str>,
+    lichess: &Url,
+) -> Result<Tell, Mistake> {
     if words.is_empty() {
         return Err(Mistake::Tell(Problem::Wording, Draft::default()));
     }
@@ -229,7 +234,7 @@ fn tell(words: &[&str], link: Option<&str>, mention: Option<&str>) -> Result<Tel
     }
     if let Some(player_words) = sections.player {
         match player_words {
-            [written] => match player(written) {
+            [written] => match player(written, lichess) {
                 Some(player) => draft.player = Some(player),
                 None => problems.push(Problem::Player),
             },
@@ -316,15 +321,19 @@ fn event(phrase: &[&str]) -> Option<GameEventKind> {
         .find_map(|(known, event)| (*known == words.as_slice()).then_some(*event))
 }
 
-fn player(written: &str) -> Option<lichess::UserId> {
-    let address = written
-        .strip_prefix("https://")
-        .or_else(|| written.strip_prefix("http://"))
-        .unwrap_or(written);
-    let address = address.strip_prefix("www.").unwrap_or(address);
+fn player(written: &str, lichess: &Url) -> Option<lichess::UserId> {
+    let without_scheme = |address: &'_ str| -> String {
+        let address = address.split_once("://").map_or(address, |(_, rest)| rest);
+        address.strip_prefix("www.").unwrap_or(address).to_owned()
+    };
+    let profiles = format!(
+        "{}/@/",
+        without_scheme(lichess.as_str()).trim_end_matches('/')
+    );
+    let address = without_scheme(written);
     let name = address
-        .strip_prefix(LICHESS_PROFILE)
-        .map_or(address, |name| name.trim_end_matches('/'));
+        .strip_prefix(&profiles)
+        .map_or(address.as_str(), |name| name.trim_end_matches('/'));
     let name = name.strip_prefix('@').unwrap_or(name);
     lichess::UserId::try_new(name).ok()
 }

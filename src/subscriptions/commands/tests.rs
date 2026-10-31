@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use super::*;
 use crate::chat::{ChannelName, CommandText, Role, TopicName};
+use crate::game_monitor::LichessSettings;
 use crate::heltour::League;
 use crate::lichess::{self, Clock, Variant};
 use crate::subscriptions::{PostgresSubscriptions, Subscription};
@@ -119,7 +120,7 @@ impl Bot {
         let subscriptions = PostgresSubscriptions::new(pool);
         let inbox = FakeInbox::spawn(FakeInbox::default());
         let commands = SubscriptionCommands::spawn((
-            SubscriptionCommands::new(subscriptions.clone()),
+            SubscriptionCommands::new(subscriptions.clone(), LichessSettings::default().base_url),
             inbox.clone().recipient(),
         ));
         commands.ask(active_leagues()).await.unwrap();

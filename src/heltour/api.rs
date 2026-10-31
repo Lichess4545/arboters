@@ -44,7 +44,7 @@ pub struct PairingUpdate {
     pub league: league::Tag,
     pub white: lichess::UserId,
     pub black: lichess::UserId,
-    pub game: lichess::GameId,
+    pub game_link: Url,
     pub result: Option<PairingResult>,
 }
 
@@ -71,7 +71,7 @@ struct UpdatePairingForm<'a> {
     league: &'a str,
     white: &'a str,
     black: &'a str,
-    game_link: String,
+    game_link: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<PairingResult>,
     strict: bool,
@@ -142,7 +142,7 @@ impl Heltour {
             league: update.league.as_str(),
             white: update.white.as_str(),
             black: update.black.as_str(),
-            game_link: update.game.link(),
+            game_link: update.game_link.as_str(),
             result: update.result,
             strict: true,
         };

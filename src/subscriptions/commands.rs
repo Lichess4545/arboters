@@ -8,6 +8,7 @@ use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::error::SendError;
 use kameo::message::{Context, Message};
+use url::Url;
 
 use crate::chat::{
     ChatUserId, Handling, IncomingMessage, Listen, MessageId, Notification, NotificationTarget,
@@ -26,6 +27,7 @@ pub struct SubscriptionCommands<R> {
     active: ActiveLeagues,
     subscriptions: R,
     subscribed_by: HashMap<MessageId, (SubscriptionId, NewSubscription)>,
+    lichess: Url,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -34,11 +36,12 @@ pub struct InboxUnavailable(#[from] SendError<Listen>);
 
 impl<R: Subscriptions> SubscriptionCommands<R> {
     #[must_use]
-    pub fn new(subscriptions: R) -> Self {
+    pub fn new(subscriptions: R, lichess: Url) -> Self {
         Self {
             active: ActiveLeagues::default(),
             subscriptions,
             subscribed_by: HashMap::new(),
+            lichess,
         }
     }
 
@@ -491,7 +494,7 @@ impl<R: Subscriptions> Message<IncomingMessage> for SubscriptionCommands<R> {
         message: IncomingMessage,
         _: &mut Context<Self, Self::Reply>,
     ) -> Handling {
-        let reply = match parse(&message.text) {
+        let reply = match parse(&message.text, &self.lichess) {
             Some(command) => self.reply_to(&message, command).await,
             None => match self.earlier_subscription(&message) {
                 Some(id) => format!(

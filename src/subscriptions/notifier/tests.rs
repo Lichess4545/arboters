@@ -8,7 +8,7 @@ use super::*;
 use crate::chat::{
     ChannelName, ChatUserId, DeliveryError, Notification, NotificationTarget, TopicName,
 };
-use crate::game_monitor::GameEventKind;
+use crate::game_monitor::{GameEventKind, LichessSettings};
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
@@ -143,7 +143,11 @@ async fn deliveries(
     }
     let monitor = Monitor::spawn(Monitor);
     let notifier = Notifier::spawn((
-        Notifier::new(stored, messenger.clone()),
+        Notifier::new(
+            stored,
+            messenger.clone(),
+            LichessSettings::default().base_url,
+        ),
         monitor.recipient(),
     ));
     notifier.ask(active).await.unwrap();
@@ -153,7 +157,10 @@ async fn deliveries(
 
 #[sqlx::test]
 async fn subscribers_of_both_players_to_the_event_receive_it_rendered(pool: PgPool) {
-    let notification = render(&GameEvent::Started(game()));
+    let notification = render(
+        &GameEvent::Started(game()),
+        &LichessSettings::default().base_url,
+    );
     assert_eq!(
         deliveries(
             pool,
@@ -211,7 +218,13 @@ async fn a_game_is_announced_only_in_the_league_that_pairs_its_players(pool: PgP
             RecordingMessenger::default(),
         )
         .await,
-        vec![(direct_message(8), render(&GameEvent::Started(game())))]
+        vec![(
+            direct_message(8),
+            render(
+                &GameEvent::Started(game()),
+                &LichessSettings::default().base_url
+            )
+        )]
     );
 }
 
@@ -241,7 +254,13 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
             },
         )
         .await,
-        vec![(direct_message(8), render(&GameEvent::Started(game())))]
+        vec![(
+            direct_message(8),
+            render(
+                &GameEvent::Started(game()),
+                &LichessSettings::default().base_url
+            )
+        )]
     );
 }
 
@@ -261,7 +280,10 @@ fn league_wide(tag: &str, target: NotificationTarget) -> NewSubscription {
 
 #[sqlx::test]
 async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
-    let notification = render(&GameEvent::Started(game()));
+    let notification = render(
+        &GameEvent::Started(game()),
+        &LichessSettings::default().base_url,
+    );
     assert_eq!(
         deliveries(
             pool,

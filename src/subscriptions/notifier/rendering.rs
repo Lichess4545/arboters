@@ -1,21 +1,20 @@
 use crate::chat::Notification;
 use crate::game_monitor::{GameEvent, GameOutcome};
+use url::Url;
+
 use crate::lichess::Game;
 
 #[must_use]
-pub fn render(event: &GameEvent) -> Notification {
+pub fn render(event: &GameEvent, lichess: &Url) -> Notification {
+    let link = event.game().id.link(lichess);
     let markdown = match event {
-        GameEvent::Started(game) => format!("{} has started: {}", pairing(game), game.id.link()),
+        GameEvent::Started(game) => format!("{} has started: {}", pairing(game), link),
         GameEvent::Finished { game, outcome, .. } => match outcome.score() {
-            Some(score) => format!(
-                "{} is over. The result is {score}: {}",
-                pairing(game),
-                game.id.link()
-            ),
+            Some(score) => format!("{} is over. The result is {score}: {}", pairing(game), link),
             None if *outcome == GameOutcome::Aborted => {
-                format!("{} was aborted: {}", pairing(game), game.id.link())
+                format!("{} was aborted: {}", pairing(game), link)
             }
-            None => format!("{} is over: {}", pairing(game), game.id.link()),
+            None => format!("{} is over: {}", pairing(game), link),
         },
     };
     Notification::new(markdown)
