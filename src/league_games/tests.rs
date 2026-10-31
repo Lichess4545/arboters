@@ -12,7 +12,7 @@ use tokio::net::TcpListener;
 use url::Url;
 
 use super::*;
-use crate::game_monitor::http_client;
+use crate::game_monitor::{LichessSettings, http_client};
 use crate::heltour::{HeltourSettings, Pairing, league};
 use crate::lichess::{self, Clock, Game, GameId, Player, Speed, Variant};
 
@@ -86,7 +86,10 @@ async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEv
         token: Some(SecretString::from("heltour_secret")),
     };
     let reporter = Reporter::spawn((
-        Reporter::new(Heltour::new(http_client().unwrap(), &settings).unwrap()),
+        Reporter::new(
+            Heltour::new(http_client().unwrap(), &settings).unwrap(),
+            LichessSettings::default().base_url,
+        ),
         Monitor::spawn(Monitor).recipient(),
     ));
     reporter.ask(active).await.unwrap();
@@ -174,7 +177,12 @@ fn report_to(league: &str, result: Option<&str>) -> Fields {
         ("league", league.to_owned()),
         ("white", "alice".to_owned()),
         ("black", "bob".to_owned()),
-        ("game_link", GameId::new("abcd1234").link()),
+        (
+            "game_link",
+            GameId::new("abcd1234")
+                .link(&LichessSettings::default().base_url)
+                .to_string(),
+        ),
         ("strict", "true".to_owned()),
     ]
     .into_iter()

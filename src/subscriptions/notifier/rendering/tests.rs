@@ -1,5 +1,6 @@
 use super::*;
 use crate::game_monitor::Ending;
+use crate::game_monitor::LichessSettings;
 use crate::lichess::{self, GameId, Player, Speed, Variant};
 
 fn game() -> Game {
@@ -18,12 +19,19 @@ fn game() -> Game {
     }
 }
 
+fn lichess() -> Url {
+    LichessSettings::default().base_url
+}
+
 fn finished(outcome: GameOutcome, ending: Ending) -> String {
-    render(&GameEvent::Finished {
-        game: game(),
-        outcome,
-        ending,
-    })
+    render(
+        &GameEvent::Finished {
+            game: game(),
+            outcome,
+            ending,
+        },
+        &lichess(),
+    )
     .markdown()
     .to_owned()
 }
@@ -31,7 +39,7 @@ fn finished(outcome: GameOutcome, ending: Ending) -> String {
 #[test]
 fn a_started_game_announces_white_vs_black_and_the_game_link() {
     assert_eq!(
-        render(&GameEvent::Started(game())).markdown(),
+        render(&GameEvent::Started(game()), &lichess()).markdown(),
         "@_**alice** vs @_**bob** has started: https://lichess.org/game/abcd1234"
     );
 }
@@ -65,5 +73,14 @@ fn an_undecided_game_is_announced_as_over_without_a_result() {
     assert_eq!(
         finished(GameOutcome::Undecided, Ending::Unknown),
         "@_**alice** vs @_**bob** is over: https://lichess.org/game/abcd1234"
+    );
+}
+
+#[test]
+fn the_game_link_points_at_the_configured_lichess_site() {
+    let local = Url::parse("http://localhost:9663").unwrap();
+    assert_eq!(
+        render(&GameEvent::Started(game()), &local).markdown(),
+        "@_**alice** vs @_**bob** has started: http://localhost:9663/game/abcd1234"
     );
 }

@@ -51,13 +51,13 @@ async fn run_with<M: Messenger + Clone>(
     let heltour = Heltour::new(http.clone(), &config.heltour)?;
     let (token_check, lichess_token) = lichess_token_check(http.clone(), &config.lichess)?;
     let status = Status::new(messenger.clone(), config.status.clone())?;
+    let lichess = &config.lichess.base_url;
+    let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
 
     let status = Status::spawn(status);
     let token_check = token_check.map(TokenCheck::spawn);
     let conversations = match inbox {
-        Some(inbox) => Some(
-            Conversations::spawn(inbox, SubscriptionCommands::new(subscriptions.clone())).await,
-        ),
+        Some(inbox) => Some(Conversations::spawn(inbox, commands).await),
         None => None,
     };
     let responding = Responding::start(conversations.as_ref(), &config, &http, &pool, &messenger);
@@ -68,10 +68,13 @@ async fn run_with<M: Messenger + Clone>(
         lichess_token.clone(),
     ));
     let notifier = Notifier::spawn((
-        Notifier::new(subscriptions.clone(), messenger),
+        Notifier::new(subscriptions.clone(), messenger, lichess.clone()),
         monitor.clone().recipient(),
     ));
-    let reporter = Reporter::spawn((Reporter::new(heltour.clone()), monitor.clone().recipient()));
+    let reporter = Reporter::spawn((
+        Reporter::new(heltour.clone(), lichess.clone()),
+        monitor.clone().recipient(),
+    ));
     notifier.wait_for_startup().await;
     reporter.wait_for_startup().await;
     let mut followers = vec![notifier.clone().recipient(), reporter.clone().recipient()];

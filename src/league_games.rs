@@ -1,6 +1,7 @@
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
+use url::Url;
 
 use crate::game_monitor::{Ending, Follow, GameEvent, GameOutcome, MonitorUnavailable};
 use crate::heltour::{
@@ -10,6 +11,7 @@ use crate::heltour::{
 #[derive(Debug)]
 pub struct Reporter {
     heltour: Heltour,
+    lichess: Url,
     active: ActiveLeagues,
 }
 
@@ -23,9 +25,10 @@ enum Breach {
 
 impl Reporter {
     #[must_use]
-    pub fn new(heltour: Heltour) -> Self {
+    pub fn new(heltour: Heltour, lichess: Url) -> Self {
         Self {
             heltour,
+            lichess,
             active: ActiveLeagues::default(),
         }
     }
@@ -50,7 +53,7 @@ impl Reporter {
                 league: league.tag.clone(),
                 white: game.white.user_id.clone(),
                 black: game.black.user_id.clone(),
-                game: game.id.clone(),
+                game_link: game.id.link(&self.lichess),
                 result,
             };
             match self.heltour.update_pairing(&update).await {

@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
+use url::Url;
 
 use crate::chat::Messenger;
 use crate::game_monitor::{Follow, GameEvent, MonitorUnavailable};
@@ -18,15 +19,17 @@ pub struct Notifier<R, M> {
     active: ActiveLeagues,
     subscriptions: R,
     messenger: M,
+    lichess: Url,
 }
 
 impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
-    pub fn new(subscriptions: R, messenger: M) -> Self {
+    pub fn new(subscriptions: R, messenger: M, lichess: Url) -> Self {
         Self {
             active: ActiveLeagues::default(),
             subscriptions,
             messenger,
+            lichess,
         }
     }
 
@@ -53,7 +56,7 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
         if targets.is_empty() {
             return;
         }
-        let notification = render(event);
+        let notification = render(event, &self.lichess);
         for target in &targets {
             match self.messenger.send(target, &notification).await {
                 Ok(()) => tracing::debug!(game_id = %game.id, ?target, "notification delivered"),

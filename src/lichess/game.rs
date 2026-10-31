@@ -1,12 +1,18 @@
 use nutype::nutype;
 use serde::Deserialize;
+use url::Url;
 
 use super::UserId;
 
 /// ```
 /// use arboters::lichess::GameId;
+/// use url::Url;
 ///
-/// assert_eq!(GameId::new("abcd1234").link(), "https://lichess.org/game/abcd1234");
+/// let lichess = Url::parse("https://lichess.org").unwrap();
+/// assert_eq!(GameId::new("abcd1234").link(&lichess).as_str(), "https://lichess.org/game/abcd1234");
+///
+/// let local = Url::parse("http://localhost:9663/").unwrap();
+/// assert_eq!(GameId::new("abcd1234").link(&local).as_str(), "http://localhost:9663/game/abcd1234");
 /// ```
 #[nutype(derive(Debug, Clone, PartialEq, Eq, Hash, Deref, Display, Deserialize))]
 pub struct GameId(String);
@@ -15,8 +21,13 @@ impl GameId {
     // Lichess moved game pages from /<id> to /game/<id> in October 2026; bare links now 301 there.
     // https://github.com/lichess-org/lila/commit/3c70aa350c3a06a7522f43f95db65d8445d89ca7
     #[must_use]
-    pub fn link(&self) -> String {
-        format!("https://lichess.org/game/{self}")
+    pub fn link(&self, lichess: &Url) -> Url {
+        let mut link = lichess.clone();
+        link.set_path(&format!(
+            "{}/game/{self}",
+            lichess.path().trim_end_matches('/')
+        ));
+        link
     }
 }
 
