@@ -1,13 +1,13 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notification {
+pub struct OutgoingMessage {
     markdown: String,
 }
 
-impl Notification {
+impl OutgoingMessage {
     /// ```
-    /// use arboters::chat::Notification;
+    /// use arboters::chat::OutgoingMessage;
     ///
-    /// assert_eq!(Notification::new("**hello**".to_owned()).markdown(), "**hello**");
+    /// assert_eq!(OutgoingMessage::new("**hello**".to_owned()).markdown(), "**hello**");
     /// ```
     #[must_use]
     pub const fn new(markdown: String) -> Self {

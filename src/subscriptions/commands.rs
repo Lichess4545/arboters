@@ -11,7 +11,7 @@ use kameo::message::{Context, Message};
 use url::Url;
 
 use crate::chat::{
-    ChatUserId, Handling, IncomingMessage, Listen, MessageId, Notification, NotificationTarget,
+    ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId, OutgoingMessage,
     Revision,
 };
 use crate::game_monitor::GameEventKind;
@@ -86,24 +86,24 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
             found => return Err(self.unknown_league(message, &Draft::from(tell), &found)),
         };
         let target = match tell.listener {
-            Listener::Me => NotificationTarget::DirectMessage {
+            Listener::Me => Conversation::Direct {
                 user_id: message.sender,
             },
             Listener::Here => match &message.reply_to {
-                NotificationTarget::DirectMessage { .. } => {
+                Conversation::Direct { .. } => {
                     return Err("`tell here` only works in a channel topic. In a direct message, use `tell me`, or name a topic with `tell #**channel>topic**`.".to_owned());
                 }
-                channel @ NotificationTarget::Channel { .. } => channel.clone(),
+                channel @ Conversation::Topic { .. } => channel.clone(),
             },
-            Listener::Topic { channel, topic } => NotificationTarget::Channel { channel, topic },
+            Listener::Topic { channel, topic } => Conversation::Topic { channel, topic },
             Listener::User(user_id) if user_id == message.sender => {
-                NotificationTarget::DirectMessage { user_id }
+                Conversation::Direct { user_id }
             }
             Listener::User(user_id) => {
                 if !subscribes_others(message) {
                     return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
                 }
-                NotificationTarget::DirectMessage { user_id }
+                Conversation::Direct { user_id }
             }
         };
         Ok(NewSubscription {
@@ -164,7 +164,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 let mut yours = self.subscriptions.requested_by(user_id).await?;
                 yours.extend(
                     self.subscriptions
-                        .posting_to(&NotificationTarget::DirectMessage { user_id })
+                        .posting_to(&Conversation::Direct { user_id })
                         .await?,
                 );
                 yours.sort_by_key(|subscription| subscription.id);
@@ -208,13 +208,13 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         let missing = match &remover {
             Remover::Moderator => format!("There is no subscription `{id}`."),
             Remover::Owner {
-                at: NotificationTarget::Channel { .. },
+                at: Conversation::Topic { .. },
                 ..
             } => format!(
                 "No subscription `{id}` is yours or posts in this topic. Use `subscription list` to see the ones here."
             ),
             Remover::Owner {
-                at: NotificationTarget::DirectMessage { .. },
+                at: Conversation::Direct { .. },
                 ..
             } => format!("You have no subscription `{id}`. Use `subscription list` to see yours."),
         };
@@ -370,14 +370,14 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
 }
 
 enum Listing<'a> {
-    Topic(&'a NotificationTarget),
+    Topic(&'a Conversation),
     Mine(ChatUserId),
 }
 
 const fn listing(message: &IncomingMessage) -> Listing<'_> {
     match &message.reply_to {
-        topic @ NotificationTarget::Channel { .. } => Listing::Topic(topic),
-        NotificationTarget::DirectMessage { .. } => Listing::Mine(message.sender),
+        topic @ Conversation::Topic { .. } => Listing::Topic(topic),
+        Conversation::Direct { .. } => Listing::Mine(message.sender),
     }
 }
 
@@ -414,8 +414,8 @@ fn suggestion(
         }
         Some(Listener::User(user_id)) => mention(*user_id),
         None => match message.reply_to {
-            NotificationTarget::Channel { .. } => "here".to_owned(),
-            NotificationTarget::DirectMessage { .. } => "me".to_owned(),
+            Conversation::Topic { .. } => "here".to_owned(),
+            Conversation::Direct { .. } => "me".to_owned(),
         },
     };
     let event = match draft.event {
@@ -436,12 +436,12 @@ fn describe(
     league: &league::Tag,
     source: &SubscriptionSource,
     event: GameEventKind,
-    target: &NotificationTarget,
+    target: &Conversation,
 ) -> String {
     let listener = match target {
-        NotificationTarget::DirectMessage { user_id } if *user_id == viewer => "you".to_owned(),
-        NotificationTarget::DirectMessage { user_id } => mention(*user_id),
-        NotificationTarget::Channel { channel, topic } => {
+        Conversation::Direct { user_id } if *user_id == viewer => "you".to_owned(),
+        Conversation::Direct { user_id } => mention(*user_id),
+        Conversation::Topic { channel, topic } => {
             format!("#**{}>{}**", channel.as_str(), topic.as_str())
         }
     };
@@ -503,7 +503,7 @@ impl<R: Subscriptions> Message<IncomingMessage> for SubscriptionCommands<R> {
                 None => return Handling::Unrecognized,
             },
         };
-        Handling::Answered(Notification::new(reply))
+        Handling::Answered(OutgoingMessage::new(reply))
     }
 }
 

@@ -2,8 +2,9 @@ use kameo::Reply;
 use kameo::actor::ReplyRecipient;
 use nutype::nutype;
 
-use super::notification::Notification;
-use super::target::{ChatUserId, MessageId, NotificationTarget};
+use super::conversation::{ChatUserId, Conversation};
+use super::message::MessageId;
+use super::outgoing::OutgoingMessage;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
@@ -50,13 +51,13 @@ pub struct IncomingMessage {
     pub revision: Revision,
     pub sender: ChatUserId,
     pub role: Role,
-    pub reply_to: NotificationTarget,
+    pub reply_to: Conversation,
     pub text: CommandText,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Reply)]
 pub enum Handling {
-    Answered(Notification),
+    Answered(OutgoingMessage),
     Unrecognized,
 }
 

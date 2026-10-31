@@ -10,7 +10,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::chat::{
-    ChannelName, Messenger, Notification, NotificationTarget, TopicName, TopicNameError,
+    ChannelName, Conversation, Messenger, OutgoingMessage, TopicName, TopicNameError,
 };
 use crate::game_monitor::StreamConnected;
 
@@ -69,16 +69,16 @@ pub enum Shutdown {
 pub struct Status<M> {
     messenger: M,
     instance: InstanceId,
-    target: Option<NotificationTarget>,
+    conversation: Option<Conversation>,
     started: Instant,
 }
 
 impl<M: Messenger> Status<M> {
     pub fn new(messenger: M, settings: Option<StatusSettings>) -> Result<Self, TopicNameError> {
         let instance = InstanceId::generate();
-        let target = settings
+        let conversation = settings
             .map(|settings| {
-                Ok(NotificationTarget::Channel {
+                Ok(Conversation::Topic {
                     channel: settings.channel,
                     topic: topic_for(instance, SystemTime::now())?,
                 })
@@ -87,27 +87,27 @@ impl<M: Messenger> Status<M> {
         Ok(Self {
             messenger,
             instance,
-            target,
+            conversation,
             started: Instant::now(),
         })
     }
 
     async fn post(&self, markdown: String) {
-        let notification = Notification::new(markdown);
-        let Some(target) = &self.target else {
+        let message = OutgoingMessage::new(markdown);
+        let Some(conversation) = &self.conversation else {
             tracing::info!(
                 instance = %self.instance,
-                status = notification.markdown(),
+                status = message.markdown(),
                 "status not posted because no status channel is configured"
             );
             return;
         };
-        if let Err(error) = self.messenger.send(target, &notification).await {
+        if let Err(error) = self.messenger.send(conversation, &message).await {
             tracing::warn!(
                 error = %error,
                 cause = %error.cause,
                 instance = %self.instance,
-                ?target,
+                ?conversation,
                 "status delivery failed"
             );
         }
@@ -131,7 +131,7 @@ impl<M: Messenger> Actor for Status<M> {
     type Error = Infallible;
 
     async fn on_start(status: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-        tracing::info!(instance = %status.instance, target = ?status.target, "arboters started");
+        tracing::info!(instance = %status.instance, conversation = ?status.conversation, "arboters started");
         status
             .post(format!(
                 ":rocket: arboters v{VERSION} started — [changelog]({REPOSITORY}/releases/tag/v{VERSION})"

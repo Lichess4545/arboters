@@ -28,7 +28,7 @@ const MODERATOR: u64 = 11;
 const ANSWER: &str = "Subscription `1`: tell you when a-game-starts in classical.";
 
 fn answering() -> Handling {
-    Handling::Answered(Notification::new(ANSWER.to_owned()))
+    Handling::Answered(OutgoingMessage::new(ANSWER.to_owned()))
 }
 
 type Form = BTreeMap<String, String>;
@@ -379,7 +379,7 @@ fn heard_from(
     event_id: u64,
     sender: u64,
     role: Role,
-    reply_to: NotificationTarget,
+    reply_to: Conversation,
     text: &str,
 ) -> IncomingMessage {
     IncomingMessage {
@@ -392,14 +392,14 @@ fn heard_from(
     }
 }
 
-fn dm_to(user_id: u64) -> NotificationTarget {
-    NotificationTarget::DirectMessage {
+fn dm_to(user_id: u64) -> Conversation {
+    Conversation::Direct {
         user_id: ChatUserId(user_id),
     }
 }
 
-fn games_topic() -> NotificationTarget {
-    NotificationTarget::Channel {
+fn games_topic() -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new("chess").unwrap(),
         topic: TopicName::try_new("games").unwrap(),
     }

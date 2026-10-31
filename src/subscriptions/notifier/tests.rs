@@ -6,7 +6,7 @@ use sqlx::PgPool;
 
 use super::*;
 use crate::chat::{
-    ChannelName, ChatUserId, DeliveryError, Notification, NotificationTarget, TopicName,
+    ChannelName, ChatUserId, Conversation, DeliveryError, OutgoingMessage, TopicName,
 };
 use crate::game_monitor::{GameEventKind, LichessSettings};
 use crate::heltour::{Pairing, league};
@@ -15,8 +15,8 @@ use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
-    deliveries: Arc<Mutex<Vec<(NotificationTarget, Notification)>>>,
-    unreachable: Option<NotificationTarget>,
+    deliveries: Arc<Mutex<Vec<(Conversation, OutgoingMessage)>>>,
+    unreachable: Option<Conversation>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +24,7 @@ struct RecordingMessenger {
 struct Unreachable;
 
 impl RecordingMessenger {
-    fn deliveries(&self) -> Vec<(NotificationTarget, Notification)> {
+    fn deliveries(&self) -> Vec<(Conversation, OutgoingMessage)> {
         self.deliveries.lock().unwrap().clone()
     }
 }
@@ -32,19 +32,19 @@ impl RecordingMessenger {
 impl Messenger for RecordingMessenger {
     fn send(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> impl Future<Output = Result<(), DeliveryError>> + Send {
-        let outcome = if self.unreachable.as_ref() == Some(target) {
+        let outcome = if self.unreachable.as_ref() == Some(conversation) {
             Err(DeliveryError {
-                target: target.clone(),
+                conversation: conversation.clone(),
                 cause: Box::new(Unreachable),
             })
         } else {
             self.deliveries
                 .lock()
                 .unwrap()
-                .push((target.clone(), notification.clone()));
+                .push((conversation.clone(), message.clone()));
             Ok(())
         };
         std::future::ready(outcome)
@@ -89,8 +89,8 @@ fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
     }
 }
 
-fn direct_message(user_id: u64) -> NotificationTarget {
-    NotificationTarget::DirectMessage {
+fn direct_message(user_id: u64) -> Conversation {
+    Conversation::Direct {
         user_id: ChatUserId(user_id),
     }
 }
@@ -99,7 +99,7 @@ fn subscription(
     tag: &str,
     source: &str,
     event: GameEventKind,
-    target: NotificationTarget,
+    target: Conversation,
 ) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
@@ -136,7 +136,7 @@ async fn deliveries(
     subscriptions: impl IntoIterator<Item = NewSubscription>,
     active: ActiveLeagues,
     messenger: RecordingMessenger,
-) -> Vec<(NotificationTarget, Notification)> {
+) -> Vec<(Conversation, OutgoingMessage)> {
     let stored = PostgresSubscriptions::new(pool);
     for subscription in subscriptions {
         stored.subscribe(subscription).await.unwrap();
@@ -264,14 +264,14 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
     );
 }
 
-fn games_topic() -> NotificationTarget {
-    NotificationTarget::Channel {
+fn games_topic() -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new("chess").unwrap(),
         topic: TopicName::try_new("games").unwrap(),
     }
 }
 
-fn league_wide(tag: &str, target: NotificationTarget) -> NewSubscription {
+fn league_wide(tag: &str, target: Conversation) -> NewSubscription {
     NewSubscription {
         source: SubscriptionSource::League,
         ..subscription(tag, "alice", GameEventKind::GameStarted, target)

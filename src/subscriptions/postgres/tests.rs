@@ -14,20 +14,20 @@ fn team(name: &str) -> SubscriptionSource {
     SubscriptionSource::Team(team::Name::try_new(name).unwrap())
 }
 
-fn direct_message(user_id: u64) -> NotificationTarget {
-    NotificationTarget::DirectMessage {
+fn direct_message(user_id: u64) -> Conversation {
+    Conversation::Direct {
         user_id: ChatUserId(user_id),
     }
 }
 
-fn channel(channel: &str, topic: &str) -> NotificationTarget {
-    NotificationTarget::Channel {
+fn channel(channel: &str, topic: &str) -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new(channel).unwrap(),
         topic: TopicName::try_new(topic).unwrap(),
     }
 }
 
-fn subscription(source: SubscriptionSource, target: NotificationTarget) -> NewSubscription {
+fn subscription(source: SubscriptionSource, target: Conversation) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
         league: league("team4545"),
@@ -51,7 +51,7 @@ async fn subscribed(
 async fn started_targets(
     subscriptions: &PostgresSubscriptions,
     sources: &[SubscriptionSource],
-) -> BTreeSet<NotificationTarget> {
+) -> BTreeSet<Conversation> {
     subscriptions
         .targets_for(&league("team4545"), GameEventKind::GameStarted, sources)
         .await
@@ -281,7 +281,7 @@ async fn someone_without_subscriptions_has_none_listed(pool: PgPool) {
     assert_eq!(subscriptions.requested_by(ChatUserId(2)).await.unwrap(), []);
 }
 
-fn owner(user: u64, at: NotificationTarget) -> Remover {
+fn owner(user: u64, at: Conversation) -> Remover {
     Remover::Owner {
         user: ChatUserId(user),
         at,

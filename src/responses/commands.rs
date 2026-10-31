@@ -8,7 +8,7 @@ use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
 use url::Url;
 
-use crate::chat::{Handling, IncomingMessage, Listen, MessageId, Notification};
+use crate::chat::{Handling, IncomingMessage, Listen, MessageId, OutgoingMessage};
 
 use super::link::LinkMistake;
 use super::model::{NewResponse, Response, ResponseId};
@@ -218,7 +218,7 @@ impl<R: Responses, L: MessageReader> Message<IncomingMessage> for ResponseComman
         self.reply_to(&message, request)
             .await
             .map_or(Handling::Unrecognized, |reply| {
-                Handling::Answered(Notification::new(reply))
+                Handling::Answered(OutgoingMessage::new(reply))
             })
     }
 }

@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 use rand::seq::IndexedRandom;
 use tokio::time::Instant;
 
-use crate::chat::{Messenger, Notification, NotificationTarget, Overhear, OverheardMessage};
+use crate::chat::{Conversation, Messenger, OutgoingMessage, Overhear, OverheardMessage};
 
 use super::cooldown::Cooldown;
 use super::model::Response;
@@ -51,7 +51,7 @@ impl<R: Responses, M: Messenger> Responder<R, M> {
             }
         }
         let now = Instant::now();
-        let topic = NotificationTarget::Channel {
+        let topic = Conversation::Topic {
             channel: message.channel.clone(),
             topic: message.topic.clone(),
         };
@@ -65,7 +65,7 @@ impl<R: Responses, M: Messenger> Responder<R, M> {
             {
                 continue;
             }
-            let reply = Notification::new(chosen.markdown.as_str().to_owned());
+            let reply = OutgoingMessage::new(chosen.markdown.as_str().to_owned());
             if let Err(error) = self.messenger.send(&topic, &reply).await {
                 tracing::warn!(
                     error = %error,

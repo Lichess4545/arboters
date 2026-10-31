@@ -16,19 +16,19 @@ const MODERATOR: ChatUserId = ChatUserId(11);
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
-    deliveries: Arc<Mutex<Vec<(NotificationTarget, Notification)>>>,
+    deliveries: Arc<Mutex<Vec<(Conversation, OutgoingMessage)>>>,
 }
 
 impl Messenger for RecordingMessenger {
     fn send(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> impl Future<Output = Result<(), DeliveryError>> + Send {
         self.deliveries
             .lock()
             .unwrap()
-            .push((target.clone(), notification.clone()));
+            .push((conversation.clone(), message.clone()));
         std::future::ready(Ok(()))
     }
 }
@@ -66,8 +66,8 @@ struct Chat {
     messenger: RecordingMessenger,
 }
 
-fn topic(channel: &str, topic: &str) -> NotificationTarget {
-    NotificationTarget::Channel {
+fn topic(channel: &str, topic: &str) -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new(channel).unwrap(),
         topic: TopicName::try_new(topic).unwrap(),
     }
@@ -129,13 +129,13 @@ impl Chat {
             .unwrap();
     }
 
-    fn replies(&self) -> Vec<(NotificationTarget, String)> {
+    fn replies(&self) -> Vec<(Conversation, String)> {
         self.messenger
             .deliveries
             .lock()
             .unwrap()
             .iter()
-            .map(|(target, notification)| (target.clone(), notification.markdown().to_owned()))
+            .map(|(conversation, message)| (conversation.clone(), message.markdown().to_owned()))
             .collect()
     }
 }

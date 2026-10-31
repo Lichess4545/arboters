@@ -9,8 +9,8 @@ use kameo::message::{Context, Message};
 use tokio::task::JoinHandle;
 
 use crate::chat::{
-    ChatUserId, CommandText, Handling, IncomingMessage, Listen, MessageId, MessageText,
-    Notification, NotificationTarget, Overhear, OverheardMessage, Revision, Role,
+    ChatUserId, CommandText, Conversation, Handling, IncomingMessage, Listen, MessageId,
+    MessageText, OutgoingMessage, Overhear, OverheardMessage, Revision, Role,
 };
 
 use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
@@ -26,13 +26,13 @@ pub struct Inbox {
     messenger: ZulipMessenger,
     listeners: Vec<ReplyRecipient<IncomingMessage, Handling>>,
     overhearers: Vec<Recipient<OverheardMessage>>,
-    conversations: HashMap<MessageId, Conversation>,
+    exchanges: HashMap<MessageId, Exchange>,
     reading: Option<JoinHandle<()>>,
 }
 
 #[derive(Debug)]
-struct Conversation {
-    reply_to: NotificationTarget,
+struct Exchange {
+    reply_to: Conversation,
     reply: Option<MessageId>,
 }
 
@@ -62,12 +62,12 @@ impl Inbox {
             messenger,
             listeners: Vec::new(),
             overhearers: Vec::new(),
-            conversations: HashMap::new(),
+            exchanges: HashMap::new(),
             reading: None,
         }
     }
 
-    async fn answer(&self, message: &IncomingMessage) -> Notification {
+    async fn answer(&self, message: &IncomingMessage) -> OutgoingMessage {
         let mut answers = Vec::new();
         for listener in &self.listeners {
             match listener.ask(message.clone()).await {
@@ -77,17 +77,17 @@ impl Inbox {
             }
         }
         if answers.is_empty() {
-            return Notification::new(UNRECOGNIZED.to_owned());
+            return OutgoingMessage::new(UNRECOGNIZED.to_owned());
         }
-        Notification::new(answers.join("\n\n"))
+        OutgoingMessage::new(answers.join("\n\n"))
     }
 
     async fn reply(&mut self, message: IncomingMessage) {
         let answer = self.answer(&message).await;
         let earlier = self
-            .conversations
+            .exchanges
             .get(&message.id)
-            .and_then(|conversation| conversation.reply);
+            .and_then(|exchange| exchange.reply);
         let reply = match earlier {
             Some(reply) => match self.messenger.edit(&message.reply_to, reply, &answer).await {
                 Ok(()) => Some(reply),
@@ -104,9 +104,9 @@ impl Inbox {
                 }
             },
         };
-        self.conversations.insert(
+        self.exchanges.insert(
             message.id,
-            Conversation {
+            Exchange {
                 reply_to: message.reply_to,
                 reply,
             },
@@ -177,7 +177,7 @@ impl Message<Received> for Inbox {
         let message = match received {
             Received::Sent(message) => message,
             Received::Edited(edited) => {
-                let Some(conversation) = self.conversations.get(&edited.id) else {
+                let Some(exchange) = self.exchanges.get(&edited.id) else {
                     return;
                 };
                 IncomingMessage {
@@ -185,7 +185,7 @@ impl Message<Received> for Inbox {
                     revision: Revision::Edited,
                     sender: edited.sender,
                     role: edited.role,
-                    reply_to: conversation.reply_to.clone(),
+                    reply_to: exchange.reply_to.clone(),
                     text: edited.text,
                 }
             }
@@ -280,7 +280,7 @@ enum Addressed {
     Sent {
         id: MessageId,
         sender: ChatUserId,
-        reply_to: NotificationTarget,
+        reply_to: Conversation,
         text: CommandText,
     },
     Edited {
@@ -407,7 +407,7 @@ fn addressed(bot: &Bot, Delivery { message, flags }: Delivery) -> Option<Address
             .all(|recipient| recipient.id == sender || recipient.id == bot.id)
             .then(|| {
                 sent(
-                    NotificationTarget::DirectMessage { user_id: sender },
+                    Conversation::Direct { user_id: sender },
                     CommandText::new(&message.content),
                 )
             }),
@@ -416,7 +416,7 @@ fn addressed(bot: &Bot, Delivery { message, flags }: Delivery) -> Option<Address
             subject,
         } => flags.contains(&Flag::Mentioned).then(|| {
             sent(
-                NotificationTarget::Channel {
+                Conversation::Topic {
                     channel: display_recipient,
                     topic: subject,
                 },
