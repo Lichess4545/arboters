@@ -27,7 +27,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let pool = database::connect(&config.database).await?;
     let http = http_client()?;
     if let Some(zulip) = &config.zulip {
-        let messenger = ZulipMessenger::new(zulip)?;
+        let messenger = ZulipMessenger::new(http.clone(), zulip);
         let inbox = Inbox::new(http.clone(), zulip, messenger.clone());
         run_with(config, pool, http, messenger, Some(inbox)).await
     } else {

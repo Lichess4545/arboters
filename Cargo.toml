@@ -30,7 +30,7 @@ opentelemetry-appender-tracing = "0.33"
 opentelemetry-otlp = "0.33"
 opentelemetry_sdk = "0.33"
 rand = "0.9"
-reqwest = { version = "0.13", features = ["json", "stream"] }
+reqwest = { version = "0.13", features = ["form", "json", "query", "stream"] }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -44,7 +44,6 @@ tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["v4"] }
-zulip-api = "0.0.8"
 
 [dev-dependencies]
 figment = { version = "0.10", features = ["env", "test"] }

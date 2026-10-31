@@ -236,7 +236,7 @@ impl FakeZulip {
                 max_backoff: Duration::from_millis(50),
             },
         };
-        let messenger = ZulipMessenger::new(&settings).unwrap();
+        let messenger = ZulipMessenger::new(reqwest::Client::new(), &settings);
         let inbox = Inbox::spawn(Inbox::new(reqwest::Client::new(), &settings, messenger));
         Self {
             inbox,
