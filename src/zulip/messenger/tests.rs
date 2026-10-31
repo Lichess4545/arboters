@@ -60,8 +60,8 @@ impl FakeZulip {
     }
 }
 
-fn notification() -> Notification {
-    Notification::new(
+fn message() -> OutgoingMessage {
+    OutgoingMessage::new(
         "@_**alice** vs @_**bob** has started: https://lichess.org/abcd1234".to_owned(),
     )
 }
@@ -76,13 +76,13 @@ fn form(fields: &[(&str, &str)]) -> BTreeMap<String, String> {
 #[tokio::test]
 async fn a_direct_message_is_sent_as_type_direct_to_a_bracketed_user_id_list() {
     let zulip = FakeZulip::accepting().await;
-    let target = NotificationTarget::DirectMessage {
+    let conversation = Conversation::Direct {
         user_id: ChatUserId(17),
     };
 
     zulip
         .messenger
-        .send(&target, &notification())
+        .send(&conversation, &message())
         .await
         .unwrap();
 
@@ -91,7 +91,7 @@ async fn a_direct_message_is_sent_as_type_direct_to_a_bracketed_user_id_list() {
         form(&[
             ("type", "direct"),
             ("to", "[17]"),
-            ("content", notification().markdown()),
+            ("content", message().markdown()),
         ])
     );
 }
@@ -99,14 +99,14 @@ async fn a_direct_message_is_sent_as_type_direct_to_a_bracketed_user_id_list() {
 #[tokio::test]
 async fn a_channel_message_is_sent_as_type_channel_to_the_channel_and_topic() {
     let zulip = FakeZulip::accepting().await;
-    let target = NotificationTarget::Channel {
+    let conversation = Conversation::Topic {
         channel: ChannelName::try_new("4545").unwrap(),
         topic: TopicName::try_new("games").unwrap(),
     };
 
     zulip
         .messenger
-        .send(&target, &notification())
+        .send(&conversation, &message())
         .await
         .unwrap();
 
@@ -116,7 +116,7 @@ async fn a_channel_message_is_sent_as_type_channel_to_the_channel_and_topic() {
             ("type", "channel"),
             ("to", "4545"),
             ("topic", "games"),
-            ("content", notification().markdown()),
+            ("content", message().markdown()),
         ])
     );
 }
@@ -129,13 +129,13 @@ async fn a_non_success_result_from_zulip_is_a_delivery_error_carrying_its_error_
         "code": "STREAM_DOES_NOT_EXIST",
     }))
     .await;
-    let target = NotificationTarget::DirectMessage {
+    let conversation = Conversation::Direct {
         user_id: ChatUserId(17),
     };
 
     let error = zulip
         .messenger
-        .send(&target, &notification())
+        .send(&conversation, &message())
         .await
         .unwrap_err();
 

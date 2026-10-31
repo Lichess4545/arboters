@@ -1,11 +1,11 @@
-use crate::chat::Notification;
+use crate::chat::OutgoingMessage;
 use crate::game_monitor::{GameEvent, GameOutcome};
 use url::Url;
 
 use crate::lichess::Game;
 
 #[must_use]
-pub fn render(event: &GameEvent, lichess: &Url) -> Notification {
+pub fn render(event: &GameEvent, lichess: &Url) -> OutgoingMessage {
     let link = event.game().id.link(lichess);
     let markdown = match event {
         GameEvent::Started(game) => format!("{} has started: {}", pairing(game), link),
@@ -17,7 +17,7 @@ pub fn render(event: &GameEvent, lichess: &Url) -> Notification {
             None => format!("{} is over: {}", pairing(game), link),
         },
     };
-    Notification::new(markdown)
+    OutgoingMessage::new(markdown)
 }
 
 fn pairing(game: &Game) -> String {

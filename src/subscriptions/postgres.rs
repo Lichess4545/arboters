@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use sqlx::PgPool;
 
-use crate::chat::{ChannelName, ChatUserId, NotificationTarget, TopicName};
+use crate::chat::{ChannelName, ChatUserId, Conversation, TopicName};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{league, team};
 use crate::lichess;
@@ -93,14 +93,14 @@ struct StoredTarget {
 }
 
 impl StoredTarget {
-    fn from_target(target: &NotificationTarget) -> Result<Self, sqlx::Error> {
+    fn from_target(target: &Conversation) -> Result<Self, sqlx::Error> {
         Ok(match target {
-            NotificationTarget::DirectMessage { user_id } => Self {
+            Conversation::Direct { user_id } => Self {
                 user_id: Some(stored_user_id(*user_id)?),
                 channel: None,
                 topic: None,
             },
-            NotificationTarget::Channel { channel, topic } => Self {
+            Conversation::Topic { channel, topic } => Self {
                 user_id: None,
                 channel: Some(channel.as_str().to_owned()),
                 topic: Some(topic.as_str().to_owned()),
@@ -108,12 +108,12 @@ impl StoredTarget {
         })
     }
 
-    fn into_target(self) -> Result<NotificationTarget, sqlx::Error> {
+    fn into_target(self) -> Result<Conversation, sqlx::Error> {
         match (self.user_id, self.channel, self.topic) {
-            (Some(user_id), None, None) => Ok(NotificationTarget::DirectMessage {
+            (Some(user_id), None, None) => Ok(Conversation::Direct {
                 user_id: ChatUserId(u64::try_from(user_id).map_err(undecodable)?),
             }),
-            (None, Some(channel), Some(topic)) => Ok(NotificationTarget::Channel {
+            (None, Some(channel), Some(topic)) => Ok(Conversation::Topic {
                 channel: ChannelName::try_new(&channel).map_err(undecodable)?,
                 topic: TopicName::try_new(&topic).map_err(undecodable)?,
             }),
@@ -194,7 +194,7 @@ impl Subscriptions for PostgresSubscriptions {
         league: &league::Tag,
         event: GameEventKind,
         sources: &[SubscriptionSource],
-    ) -> Result<BTreeSet<NotificationTarget>, SubscriptionsError> {
+    ) -> Result<BTreeSet<Conversation>, SubscriptionsError> {
         let mut targets = BTreeSet::new();
         for source in sources {
             let (source_kind, source_name) = stored_source(source, league);
@@ -250,7 +250,7 @@ impl Subscriptions for PostgresSubscriptions {
 
     async fn posting_to(
         &self,
-        target: &NotificationTarget,
+        target: &Conversation,
     ) -> Result<Vec<Subscription>, SubscriptionsError> {
         let target = StoredTarget::from_target(target)?;
         let rows = sqlx::query_as!(

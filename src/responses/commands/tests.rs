@@ -8,8 +8,7 @@ use sqlx::PgPool;
 
 use super::*;
 use crate::chat::{
-    ChannelName, ChatUserId, CommandText, MessageText, NotificationTarget, Revision, Role,
-    TopicName,
+    ChannelName, ChatUserId, CommandText, Conversation, MessageText, Revision, Role, TopicName,
 };
 use crate::responses::PostgresResponses;
 
@@ -81,7 +80,7 @@ impl Message<RegisteredListener> for FakeInbox {
 struct Bot {
     commands: ReplyRecipient<IncomingMessage, Handling>,
     responses: PostgresResponses,
-    replies: Mutex<Vec<(NotificationTarget, String)>>,
+    replies: Mutex<Vec<(Conversation, String)>>,
     next_id: AtomicU64,
 }
 
@@ -89,12 +88,12 @@ fn link_to(id: MessageId) -> String {
     format!("{SITE}/#narrow/channel/7-chess/topic/games/near/{}", id.0)
 }
 
-fn dm_to(user_id: ChatUserId) -> NotificationTarget {
-    NotificationTarget::DirectMessage { user_id }
+fn dm_to(user_id: ChatUserId) -> Conversation {
+    Conversation::Direct { user_id }
 }
 
-fn games_topic() -> NotificationTarget {
-    NotificationTarget::Channel {
+fn games_topic() -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new("chess").unwrap(),
         topic: TopicName::try_new("games").unwrap(),
     }
@@ -131,7 +130,7 @@ impl Bot {
         &self,
         sender: ChatUserId,
         role: Role,
-        reply_to: NotificationTarget,
+        reply_to: Conversation,
         text: &str,
     ) -> Handling {
         let id = MessageId(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -145,7 +144,7 @@ impl Bot {
         revision: Revision,
         sender: ChatUserId,
         role: Role,
-        reply_to: NotificationTarget,
+        reply_to: Conversation,
         text: &str,
     ) -> Handling {
         let handling = self
@@ -191,11 +190,11 @@ impl Bot {
         self.last_reply().1
     }
 
-    fn replies(&self) -> Vec<(NotificationTarget, String)> {
+    fn replies(&self) -> Vec<(Conversation, String)> {
         self.replies.lock().unwrap().clone()
     }
 
-    fn last_reply(&self) -> (NotificationTarget, String) {
+    fn last_reply(&self) -> (Conversation, String) {
         self.replies().last().unwrap().clone()
     }
 
@@ -384,7 +383,7 @@ async fn a_member_is_refused_every_response_command(pool: PgPool) {
 
         assert_eq!(
             handling,
-            Handling::Answered(Notification::new(REFUSAL.to_owned()))
+            Handling::Answered(OutgoingMessage::new(REFUSAL.to_owned()))
         );
     }
     assert_eq!(bot.saved().await, []);

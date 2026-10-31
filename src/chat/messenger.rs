@@ -1,10 +1,10 @@
-use super::notification::Notification;
-use super::target::NotificationTarget;
+use super::conversation::Conversation;
+use super::outgoing::OutgoingMessage;
 
 #[derive(Debug, thiserror::Error)]
-#[error("failed to deliver notification to {target:?}")]
+#[error("failed to deliver message to {conversation:?}")]
 pub struct DeliveryError {
-    pub target: NotificationTarget,
+    pub conversation: Conversation,
     #[source]
     pub cause: Box<dyn std::error::Error + Send + Sync>,
 }
@@ -12,7 +12,7 @@ pub struct DeliveryError {
 pub trait Messenger: Send + Sync + 'static {
     fn send(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> impl Future<Output = Result<(), DeliveryError>> + Send;
 }

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::chat::{ChatUserId, NotificationTarget};
+use crate::chat::{ChatUserId, Conversation};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{league, team};
 use crate::lichess;
@@ -27,7 +27,7 @@ pub struct NewSubscription {
     pub league: league::Tag,
     pub source: SubscriptionSource,
     pub event: GameEventKind,
-    pub target: NotificationTarget,
+    pub target: Conversation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,14 +37,11 @@ pub struct Subscription {
     pub league: league::Tag,
     pub source: SubscriptionSource,
     pub event: GameEventKind,
-    pub target: NotificationTarget,
+    pub target: Conversation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Remover {
-    Owner {
-        user: ChatUserId,
-        at: NotificationTarget,
-    },
+    Owner { user: ChatUserId, at: Conversation },
     Moderator,
 }

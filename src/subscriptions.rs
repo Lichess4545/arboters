@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::chat::{ChatUserId, NotificationTarget};
+use crate::chat::{ChatUserId, Conversation};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::league;
 
@@ -29,7 +29,7 @@ pub trait Subscriptions: Clone + Send + Sync + 'static {
         league: &league::Tag,
         event: GameEventKind,
         sources: &[SubscriptionSource],
-    ) -> impl Future<Output = Result<BTreeSet<NotificationTarget>, SubscriptionsError>> + Send;
+    ) -> impl Future<Output = Result<BTreeSet<Conversation>, SubscriptionsError>> + Send;
 
     fn requested_by(
         &self,
@@ -38,7 +38,7 @@ pub trait Subscriptions: Clone + Send + Sync + 'static {
 
     fn posting_to(
         &self,
-        target: &NotificationTarget,
+        target: &Conversation,
     ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
 
     fn remove(

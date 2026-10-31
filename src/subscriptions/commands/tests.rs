@@ -64,7 +64,7 @@ impl Message<RegisteredListener> for FakeInbox {
 struct Bot {
     commands: ReplyRecipient<IncomingMessage, Handling>,
     subscriptions: PostgresSubscriptions,
-    replies: Mutex<Vec<(NotificationTarget, String)>>,
+    replies: Mutex<Vec<(Conversation, String)>>,
     next_id: AtomicU64,
 }
 
@@ -93,19 +93,19 @@ fn active_leagues() -> ActiveLeagues {
     }
 }
 
-fn dm_to(user_id: ChatUserId) -> NotificationTarget {
-    NotificationTarget::DirectMessage { user_id }
+fn dm_to(user_id: ChatUserId) -> Conversation {
+    Conversation::Direct { user_id }
 }
 
-fn games_topic() -> NotificationTarget {
-    NotificationTarget::Channel {
+fn games_topic() -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new("chess").unwrap(),
         topic: TopicName::try_new("games").unwrap(),
     }
 }
 
-fn other_topic() -> NotificationTarget {
-    NotificationTarget::Channel {
+fn other_topic() -> Conversation {
+    Conversation::Topic {
         channel: ChannelName::try_new("chess").unwrap(),
         topic: TopicName::try_new("other games").unwrap(),
     }
@@ -136,7 +136,7 @@ impl Bot {
         &self,
         sender: ChatUserId,
         role: Role,
-        reply_to: NotificationTarget,
+        reply_to: Conversation,
         text: &str,
     ) -> Handling {
         let id = MessageId(self.next_id.fetch_add(1, Ordering::Relaxed));
@@ -150,7 +150,7 @@ impl Bot {
         revision: Revision,
         sender: ChatUserId,
         role: Role,
-        reply_to: NotificationTarget,
+        reply_to: Conversation,
         text: &str,
     ) -> Handling {
         let handling = self
@@ -199,11 +199,11 @@ impl Bot {
         self.hear(sender, role, games_topic(), text).await
     }
 
-    fn replies(&self) -> Vec<(NotificationTarget, String)> {
+    fn replies(&self) -> Vec<(Conversation, String)> {
         self.replies.lock().unwrap().clone()
     }
 
-    fn last_reply(&self) -> (NotificationTarget, String) {
+    fn last_reply(&self) -> (Conversation, String) {
         self.replies().last().unwrap().clone()
     }
 
@@ -211,7 +211,7 @@ impl Bot {
         &self,
         event: GameEventKind,
         source: SubscriptionSource,
-    ) -> BTreeSet<NotificationTarget> {
+    ) -> BTreeSet<Conversation> {
         self.subscriptions
             .targets_for(&league(), event, &[source])
             .await
@@ -718,7 +718,7 @@ async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription
     );
     assert_eq!(
         handling,
-        Handling::Answered(Notification::new(format!(
+        Handling::Answered(OutgoingMessage::new(format!(
             "Subscription `{id}` is unchanged. Send `help` to see the commands I know."
         )))
     );

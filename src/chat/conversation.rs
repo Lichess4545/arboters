@@ -4,9 +4,6 @@ use serde::Deserialize;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 pub struct ChatUserId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
-pub struct MessageId(pub u64);
-
 #[nutype(
     sanitize(trim),
     validate(not_empty),
@@ -22,11 +19,11 @@ pub struct ChannelName(String);
 pub struct TopicName(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NotificationTarget {
-    DirectMessage {
+pub enum Conversation {
+    Direct {
         user_id: ChatUserId,
     },
-    Channel {
+    Topic {
         channel: ChannelName,
         topic: TopicName,
     },

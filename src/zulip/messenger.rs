@@ -5,7 +5,7 @@ use zulip_api::response::{ApiResult, ErrorCode, Response as _};
 use zulip_api::{MessageTo, MessageType};
 use zulip_api::{edit_message, send_message};
 
-use crate::chat::{DeliveryError, MessageId, Messenger, Notification, NotificationTarget};
+use crate::chat::{Conversation, DeliveryError, MessageId, Messenger, OutgoingMessage};
 
 use super::settings::ZulipSettings;
 
@@ -53,13 +53,13 @@ impl ZulipMessenger {
     }
 }
 
-fn request_for(target: &NotificationTarget, notification: &Notification) -> send_message::Request {
-    let request = send_message::Request::new().with_content(notification.markdown().to_owned());
-    match target {
-        NotificationTarget::DirectMessage { user_id } => request
+fn request_for(conversation: &Conversation, message: &OutgoingMessage) -> send_message::Request {
+    let request = send_message::Request::new().with_content(message.markdown().to_owned());
+    match conversation {
+        Conversation::Direct { user_id } => request
             .with_msg_type(MessageType::Direct)
             .with_to(MessageTo::ChannelName(format!("[{}]", user_id.0))),
-        NotificationTarget::Channel { channel, topic } => request
+        Conversation::Topic { channel, topic } => request
             .with_msg_type(MessageType::Channel)
             .with_to(MessageTo::channel_name(channel.as_str()))
             .with_topic(topic.as_str()),
@@ -67,10 +67,10 @@ fn request_for(target: &NotificationTarget, notification: &Notification) -> send
 }
 
 fn failure(
-    target: &NotificationTarget,
+    conversation: &Conversation,
 ) -> impl Fn(Box<dyn std::error::Error + Send + Sync>) -> DeliveryError + '_ {
     |cause| DeliveryError {
-        target: target.clone(),
+        conversation: conversation.clone(),
         cause,
     }
 }
@@ -85,13 +85,13 @@ fn rejection(response: &impl zulip_api::response::Response) -> ZulipRejection {
 impl ZulipMessenger {
     pub async fn post(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> Result<MessageId, DeliveryError> {
-        let failed = failure(target);
+        let failed = failure(conversation);
         let response = self
             .client
-            .send_message(&request_for(target, notification))
+            .send_message(&request_for(conversation, message))
             .await
             .map_err(|error| failed(Box::new(error)))?;
         match (response.result(), response.id()) {
@@ -105,14 +105,14 @@ impl ZulipMessenger {
 
     pub async fn edit(
         &self,
-        target: &NotificationTarget,
+        conversation: &Conversation,
         message: MessageId,
-        notification: &Notification,
+        reply: &OutgoingMessage,
     ) -> Result<(), DeliveryError> {
-        let failed = failure(target);
+        let failed = failure(conversation);
         let request = edit_message::Request::new()
             .with_message_id(message.0)
-            .with_content(notification.markdown().to_owned());
+            .with_content(reply.markdown().to_owned());
         let response = self
             .client
             .edit_message(&request)
@@ -128,10 +128,10 @@ impl ZulipMessenger {
 impl Messenger for ZulipMessenger {
     async fn send(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> Result<(), DeliveryError> {
-        self.post(target, notification).await.map(|_| ())
+        self.post(conversation, message).await.map(|_| ())
     }
 }
 

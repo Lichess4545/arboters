@@ -8,7 +8,7 @@ use crate::chat::DeliveryError;
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
-    deliveries: Arc<Mutex<Vec<(NotificationTarget, Notification)>>>,
+    deliveries: Arc<Mutex<Vec<(Conversation, OutgoingMessage)>>>,
     unreachable: Arc<AtomicBool>,
 }
 
@@ -17,14 +17,14 @@ struct RecordingMessenger {
 struct Unreachable;
 
 impl RecordingMessenger {
-    fn deliveries(&self) -> Vec<(NotificationTarget, Notification)> {
+    fn deliveries(&self) -> Vec<(Conversation, OutgoingMessage)> {
         self.deliveries.lock().unwrap().clone()
     }
 
     fn posted(&self) -> Vec<String> {
         self.deliveries()
             .into_iter()
-            .map(|(_, notification)| notification.markdown().to_owned())
+            .map(|(_, message)| message.markdown().to_owned())
             .collect()
     }
 
@@ -36,19 +36,19 @@ impl RecordingMessenger {
 impl Messenger for RecordingMessenger {
     fn send(
         &self,
-        target: &NotificationTarget,
-        notification: &Notification,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
     ) -> impl Future<Output = Result<(), DeliveryError>> + Send {
         let outcome = if self.unreachable.load(Ordering::SeqCst) {
             Err(DeliveryError {
-                target: target.clone(),
+                conversation: conversation.clone(),
                 cause: Box::new(Unreachable),
             })
         } else {
             self.deliveries
                 .lock()
                 .unwrap()
-                .push((target.clone(), notification.clone()));
+                .push((conversation.clone(), message.clone()));
             Ok(())
         };
         std::future::ready(outcome)
@@ -68,8 +68,8 @@ fn configured(messenger: &RecordingMessenger) -> Status<RecordingMessenger> {
 }
 
 fn topic(status: &Status<RecordingMessenger>) -> String {
-    match &status.target {
-        Some(NotificationTarget::Channel { topic, .. }) => topic.as_str().to_owned(),
+    match &status.conversation {
+        Some(Conversation::Topic { topic, .. }) => topic.as_str().to_owned(),
         other => panic!("status posts to {other:?}"),
     }
 }
@@ -97,11 +97,11 @@ async fn startup_posts_the_version_and_changelog_to_the_instance_topic_in_the_co
     assert_eq!(
         messenger.deliveries(),
         [(
-            NotificationTarget::Channel {
+            Conversation::Topic {
                 channel: channel(),
                 topic,
             },
-            Notification::new(format!(
+            OutgoingMessage::new(format!(
                 ":rocket: arboters v{version} started — [changelog](https://github.com/Lichess4545/arboters/releases/tag/v{version})"
             )),
         )]
