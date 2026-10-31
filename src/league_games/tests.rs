@@ -83,7 +83,7 @@ async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEv
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     let settings = HeltourSettings {
         base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
-        token: Some(SecretString::from("heltour_secret")),
+        token: SecretString::from("heltour_secret"),
     };
     let reporter = Reporter::spawn((
         Reporter::new(

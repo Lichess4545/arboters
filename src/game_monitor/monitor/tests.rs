@@ -16,6 +16,7 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::{Ending, GameOutcome, LichessSettings, StreamConnected, http_client};
+use crate::health::{Recovery, Unavailable};
 use crate::lichess::{Game, GameId, Player, Speed, Variant};
 
 const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
@@ -139,7 +140,7 @@ struct Harness {
     monitor: ActorRef<GameMonitor>,
     events: mpsc::UnboundedReceiver<GameEvent>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
-    token: watch::Sender<TokenState>,
+    health: watch::Sender<Option<Health>>,
 }
 
 impl Harness {
@@ -206,16 +207,15 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
         base_url: Url::parse(&format!("http://{address}")).unwrap(),
         token: token.map(SecretString::from),
         stream,
-        ..LichessSettings::default()
     };
     let (event_sender, events) = mpsc::unbounded_channel();
     let (connection_sender, connections) = mpsc::unbounded_channel();
-    let (token_sender, token) = watch::channel(TokenState::Untested);
+    let (health_sender, health) = watch::channel(None);
     let monitor = GameMonitor::spawn(GameMonitor::new(
         LichessStream::new(http_client().unwrap(), &settings).unwrap(),
         settings.stream,
         Collector::spawn(Collector(connection_sender)).recipient(),
-        token,
+        health,
     ));
     monitor
         .tell(Follow(
@@ -228,7 +228,7 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
         monitor,
         events,
         connections,
-        token: token_sender,
+        health: health_sender,
     }
 }
 
@@ -291,18 +291,6 @@ async fn without_a_token_each_connection_watches_up_to_300_users() {
 }
 
 #[tokio::test]
-async fn with_a_token_each_connection_watches_up_to_500_users() {
-    let harness = harness_with_token(Some("lip_secret"), settings()).await;
-    let names = player_names(501);
-    harness.watch(&names).await;
-    eventually("both connections open", || {
-        harness.lichess.request_count() == 2
-    })
-    .await;
-    assert_eq!(harness.lichess.connection_sizes(), [1, 500]);
-}
-
-#[tokio::test]
 async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_again() {
     let harness = harness_with_token(Some("lip_secret"), settings()).await;
     let names = player_names(901);
@@ -311,15 +299,32 @@ async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_ag
         harness.lichess.request_count() == 2
     })
     .await;
-    harness.token.send_replace(TokenState::Valid {
-        owner: lichess::UserId::try_new("lichess4545").unwrap(),
-    });
+    harness.health.send_replace(Some(Health {
+        postgres: Availability::Available(()),
+        heltour: Availability::Available(()),
+        lichess: Some(Availability::Available(TokenOwner(
+            lichess::UserId::try_new("lichess4545").unwrap(),
+        ))),
+        zulip: None,
+    }));
     harness.watch(&names).await;
     eventually("the watchlist is split again", || {
         harness.lichess.request_count() == 4
     })
     .await;
     assert_eq!(harness.lichess.connection_sizes(), [1, 401, 500, 900]);
+    harness.health.send_replace(Some(Health {
+        postgres: Availability::Available(()),
+        heltour: Availability::Available(()),
+        lichess: Some(Availability::Unavailable(Unavailable {
+            recovery: Recovery::Recoverable,
+            error: "answered 503 Service Unavailable".to_owned(),
+        })),
+        zulip: None,
+    }));
+    harness.watch(&names).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(harness.lichess.request_count(), 4);
 }
 
 #[tokio::test]

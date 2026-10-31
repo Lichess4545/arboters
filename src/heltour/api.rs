@@ -22,7 +22,7 @@ const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 #[serde(deny_unknown_fields)]
 pub struct HeltourSettings {
     pub base_url: Url,
-    pub token: Option<SecretString>,
+    pub token: SecretString,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -98,7 +98,7 @@ pub struct Heltour {
     find_pairing: Url,
     get_leagues: Url,
     update_pairing: Url,
-    token: Option<SecretString>,
+    token: SecretString,
 }
 
 impl Heltour {
@@ -113,13 +113,16 @@ impl Heltour {
     }
 
     async fn answer<T: DeserializeOwned>(&self, request: RequestBuilder) -> reqwest::Result<T> {
-        let request = match &self.token {
-            Some(token) => {
-                request.header(AUTHORIZATION, format!("Token {}", token.expose_secret()))
-            }
-            None => request,
-        };
-        request.send().await?.error_for_status()?.json().await
+        request
+            .header(
+                AUTHORIZATION,
+                format!("Token {}", self.token.expose_secret()),
+            )
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await
     }
 
     pub async fn active_leagues(

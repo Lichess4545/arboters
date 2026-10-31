@@ -1,26 +1,29 @@
 use axum::body::Body;
 use axum::http::Request;
-use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 
 use super::*;
+use crate::health::{Recovery, Unavailable};
 
-const TIMEOUT: Duration = Duration::from_millis(300);
-
-fn database_at(address: SocketAddr) -> PgPool {
-    PgPoolOptions::new()
-        .acquire_timeout(Duration::from_hours(1))
-        .connect_lazy(&format!("postgres://nobody@{address}/nothing"))
-        .unwrap()
+fn postgres(postgres: Availability) -> Health {
+    Health {
+        postgres,
+        heltour: Availability::Available(()),
+        lichess: None,
+        zulip: None,
+    }
 }
 
-async fn status(pool: PgPool, path: &str) -> StatusCode {
-    status_with_token(pool, TokenState::Untested, path).await
+fn postgres_unavailable() -> Health {
+    postgres(Availability::Unavailable(Unavailable {
+        recovery: Recovery::Recoverable,
+        error: "connection refused".to_owned(),
+    }))
 }
 
-async fn status_with_token(pool: PgPool, lichess_token: TokenState, path: &str) -> StatusCode {
+async fn status(health: Option<Health>, path: &str) -> StatusCode {
     let request = Request::get(path).body(Body::empty()).unwrap();
-    router(pool, TIMEOUT, watch::channel(lichess_token).1)
+    router(watch::channel(health).1)
         .oneshot(request)
         .await
         .unwrap()
@@ -28,35 +31,33 @@ async fn status_with_token(pool: PgPool, lichess_token: TokenState, path: &str) 
 }
 
 #[tokio::test]
-async fn livez_is_ok_while_the_database_is_unreachable() {
-    let closed_port = SocketAddr::from(([127, 0, 0, 1], 1));
+async fn livez_answers_200_while_the_database_is_not_ready() {
     assert_eq!(
-        status(database_at(closed_port), "/livez").await,
+        status(Some(postgres_unavailable()), "/livez").await,
         StatusCode::OK
     );
 }
 
 #[tokio::test]
-async fn livez_fails_once_lichess_reports_the_token_invalid() {
-    let closed_port = SocketAddr::from(([127, 0, 0, 1], 1));
+async fn readyz_answers_200_once_health_finds_the_database_ready() {
     assert_eq!(
-        status_with_token(database_at(closed_port), TokenState::Invalid, "/livez").await,
+        status(Some(postgres(Availability::Available(()))), "/readyz").await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn readyz_answers_503_before_health_has_checked() {
+    assert_eq!(
+        status(None, "/readyz").await,
         StatusCode::SERVICE_UNAVAILABLE
     );
 }
 
-#[sqlx::test(migrations = false)]
-async fn readyz_is_ok_when_the_database_answers(pool: PgPool) {
-    assert_eq!(status(pool, "/readyz").await, StatusCode::OK);
-}
-
 #[tokio::test]
-async fn readyz_fails_within_the_timeout_when_the_database_never_answers() {
-    let silent = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let ready = tokio::time::timeout(
-        TIMEOUT * 10,
-        status(database_at(silent.local_addr().unwrap()), "/readyz"),
-    )
-    .await;
-    assert_eq!(ready, Ok(StatusCode::SERVICE_UNAVAILABLE));
+async fn readyz_answers_503_while_health_does_not_find_the_database_ready() {
+    assert_eq!(
+        status(Some(postgres_unavailable()), "/readyz").await,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 }

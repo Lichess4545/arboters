@@ -11,7 +11,7 @@ Arboters is a communications bot for a chess league that runs on [heltour](https
 - **Subscriptions from Zulip.** To manage subscriptions, send Arboters a direct message, or mention it in a Zulip message. `tell me when ...` subscribes you to one player's games, or to every game in a league. Anyone can subscribe a topic: `tell here when ...` subscribes the topic you send it in, and `tell #**channel>topic** when ...` subscribes the topic you name. Moderators can subscribe another Zulip user: `tell @**user** when ...` sends that user direct messages. Subscriptions that post in a topic belong to everyone in that topic: anyone can list or remove them by sending the command there. In the same way, subscriptions that send you direct messages are yours to list and remove, whoever made them. In a topic, `subscription list` shows the subscriptions that post there and who made them. In a direct message, it shows the subscriptions you made and the ones that send you direct messages. `subscription remove <id>` removes a subscription that you made or that posts in the topic where you send it, and moderators can remove any subscription. `help` lists the commands and says what you can do where you ask. If you edit a command, Arboters runs it again and edits its reply, and a subscription from the earlier version is replaced by the new one. Plain wording such as `tell me when a game ends in <league>` works too, and so do small typos. You can name a league by its tag, its name, or its time control, such as `45+45`, if only one active league has that time control.
 - **Saved responses.** Moderators can save responses to phrases. When a message in a channel contains a saved phrase as whole words, in any case, Arboters answers in the same topic with one of the phrase's responses, chosen at random. To save a response, a moderator sends Arboters `response add "<phrase>" <message link>`, or `response add exact "<phrase>" <message link>` for a response to the phrase only in exactly that case. Arboters keeps a copy of the linked message, so later edits to that message do not change the response. `response list` shows the saved responses and their ids, marking the exact-case ones, and `response remove <id>` removes one. Only moderators can use these commands, and only moderators see them in `help`. If a moderator edits a `response add` command, the response from the earlier version is replaced by the new one. After Arboters answers a phrase in a topic, it waits 5 seconds before it answers that phrase in that topic again, in any case. To change the wait, set `ARBOTERS_RESPONSES__COOLDOWN`, for example to `30s`. Arboters sees every public channel. To use responses in a private channel, subscribe Arboters to it.
 - **Game reports to heltour.** When a game between two paired players starts, Arboters checks its clock, variant, and rated setting against the league's rules. If the game fits them, Arboters sends the game link to heltour, and it sends the result when the game finishes. Heltour decides whether the pairing still needs them.
-- **Status messages.** Arboters posts in a status channel when it starts, connects to Lichess, and stops.
+- **Status messages.** Arboters posts in a status channel when it starts, connects to Lichess, and stops, and when a service it needs stops or starts working again.
 
 ## Run it on your machine
 
@@ -35,16 +35,12 @@ If `db-migrate` fails, wait a few seconds for Postgres to start, then run it aga
 Run Arboters:
 
 ```sh
-cargo run
+run-on-zulip
 ```
 
-When Arboters starts, the terminal shows `arboters started`. This run has no secrets, so Arboters writes its messages to the terminal instead of posting them to Zulip. Heltour does not send the pairings without a secret, so Arboters watches no games.
+Arboters needs a heltour API token to start, and it posts to a Zulip organization. On the first run, `run-on-zulip` asks you for the secrets that it needs. secretspec, a secrets tool that comes with devenv, saves them outside the repository. When Arboters starts, the terminal shows `arboters started`.
 
-Every 30 seconds, the terminal shows the warning `keeping previous watchlist`. This is expected.
-
-To post to a Zulip organization, run `run-on-zulip` instead of `cargo run`. On the first run, it asks you for the secrets that it needs. secretspec, a secrets tool that comes with devenv, saves them outside the repository.
-
-If you use `run-on-zulip`, you can also set `ARBOTERS_STATUS__CHANNEL` to a Zulip channel. Then Arboters posts there when it starts, connects to Lichess, and stops.
+You can also set `ARBOTERS_STATUS__CHANNEL` to a Zulip channel. Then Arboters posts there when it starts, connects to Lichess, and stops.
 
 To check the formatting and the lint rules, and to run the tests:
 

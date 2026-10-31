@@ -11,7 +11,6 @@ use tokio_util::io::StreamReader;
 use url::Url;
 
 use crate::lichess::{Game, UserId};
-use crate::lichess_token_check::TokenState;
 
 use super::event::{Ending, GameEvent, GameOutcome};
 use super::settings::LichessSettings;
@@ -107,10 +106,10 @@ impl LichessStream {
     }
 
     #[must_use]
-    pub fn users_per_connection(&self, token: &TokenState) -> usize {
-        match (&self.token, token) {
+    pub fn users_per_connection(&self, token_owner: Option<&UserId>) -> usize {
+        match (&self.token, token_owner) {
             (None, _) => ANONYMOUS_USERS_PER_CONNECTION,
-            (Some(_), TokenState::Valid { owner }) if owner.as_str() == LICHESS4545 => {
+            (Some(_), Some(owner)) if owner.as_str() == LICHESS4545 => {
                 LICHESS4545_USERS_PER_CONNECTION
             }
             (Some(_), _) => TOKEN_USERS_PER_CONNECTION,

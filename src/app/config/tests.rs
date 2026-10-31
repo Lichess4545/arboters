@@ -5,8 +5,6 @@ use figment::Jail;
 use super::*;
 use crate::app::telemetry::LogFormat;
 
-const KUBELET_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-
 #[expect(clippy::result_large_err)]
 fn in_clean_environment(test: impl FnOnce(&mut Jail)) {
     Jail::expect_with(|jail| {
@@ -19,6 +17,7 @@ fn in_clean_environment(test: impl FnOnce(&mut Jail)) {
 fn load(jail: &mut Jail) -> Result<Config, Box<figment::Error>> {
     jail.set_env("ARBOTERS_DATABASE__URL", "postgres://localhost/arboters");
     jail.set_env("ARBOTERS_HELTOUR__BASE_URL", "https://heltour.example/api/");
+    jail.set_env("ARBOTERS_HELTOUR__TOKEN", "secret");
     Config::from_env()
 }
 
@@ -28,9 +27,7 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
         let config = load(jail).unwrap();
         assert!(config.http.host.is_loopback());
         assert_eq!(config.http.port, 8080);
-        assert!(config.http.readiness_timeout < KUBELET_PROBE_TIMEOUT);
         assert_eq!(config.lichess.base_url.as_str(), "https://lichess.org/");
-        assert_eq!(config.lichess.token_check_interval, Duration::from_mins(15));
         assert_eq!(config.watchlist.refresh_interval, Duration::from_mins(5));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
     });
@@ -54,7 +51,6 @@ fn the_variables_deployments_set_are_recognized() {
         jail.set_env("ARBOTERS_ZULIP__EMAIL", "arboters@chess.zulipchat.com");
         jail.set_env("ARBOTERS_ZULIP__API_KEY", "secret");
         jail.set_env("ARBOTERS_LICHESS__TOKEN", "lip_secret");
-        jail.set_env("ARBOTERS_HELTOUR__TOKEN", "secret");
         jail.set_env("ARBOTERS_STATUS__CHANNEL", "arboters-status");
         load(jail).unwrap();
     });
