@@ -38,7 +38,7 @@ Run Arboters:
 run-on-zulip
 ```
 
-Arboters needs a heltour API token to start, and it posts to a Zulip organization. On the first run, `run-on-zulip` asks you for the secrets that it needs. secretspec, a secrets tool that comes with devenv, saves them outside the repository. When Arboters starts, the terminal shows `arboters started`.
+Arboters needs a heltour API token and a Zulip bot to start. On the first run, `run-on-zulip` asks you for the secrets that it needs. secretspec, a secrets tool that comes with devenv, saves them outside the repository. When Arboters starts, the terminal shows `arboters started`.
 
 You can also set `ARBOTERS_STATUS__CHANNEL` to a Zulip channel. Then Arboters posts there when it starts, connects to Lichess, and stops.
 

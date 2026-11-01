@@ -305,7 +305,7 @@ async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_ag
         lichess: Some(Availability::Available(TokenOwner(
             lichess::UserId::try_new("lichess4545").unwrap(),
         ))),
-        zulip: None,
+        zulip: Availability::Available(()),
     }));
     harness.watch(&names).await;
     eventually("the watchlist is split again", || {
@@ -320,7 +320,7 @@ async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_ag
             recovery: Recovery::Recoverable,
             error: "answered 503 Service Unavailable".to_owned(),
         })),
-        zulip: None,
+        zulip: Availability::Available(()),
     }));
     harness.watch(&names).await;
     tokio::time::sleep(Duration::from_millis(100)).await;

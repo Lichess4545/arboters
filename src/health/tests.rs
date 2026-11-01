@@ -34,7 +34,8 @@ impl FakeServices {
                 get(move || std::future::ready(next_answer(&answering))),
             )
             .route("/api/token/test", post(lichess_token_test))
-            .route("/api/v1/users/me", get(zulip_refusing_the_key));
+            .route("/api/v1/users/me", get(zulip_bot))
+            .route("/refusing/api/v1/users/me", get(zulip_refusing_the_key));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -62,8 +63,16 @@ impl FakeServices {
     }
 
     fn zulip(&self) -> zulip::Api {
+        self.zulip_at("")
+    }
+
+    fn refusing_zulip(&self) -> zulip::Api {
+        self.zulip_at("refusing/")
+    }
+
+    fn zulip_at(&self, path: &str) -> zulip::Api {
         let settings = ZulipSettings {
-            site: Url::parse(&format!("http://{}/", self.address)).unwrap(),
+            site: Url::parse(&format!("http://{}/{path}", self.address)).unwrap(),
             email: BotEmail::try_new("bot@example.com").unwrap(),
             api_key: SecretString::from("zulip_key"),
             inbox: InboxSettings::default(),
@@ -86,6 +95,10 @@ async fn lichess_token_test(token: String) -> Json<Value> {
     Json(json!({ token: owner }))
 }
 
+async fn zulip_bot() -> Json<Value> {
+    Json(json!({ "result": "success", "msg": "", "user_id": 1, "full_name": "Arboters" }))
+}
+
 async fn zulip_refusing_the_key() -> (StatusCode, Json<Value>) {
     (
         StatusCode::UNAUTHORIZED,
@@ -98,7 +111,7 @@ fn everything_available() -> Health {
         postgres: Availability::Available(()),
         heltour: Availability::Available(()),
         lichess: None,
-        zulip: None,
+        zulip: Availability::Available(()),
     }
 }
 
@@ -121,7 +134,7 @@ fn checking(
     pool: PgPool,
     services: &FakeServices,
     lichess_token: Option<&str>,
-    zulip: Option<zulip::Api>,
+    zulip: zulip::Api,
 ) -> Checking {
     let config = Config {
         interval: Duration::from_millis(10),
@@ -146,7 +159,7 @@ fn checking(
 #[sqlx::test]
 async fn when_our_tables_can_be_read_then_the_database_is_ready(pool: PgPool) {
     let services = FakeServices::start(&[StatusCode::NO_CONTENT]).await;
-    let mut checking = checking(pool, &services, None, None);
+    let mut checking = checking(pool, &services, None, services.zulip());
     assert_eq!(checking.next().await.postgres, Availability::Available(()));
 }
 
@@ -155,7 +168,7 @@ async fn when_heltour_refuses_the_token_then_listeners_are_told_it_needs_a_perso
     pool: PgPool,
 ) {
     let services = FakeServices::start(&[StatusCode::UNAUTHORIZED]).await;
-    let mut checking = checking(pool, &services, None, None);
+    let mut checking = checking(pool, &services, None, services.zulip());
     assert_eq!(
         checking.next().await.heltour,
         Availability::Unavailable(Unavailable {
@@ -173,14 +186,14 @@ async fn when_heltour_fails_once_and_passes_on_the_retry_then_listeners_are_neve
 ) {
     let services =
         FakeServices::start(&[StatusCode::SERVICE_UNAVAILABLE, StatusCode::NO_CONTENT]).await;
-    let mut checking = checking(pool, &services, None, None);
+    let mut checking = checking(pool, &services, None, services.zulip());
     assert_eq!(checking.next().await, everything_available());
 }
 
 #[sqlx::test(migrations = false)]
 async fn when_our_tables_are_missing_then_health_stops_with_the_cause(pool: PgPool) {
     let services = FakeServices::start(&[StatusCode::NO_CONTENT]).await;
-    let checking = checking(pool, &services, None, None);
+    let checking = checking(pool, &services, None, services.zulip());
     let stopped = tokio::time::timeout(PATIENCE, HealthCheck::stopped(&checking.health_check))
         .await
         .unwrap();
@@ -195,7 +208,7 @@ async fn when_our_tables_are_missing_then_health_stops_with_the_cause(pool: PgPo
 #[sqlx::test]
 async fn when_lichess_knows_the_token_then_the_snapshot_carries_its_owner(pool: PgPool) {
     let services = FakeServices::start(&[StatusCode::NO_CONTENT]).await;
-    let mut checking = checking(pool, &services, Some(KNOWN_LICHESS_TOKEN), None);
+    let mut checking = checking(pool, &services, Some(KNOWN_LICHESS_TOKEN), services.zulip());
     assert_eq!(
         checking.next().await.lichess,
         Some(Availability::Available(TokenOwner(
@@ -207,12 +220,12 @@ async fn when_lichess_knows_the_token_then_the_snapshot_carries_its_owner(pool: 
 #[sqlx::test]
 async fn when_zulip_refuses_the_api_key_then_listeners_are_told_it_needs_a_person(pool: PgPool) {
     let services = FakeServices::start(&[StatusCode::NO_CONTENT]).await;
-    let mut checking = checking(pool, &services, None, Some(services.zulip()));
+    let mut checking = checking(pool, &services, None, services.refusing_zulip());
     assert_eq!(
         checking.next().await.zulip,
-        Some(Availability::Unavailable(Unavailable {
+        Availability::Unavailable(Unavailable {
             recovery: Recovery::NeedsAPerson,
             error: "zulip rejected the request (401 Unauthorized): Invalid API key".to_owned(),
-        }))
+        })
     );
 }

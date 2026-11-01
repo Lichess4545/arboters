@@ -60,7 +60,7 @@ fn everything_available() -> Health {
         postgres: Availability::Available(()),
         heltour: Availability::Available(()),
         lichess: None,
-        zulip: Some(Availability::Available(())),
+        zulip: Availability::Available(()),
     }
 }
 
@@ -196,7 +196,7 @@ async fn when_zulip_and_heltour_stop_working_then_only_heltour_is_posted() {
 
     health.send_replace(Some(Health {
         heltour: unavailable_for_now(),
-        zulip: Some(unavailable_for_now()),
+        zulip: unavailable_for_now(),
         ..everything_available()
     }));
 

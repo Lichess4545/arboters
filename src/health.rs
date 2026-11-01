@@ -25,7 +25,7 @@ pub struct Health {
     pub postgres: Availability,
     pub heltour: Availability,
     pub lichess: Option<Availability<TokenOwner>>,
-    pub zulip: Option<Availability>,
+    pub zulip: Availability,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,7 +69,7 @@ pub struct HealthCheck {
     pool: PgPool,
     heltour: Heltour,
     lichess: Option<lichess::Api>,
-    zulip: Option<zulip::Api>,
+    zulip: zulip::Api,
 }
 
 impl HealthCheck {
@@ -79,7 +79,7 @@ impl HealthCheck {
         pool: PgPool,
         heltour: Heltour,
         lichess: Option<lichess::Api>,
-        zulip: Option<zulip::Api>,
+        zulip: zulip::Api,
     ) -> Self {
         Self {
             config,
@@ -129,17 +129,13 @@ impl HealthCheck {
                 OptionFuture::from(self.lichess.as_ref().map(|lichess| {
                     self.check("Lichess", || checks::lichess_token_owner(lichess))
                 })),
-                OptionFuture::from(
-                    self.zulip
-                        .as_ref()
-                        .map(|zulip| self.check("Zulip", || checks::find_zulip_bot(zulip)))
-                ),
+                self.check("Zulip", || checks::find_zulip_bot(&self.zulip)),
             );
         let health = Health {
             postgres: postgres?,
             heltour: heltour?,
             lichess: lichess.transpose()?,
-            zulip: zulip.transpose()?,
+            zulip: zulip?,
         };
         self.publish(health);
         Ok(())
