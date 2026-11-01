@@ -1,7 +1,7 @@
 use crate::chat::{Conversation, DeliveryError, MessageId, Messenger, OutgoingMessage};
 
+use super::Config;
 use super::api::{Api, ApiError};
-use super::settings::ZulipSettings;
 
 #[derive(Clone, Debug)]
 pub struct ZulipMessenger {
@@ -10,9 +10,9 @@ pub struct ZulipMessenger {
 
 impl ZulipMessenger {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &ZulipSettings) -> Self {
+    pub fn new(http: reqwest::Client, config: &Config) -> Self {
         Self {
-            api: Api::new(http, settings),
+            api: Api::new(http, config),
         }
     }
 

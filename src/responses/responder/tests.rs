@@ -82,7 +82,7 @@ impl Chat {
             Responder::new(
                 responses.clone(),
                 messenger.clone(),
-                &ResponsesSettings { cooldown },
+                &Config { cooldown },
                 StdRng::seed_from_u64(4545),
             ),
             inbox.recipient(),

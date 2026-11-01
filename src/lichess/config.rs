@@ -6,26 +6,26 @@ use url::Url;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct LichessSettings {
+pub struct Config {
     pub base_url: Url,
     pub token: Option<SecretString>,
-    pub stream: StreamSettings,
+    pub stream: StreamConfig,
 }
 
-impl Default for LichessSettings {
+impl Default for Config {
     #[expect(clippy::expect_used)]
     fn default() -> Self {
         Self {
             base_url: Url::parse("https://lichess.org").expect("static url is valid"),
             token: None,
-            stream: StreamSettings::default(),
+            stream: StreamConfig::default(),
         }
     }
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct StreamSettings {
+pub struct StreamConfig {
     #[serde(with = "humantime_serde")]
     pub inactivity_timeout: Duration,
     #[serde(with = "humantime_serde")]
@@ -36,7 +36,7 @@ pub struct StreamSettings {
     pub rate_limit_backoff: Duration,
 }
 
-impl Default for StreamSettings {
+impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             inactivity_timeout: Duration::from_mins(10),

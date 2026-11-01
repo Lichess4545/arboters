@@ -16,9 +16,9 @@ use tokio::sync::{Mutex, mpsc};
 
 use super::*;
 use crate::chat::{ChannelName, Role, TopicName};
-use crate::game_monitor::{GameEventKind, LichessSettings};
+use crate::game_monitor::GameEventKind;
 use crate::heltour::{ActiveLeagues, League, league};
-use crate::lichess::Variant;
+use crate::lichess::{self, Variant};
 use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands, Subscriptions};
 use crate::zulip::BotEmail;
 
@@ -227,17 +227,17 @@ impl FakeZulip {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let settings = ZulipSettings {
+        let config = Config {
             site: format!("http://{address}").parse().unwrap(),
             email: BotEmail::try_new("arboters-bot@chess.zulipchat.com").unwrap(),
             api_key: SecretString::from("key"),
-            inbox: InboxSettings {
+            inbox: InboxConfig {
                 initial_backoff: Duration::from_millis(10),
                 max_backoff: Duration::from_millis(50),
             },
         };
-        let messenger = ZulipMessenger::new(reqwest::Client::new(), &settings);
-        let inbox = Inbox::spawn(Inbox::new(reqwest::Client::new(), &settings, messenger));
+        let messenger = ZulipMessenger::new(reqwest::Client::new(), &config);
+        let inbox = Inbox::spawn(Inbox::new(reqwest::Client::new(), &config, messenger));
         Self {
             inbox,
             replies,
@@ -675,7 +675,7 @@ async fn answered_by_subscription_commands(pool: PgPool) -> (FakeZulip, Postgres
     let zulip = FakeZulip::start().await;
     let subscriptions = PostgresSubscriptions::new(pool);
     let commands = SubscriptionCommands::spawn((
-        SubscriptionCommands::new(subscriptions.clone(), LichessSettings::default().base_url),
+        SubscriptionCommands::new(subscriptions.clone(), lichess::Config::default().base_url),
         zulip.inbox.clone().recipient(),
     ));
     commands

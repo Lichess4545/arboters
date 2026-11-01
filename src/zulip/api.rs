@@ -11,7 +11,7 @@ use crate::chat::{
     ChannelName, ChatUserId, Conversation, MessageId, MessageText, OutgoingMessage, Role, TopicName,
 };
 
-use super::settings::{BotEmail, ZulipSettings};
+use super::{BotEmail, Config};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_POLL_TIMEOUT: Duration = Duration::from_secs(90);
@@ -226,12 +226,12 @@ const fn role_from(value: u16) -> Role {
 
 impl Api {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &ZulipSettings) -> Self {
+    pub fn new(http: reqwest::Client, config: &Config) -> Self {
         Self {
             http,
-            site: settings.site.clone(),
-            email: settings.email.clone(),
-            key: settings.api_key.clone(),
+            site: config.site.clone(),
+            email: config.email.clone(),
+            key: config.api_key.clone(),
         }
     }
 

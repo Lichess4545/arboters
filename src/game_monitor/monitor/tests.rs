@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{Ending, GameOutcome, LichessSettings, StreamConnected, http_client};
+use crate::game_monitor::{Ending, GameOutcome, StreamConnected, http_client};
 use crate::health::{Recovery, Unavailable};
 use crate::lichess::{Game, GameId, Player, Speed, Variant};
 
@@ -189,11 +189,11 @@ async fn next(events: &mut mpsc::UnboundedReceiver<GameEvent>) -> GameEvent {
         .unwrap()
 }
 
-async fn harness(stream: StreamSettings) -> Harness {
+async fn harness(stream: lichess::StreamConfig) -> Harness {
     harness_with_token(None, stream).await
 }
 
-async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harness {
+async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) -> Harness {
     let lichess = FakeLichess::default();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -203,7 +203,7 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
         post(move |body: String| std::future::ready(answering.answer(&body))),
     );
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = LichessSettings {
+    let config = lichess::Config {
         base_url: Url::parse(&format!("http://{address}")).unwrap(),
         token: token.map(SecretString::from),
         stream,
@@ -212,8 +212,8 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
     let monitor = GameMonitor::spawn(GameMonitor::new(
-        LichessStream::new(http_client().unwrap(), &settings),
-        settings.stream,
+        LichessStream::new(http_client().unwrap(), &config),
+        config.stream,
         Collector::spawn(Collector(connection_sender)).recipient(),
         health,
     ));
@@ -232,12 +232,12 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
     }
 }
 
-fn settings() -> StreamSettings {
-    StreamSettings {
+fn config() -> lichess::StreamConfig {
+    lichess::StreamConfig {
         initial_backoff: Duration::from_millis(10),
         max_backoff: Duration::from_secs(1),
         rate_limit_backoff: Duration::from_millis(10),
-        ..StreamSettings::default()
+        ..lichess::StreamConfig::default()
     }
 }
 
@@ -280,7 +280,7 @@ fn game() -> Game {
 
 #[tokio::test]
 async fn without_a_token_each_connection_watches_up_to_300_users() {
-    let harness = harness(settings()).await;
+    let harness = harness(config()).await;
     let names = player_names(301);
     harness.watch(&names).await;
     eventually("both connections open", || {
@@ -292,7 +292,7 @@ async fn without_a_token_each_connection_watches_up_to_300_users() {
 
 #[tokio::test]
 async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_again() {
-    let harness = harness_with_token(Some("lip_secret"), settings()).await;
+    let harness = harness_with_token(Some("lip_secret"), config()).await;
     let names = player_names(901);
     harness.watch(&names).await;
     eventually("two connections open", || {
@@ -329,7 +329,7 @@ async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_ag
 
 #[tokio::test]
 async fn an_unchanged_watchlist_does_not_reconnect() {
-    let harness = harness(settings()).await;
+    let harness = harness(config()).await;
     harness.watch(&["alice"]).await;
     eventually("alice is watched", || harness.lichess.request_count() == 1).await;
     harness.watch(&["alice"]).await;
@@ -339,7 +339,7 @@ async fn an_unchanged_watchlist_does_not_reconnect() {
 
 #[tokio::test]
 async fn a_changed_watchlist_closes_the_old_connection_and_opens_a_new_one() {
-    let harness = harness(settings()).await;
+    let harness = harness(config()).await;
     harness.watch(&["alice"]).await;
     eventually("alice is watched", || harness.lichess.request_count() == 1).await;
     harness.watch(&["alice", "bob"]).await;
@@ -356,7 +356,7 @@ async fn a_changed_watchlist_closes_the_old_connection_and_opens_a_new_one() {
 
 #[tokio::test]
 async fn every_follower_receives_every_game_event() {
-    let mut harness = harness(settings()).await;
+    let mut harness = harness(config()).await;
     let (_second, mut second_events) = harness.follower().await;
     harness.watching_alice_and_bob().await;
     harness.lichess.stream_line(0, STARTED);
@@ -381,7 +381,7 @@ async fn every_follower_receives_every_game_event() {
 
 #[tokio::test]
 async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
-    let harness = harness(settings()).await;
+    let harness = harness(config()).await;
     let (stopped, _) = harness.follower().await;
     let (_still_following, mut events) = harness.follower().await;
     stopped.stop_gracefully().await.unwrap();
@@ -403,9 +403,9 @@ async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
 #[tokio::test]
 async fn a_rate_limited_connect_is_retried_only_after_the_rate_limit_backoff() {
     let rate_limit_backoff = Duration::from_millis(300);
-    let harness = harness(StreamSettings {
+    let harness = harness(lichess::StreamConfig {
         rate_limit_backoff,
-        ..settings()
+        ..config()
     })
     .await;
     harness
@@ -421,7 +421,7 @@ async fn a_rate_limited_connect_is_retried_only_after_the_rate_limit_backoff() {
 
 #[tokio::test]
 async fn an_ended_stream_is_reconnected() {
-    let harness = harness(settings()).await;
+    let harness = harness(config()).await;
     harness.lichess.answer_next_with(Answer::Lines(&[]));
     harness.watch(&["alice"]).await;
     eventually("the stream reconnects", || {
@@ -433,10 +433,10 @@ async fn an_ended_stream_is_reconnected() {
 #[tokio::test]
 async fn a_heartbeat_resets_the_reconnect_backoff() {
     let initial_backoff = Duration::from_millis(500);
-    let harness = harness(StreamSettings {
+    let harness = harness(lichess::StreamConfig {
         initial_backoff,
         max_backoff: Duration::from_secs(10),
-        ..settings()
+        ..config()
     })
     .await;
     harness
@@ -457,7 +457,7 @@ async fn a_heartbeat_resets_the_reconnect_backoff() {
 
 #[tokio::test]
 async fn each_connection_reports_its_player_count_once_connected() {
-    let mut harness = harness(settings()).await;
+    let mut harness = harness(config()).await;
     let names = player_names(301);
     harness.watch(&names).await;
     let mut reported = [
@@ -470,7 +470,7 @@ async fn each_connection_reports_its_player_count_once_connected() {
 
 #[tokio::test]
 async fn a_failed_connect_is_not_reported_as_connected() {
-    let mut harness = harness(settings()).await;
+    let mut harness = harness(config()).await;
     harness
         .lichess
         .answer_next_with(Answer::Status(StatusCode::BAD_GATEWAY));

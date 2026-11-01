@@ -15,14 +15,14 @@ use crate::chat::{
 
 use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
 use super::messenger::ZulipMessenger;
-use super::settings::{InboxSettings, ZulipSettings};
+use super::{Config, InboxConfig};
 
 const UNRECOGNIZED: &str = "I don't know that command. Send `help` to see the commands I know.";
 
 #[derive(Debug)]
 pub struct Inbox {
     api: Api,
-    settings: InboxSettings,
+    config: InboxConfig,
     messenger: ZulipMessenger,
     listeners: Vec<ReplyRecipient<IncomingMessage, Handling>>,
     overhearers: Vec<Recipient<OverheardMessage>>,
@@ -55,10 +55,10 @@ pub struct Overheard(OverheardMessage);
 
 impl Inbox {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &ZulipSettings, messenger: ZulipMessenger) -> Self {
+    pub fn new(http: reqwest::Client, config: &Config, messenger: ZulipMessenger) -> Self {
         Self {
-            api: Api::new(http, settings),
-            settings: settings.inbox.clone(),
+            api: Api::new(http, config),
+            config: config.inbox.clone(),
             messenger,
             listeners: Vec::new(),
             overhearers: Vec::new(),
@@ -134,7 +134,7 @@ impl Actor for Inbox {
         let overheard = actor_ref.recipient::<Overheard>().downgrade();
         inbox.reading = Some(tokio::spawn(read(
             inbox.api.clone(),
-            inbox.settings.clone(),
+            inbox.config.clone(),
             received,
             overheard,
         )));
@@ -201,15 +201,15 @@ struct Retry {
 }
 
 impl Retry {
-    fn new(settings: &InboxSettings) -> Self {
+    fn new(config: &InboxConfig) -> Self {
         let delays = ExponentialBuilder::new()
-            .with_min_delay(settings.initial_backoff)
-            .with_max_delay(settings.max_backoff)
+            .with_min_delay(config.initial_backoff)
+            .with_max_delay(config.max_backoff)
             .without_max_times();
         Self {
             delays,
             upcoming: delays.build(),
-            max_backoff: settings.max_backoff,
+            max_backoff: config.max_backoff,
         }
     }
 
@@ -226,11 +226,11 @@ impl Retry {
 
 async fn read(
     api: Api,
-    settings: InboxSettings,
+    config: InboxConfig,
     inbox: WeakRecipient<Received>,
     overheard: WeakRecipient<Overheard>,
 ) {
-    let mut retry = Retry::new(&settings);
+    let mut retry = Retry::new(&config);
     let bot = loop {
         match api.own_user().await {
             Ok(bot) => break bot,

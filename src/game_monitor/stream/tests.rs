@@ -18,12 +18,12 @@ async fn lichess_answering(answer: MethodRouter, token: Option<&str>) -> Lichess
     let address = listener.local_addr().unwrap();
     let router = Router::new().route("/api/stream/games-by-users", answer);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = LichessSettings {
+    let config = lichess::Config {
         base_url: Url::parse(&format!("http://{address}")).unwrap(),
         token: token.map(SecretString::from),
-        ..LichessSettings::default()
+        ..lichess::Config::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings)
+    LichessStream::new(http_client().unwrap(), &config)
 }
 
 fn user_ids(names: &[&str]) -> Vec<UserId> {
@@ -157,11 +157,11 @@ fn a_created_game_is_not_an_event() {
 }
 
 fn stream_with_token(token: Option<&str>) -> LichessStream {
-    let settings = LichessSettings {
+    let config = lichess::Config {
         token: token.map(SecretString::from),
-        ..LichessSettings::default()
+        ..lichess::Config::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings)
+    LichessStream::new(http_client().unwrap(), &config)
 }
 
 #[test]

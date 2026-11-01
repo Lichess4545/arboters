@@ -112,7 +112,7 @@ impl Bot {
                 responses.clone(),
                 messages,
                 Url::parse(SITE).unwrap(),
-                &ResponsesSettings::default(),
+                &Config::default(),
             ),
             inbox.clone().recipient(),
         ))

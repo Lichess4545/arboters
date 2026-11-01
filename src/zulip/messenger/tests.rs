@@ -10,7 +10,7 @@ use tokio::net::TcpListener;
 
 use super::*;
 use crate::chat::{ChannelName, ChatUserId, TopicName};
-use crate::zulip::{BotEmail, InboxSettings};
+use crate::zulip::{BotEmail, InboxConfig};
 
 type CapturedForms = Arc<Mutex<Vec<BTreeMap<String, String>>>>;
 
@@ -47,14 +47,14 @@ impl FakeZulip {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        let settings = ZulipSettings {
+        let config = Config {
             site: format!("http://{address}").parse().unwrap(),
             email: BotEmail::try_new("bot@chess.zulipchat.com").unwrap(),
             api_key: SecretString::from("key"),
-            inbox: InboxSettings::default(),
+            inbox: InboxConfig::default(),
         };
         Self {
-            messenger: ZulipMessenger::new(reqwest::Client::new(), &settings),
+            messenger: ZulipMessenger::new(reqwest::Client::new(), &config),
             forms,
         }
     }

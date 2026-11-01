@@ -2,17 +2,9 @@ use figment::Figment;
 use figment::providers::Env;
 use serde::Deserialize;
 
-use super::database::DatabaseSettings;
-use super::http::HttpSettings;
-use super::telemetry::TelemetrySettings;
-use crate::game_monitor::LichessSettings;
-use crate::game_monitor::watchlist::WatchlistSettings;
-use crate::health;
-use crate::heltour::HeltourSettings;
-use crate::league_games;
-use crate::responses::ResponsesSettings;
-use crate::status::StatusSettings;
-use crate::zulip::ZulipSettings;
+use super::{database, http, telemetry};
+use crate::game_monitor::watchlist;
+use crate::{health, heltour, league_games, lichess, responses, status, zulip};
 
 pub const ENV_PREFIX: &str = "ARBOTERS_";
 pub const ENV_NESTING_SEPARATOR: &str = "__";
@@ -21,23 +13,23 @@ pub const ENV_NESTING_SEPARATOR: &str = "__";
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
-    pub http: HttpSettings,
-    pub database: DatabaseSettings,
+    pub http: http::Config,
+    pub database: database::Config,
     #[serde(default)]
     pub health: health::Config,
     #[serde(default)]
-    pub lichess: LichessSettings,
-    pub heltour: HeltourSettings,
+    pub lichess: lichess::Config,
+    pub heltour: heltour::Config,
     #[serde(default)]
     pub league_games: league_games::Config,
-    pub zulip: ZulipSettings,
-    pub status: Option<StatusSettings>,
+    pub zulip: zulip::Config,
+    pub status: Option<status::Config>,
     #[serde(default)]
-    pub responses: ResponsesSettings,
+    pub responses: responses::Config,
     #[serde(default)]
-    pub watchlist: WatchlistSettings,
+    pub watchlist: watchlist::Config,
     #[serde(default)]
-    pub telemetry: TelemetrySettings,
+    pub telemetry: telemetry::Config,
 }
 
 impl Config {

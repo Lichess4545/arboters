@@ -19,24 +19,24 @@ fn is_email(candidate: &str) -> bool {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ZulipSettings {
+pub struct Config {
     pub site: Url,
     pub email: BotEmail,
     pub api_key: SecretString,
     #[serde(default)]
-    pub inbox: InboxSettings,
+    pub inbox: InboxConfig,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct InboxSettings {
+pub struct InboxConfig {
     #[serde(with = "humantime_serde")]
     pub initial_backoff: Duration,
     #[serde(with = "humantime_serde")]
     pub max_backoff: Duration,
 }
 
-impl Default for InboxSettings {
+impl Default for InboxConfig {
     fn default() -> Self {
         Self {
             initial_backoff: Duration::from_secs(1),

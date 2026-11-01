@@ -1,37 +1,14 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+mod config;
 
 use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
-use serde::Deserialize;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 use crate::health::{Availability, Health};
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct HttpSettings {
-    pub host: IpAddr,
-    pub port: u16,
-}
-
-impl Default for HttpSettings {
-    fn default() -> Self {
-        Self {
-            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 8080,
-        }
-    }
-}
-
-impl HttpSettings {
-    #[must_use]
-    pub const fn address(&self) -> SocketAddr {
-        SocketAddr::new(self.host, self.port)
-    }
-}
+pub use config::Config;
 
 pub fn router(health: watch::Receiver<Option<Health>>) -> Router {
     Router::new()
@@ -40,8 +17,8 @@ pub fn router(health: watch::Receiver<Option<Health>>) -> Router {
         .with_state(health)
 }
 
-pub async fn bind(settings: &HttpSettings) -> std::io::Result<TcpListener> {
-    let listener = TcpListener::bind(settings.address()).await?;
+pub async fn bind(config: &Config) -> std::io::Result<TcpListener> {
+    let listener = TcpListener::bind(config.address()).await?;
     tracing::info!(address = %listener.local_addr()?, "http server listening");
     Ok(listener)
 }

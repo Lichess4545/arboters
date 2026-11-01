@@ -4,15 +4,15 @@ use serde::Deserialize;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ResponsesSettings {
+pub struct Config {
     #[serde(with = "humantime_serde")]
-    pub cooldown: Duration,
+    pub refresh_interval: Duration,
 }
 
-impl Default for ResponsesSettings {
+impl Default for Config {
     fn default() -> Self {
         Self {
-            cooldown: Duration::from_secs(5),
+            refresh_interval: Duration::from_mins(5),
         }
     }
 }

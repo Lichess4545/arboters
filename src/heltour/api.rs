@@ -9,6 +9,7 @@ use url::Url;
 
 use crate::lichess;
 
+use super::Config;
 use super::active_leagues::ActiveLeagues;
 use super::league::{self, League};
 use super::pairing::Pairing;
@@ -18,13 +19,6 @@ const GET_LEAGUES_PATH: &str = "get_leagues/";
 const TOKEN_TEST_PATH: &str = "v2/token/test/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HeltourSettings {
-    pub base_url: Url,
-    pub token: SecretString,
-}
 
 #[derive(Debug, thiserror::Error)]
 #[error("could not read the active leagues from Heltour")]
@@ -102,11 +96,11 @@ pub struct Heltour {
 
 impl Heltour {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &HeltourSettings) -> Self {
+    pub fn new(http: reqwest::Client, config: &Config) -> Self {
         Self {
             http,
-            base_url: settings.base_url.clone(),
-            token: settings.token.clone(),
+            base_url: config.base_url.clone(),
+            token: config.token.clone(),
         }
     }
 

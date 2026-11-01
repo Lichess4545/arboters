@@ -1,13 +1,10 @@
-use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
+mod config;
+
+use secrecy::ExposeSecret;
 use sqlx::PgPool;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DatabaseSettings {
-    pub url: SecretString,
-}
+pub use config::Config;
 
-pub async fn connect(settings: &DatabaseSettings) -> Result<PgPool, sqlx::Error> {
-    PgPool::connect(settings.url.expose_secret()).await
+pub async fn connect(config: &Config) -> Result<PgPool, sqlx::Error> {
+    PgPool::connect(config.url.expose_secret()).await
 }

@@ -13,8 +13,8 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::heltour::HeltourSettings;
-use crate::zulip::{BotEmail, InboxSettings, ZulipSettings};
+use crate::heltour;
+use crate::zulip::BotEmail;
 
 const PATIENCE: Duration = Duration::from_secs(5);
 const KNOWN_LICHESS_TOKEN: &str = "lip_known";
@@ -50,11 +50,11 @@ impl FakeServices {
     }
 
     fn heltour(&self) -> Heltour {
-        let settings = HeltourSettings {
+        let config = heltour::Config {
             base_url: Url::parse(&format!("http://{}/api/", self.address)).unwrap(),
             token: SecretString::from("heltour_secret"),
         };
-        Heltour::new(http_client().unwrap(), &settings)
+        Heltour::new(http_client().unwrap(), &config)
     }
 
     fn lichess(&self, token: &str) -> lichess::Api {
@@ -71,13 +71,13 @@ impl FakeServices {
     }
 
     fn zulip_at(&self, path: &str) -> zulip::Api {
-        let settings = ZulipSettings {
+        let config = zulip::Config {
             site: Url::parse(&format!("http://{}/{path}", self.address)).unwrap(),
             email: BotEmail::try_new("bot@example.com").unwrap(),
             api_key: SecretString::from("zulip_key"),
-            inbox: InboxSettings::default(),
+            inbox: zulip::InboxConfig::default(),
         };
-        zulip::Api::new(http_client().unwrap(), &settings)
+        zulip::Api::new(http_client().unwrap(), &config)
     }
 }
 

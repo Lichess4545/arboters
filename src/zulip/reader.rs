@@ -3,8 +3,8 @@ use reqwest::StatusCode;
 use crate::chat::{MessageId, MessageText};
 use crate::responses::{MessageReader, ReadError};
 
+use super::Config;
 use super::api::{Api, ApiError};
-use super::settings::ZulipSettings;
 
 #[derive(Clone, Debug)]
 pub struct ZulipMessageReader {
@@ -13,9 +13,9 @@ pub struct ZulipMessageReader {
 
 impl ZulipMessageReader {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &ZulipSettings) -> Self {
+    pub fn new(http: reqwest::Client, config: &Config) -> Self {
         Self {
-            api: Api::new(http, settings),
+            api: Api::new(http, config),
         }
     }
 }

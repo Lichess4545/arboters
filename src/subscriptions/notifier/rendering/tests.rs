@@ -1,6 +1,5 @@
 use super::*;
 use crate::game_monitor::Ending;
-use crate::game_monitor::LichessSettings;
 use crate::lichess::{self, GameId, Player, Speed, Variant};
 
 fn game() -> Game {
@@ -20,7 +19,7 @@ fn game() -> Game {
 }
 
 fn lichess() -> Url {
-    LichessSettings::default().base_url
+    lichess::Config::default().base_url
 }
 
 fn finished(outcome: GameOutcome, ending: Ending) -> String {
