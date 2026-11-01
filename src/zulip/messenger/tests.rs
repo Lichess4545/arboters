@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
-use axum::routing::post;
+use axum::extract::{Path, State};
+use axum::routing::{patch, post};
 use axum::{Json, Router};
 use secrecy::SecretString;
 use serde_json::{Value, json};
@@ -33,6 +33,16 @@ impl FakeZulip {
                         Json(reply)
                     }),
                 )
+                .route(
+                    "/api/v1/messages/{id}",
+                    patch(|State((forms, reply)): State<(CapturedForms, Value)>, Path(id): Path<u64>, body: String| async move {
+                        let mut form: BTreeMap<String, String> =
+                            url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+                        form.insert("id".to_owned(), id.to_string());
+                        forms.lock().unwrap().push(form);
+                        Json(reply)
+                    }),
+                )
                 .with_state((forms.clone(), reply));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -44,7 +54,7 @@ impl FakeZulip {
             inbox: InboxSettings::default(),
         };
         Self {
-            messenger: ZulipMessenger::new(&settings).unwrap(),
+            messenger: ZulipMessenger::new(reqwest::Client::new(), &settings),
             forms,
         }
     }
@@ -122,7 +132,26 @@ async fn a_channel_message_is_sent_as_type_channel_to_the_channel_and_topic() {
 }
 
 #[tokio::test]
-async fn a_non_success_result_from_zulip_is_a_delivery_error_carrying_its_error_code() {
+async fn an_edit_is_sent_by_id_with_its_new_content() {
+    let zulip = FakeZulip::accepting().await;
+    let conversation = Conversation::Direct {
+        user_id: ChatUserId(3030),
+    };
+
+    zulip
+        .messenger
+        .edit(&conversation, MessageId(4545), &message())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        zulip.only_form(),
+        form(&[("id", "4545"), ("content", message().markdown())])
+    );
+}
+
+#[tokio::test]
+async fn a_non_success_result_from_zulip_is_a_rejected_delivery_carrying_its_error_message() {
     let zulip = FakeZulip::replying(json!({
         "result": "error",
         "msg": "Channel '4545' does not exist",
@@ -139,6 +168,9 @@ async fn a_non_success_result_from_zulip_is_a_delivery_error_carrying_its_error_
         .await
         .unwrap_err();
 
-    let rejection = error.cause.downcast_ref::<ZulipRejection>().unwrap();
-    assert_eq!(rejection.code, Some(ErrorCode::StreamDoesNotExist));
+    let rejection = error.cause.downcast_ref::<ApiError>();
+    assert!(matches!(
+        rejection,
+        Some(ApiError::Rejected { reason, .. }) if reason == "Channel '4545' does not exist"
+    ));
 }

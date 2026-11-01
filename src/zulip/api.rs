@@ -1,13 +1,15 @@
 use std::time::Duration;
 
 use nutype::nutype;
-use reqwest::StatusCode;
+use reqwest::{Method, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use url::Url;
 
-use crate::chat::{ChannelName, ChatUserId, MessageId, MessageText, Role, TopicName};
+use crate::chat::{
+    ChannelName, ChatUserId, Conversation, MessageId, MessageText, OutgoingMessage, Role, TopicName,
+};
 
 use super::settings::{BotEmail, ZulipSettings};
 
@@ -209,6 +211,11 @@ struct LinkedMessage {
     content: MessageText,
 }
 
+#[derive(Deserialize)]
+struct SentMessage {
+    id: MessageId,
+}
+
 const fn role_from(value: u16) -> Role {
     match value {
         100 => Role::Owner,
@@ -234,32 +241,36 @@ impl Api {
         Ok(self.site.join("api/v1/")?.join(path)?)
     }
 
-    fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, ApiError> {
+    fn request(&self, method: Method, path: &str) -> Result<reqwest::RequestBuilder, ApiError> {
         Ok(self
             .http
-            .get(self.endpoint(path)?)
+            .request(method, self.endpoint(path)?)
             .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
             .timeout(REQUEST_TIMEOUT))
     }
 
     pub async fn own_user(&self) -> Result<Bot, ApiError> {
-        read(self.get("users/me")?.send().await?).await
+        read(self.request(Method::GET, "users/me")?.send().await?).await
     }
 
     pub async fn role_of(&self, user_id: ChatUserId) -> Result<Role, ApiError> {
-        let found: UserEnvelope =
-            read(self.get(&format!("users/{}", user_id.0))?.send().await?).await?;
+        let found: UserEnvelope = read(
+            self.request(Method::GET, &format!("users/{}", user_id.0))?
+                .send()
+                .await?,
+        )
+        .await?;
         Ok(role_from(found.user.role))
     }
 
     pub async fn members(&self) -> Result<Vec<Member>, ApiError> {
-        let Members { members } = read(self.get("users")?.send().await?).await?;
+        let Members { members } = read(self.request(Method::GET, "users")?.send().await?).await?;
         Ok(members)
     }
 
     pub async fn markdown_of(&self, id: MessageId) -> Result<MessageText, ApiError> {
         let found: LinkedMessageEnvelope = read(
-            self.get(&format!("messages/{}", id.0))?
+            self.request(Method::GET, &format!("messages/{}", id.0))?
                 .query(&[("apply_markdown", "false")])
                 .send()
                 .await?,
@@ -270,10 +281,7 @@ impl Api {
 
     pub async fn register(&self) -> Result<Queue, ApiError> {
         let response = self
-            .http
-            .post(self.endpoint("register")?)
-            .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
-            .timeout(REQUEST_TIMEOUT)
+            .request(Method::POST, "register")?
             .form(&[
                 ("event_types", r#"["message","update_message"]"#),
                 ("apply_markdown", "false"),
@@ -286,7 +294,7 @@ impl Api {
 
     pub async fn events(&self, queue: &Queue) -> Result<Batch, ApiError> {
         let response = self
-            .get("events")?
+            .request(Method::GET, "events")?
             .query(&[
                 ("queue_id", queue.id.to_string()),
                 ("last_event_id", queue.last_event_id.0.to_string()),
@@ -318,6 +326,44 @@ impl Api {
             }
         }
         Ok(batch)
+    }
+
+    pub async fn send_message(
+        &self,
+        conversation: &Conversation,
+        message: &OutgoingMessage,
+    ) -> Result<MessageId, ApiError> {
+        let request = self.request(Method::POST, "messages")?;
+        let request = match conversation {
+            Conversation::Direct { user_id } => {
+                let to = format!("[{}]", user_id.0);
+                request.form(&[
+                    ("type", "direct"),
+                    ("to", to.as_str()),
+                    ("content", message.markdown()),
+                ])
+            }
+            Conversation::Topic { channel, topic } => request.form(&[
+                ("type", "channel"),
+                ("to", channel.as_str()),
+                ("topic", topic.as_str()),
+                ("content", message.markdown()),
+            ]),
+        };
+        let SentMessage { id } = read(request.send().await?).await?;
+        Ok(id)
+    }
+
+    pub async fn edit_message(
+        &self,
+        id: MessageId,
+        message: &OutgoingMessage,
+    ) -> Result<(), ApiError> {
+        let request = self
+            .request(Method::PATCH, &format!("messages/{}", id.0))?
+            .form(&[("content", message.markdown())]);
+        read::<IgnoredAny>(request.send().await?).await?;
+        Ok(())
     }
 }
 
