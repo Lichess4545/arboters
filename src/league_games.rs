@@ -1,3 +1,5 @@
+mod config;
+
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
@@ -7,6 +9,8 @@ use crate::game_monitor::{Ending, Follow, GameEvent, GameOutcome, MonitorUnavail
 use crate::heltour::{
     ActiveLeagues, Heltour, League, PairingResult, PairingUpdate, UpdatePairingError,
 };
+
+pub use config::Config;
 
 #[derive(Debug)]
 pub struct Reporter {

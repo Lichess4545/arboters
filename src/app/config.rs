@@ -9,6 +9,7 @@ use crate::game_monitor::LichessSettings;
 use crate::game_monitor::watchlist::WatchlistSettings;
 use crate::health;
 use crate::heltour::HeltourSettings;
+use crate::league_games;
 use crate::responses::ResponsesSettings;
 use crate::status::StatusSettings;
 use crate::zulip::ZulipSettings;
@@ -27,6 +28,8 @@ pub struct Config {
     #[serde(default)]
     pub lichess: LichessSettings,
     pub heltour: HeltourSettings,
+    #[serde(default)]
+    pub league_games: league_games::Config,
     pub zulip: Option<ZulipSettings>,
     pub status: Option<StatusSettings>,
     #[serde(default)]
