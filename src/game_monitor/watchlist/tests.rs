@@ -1,20 +1,14 @@
-use std::collections::VecDeque;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
-use axum::Router;
-use axum::extract::{OriginalUri, RawQuery};
-use axum::http::header::{AUTHORIZATION, USER_AGENT};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::get;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use secrecy::SecretString;
-use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use url::Url;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::game_monitor::http_client;
@@ -27,64 +21,29 @@ const ALICE_AND_BOB: &str = r#"{"pairings": [{"league": "classical", "season": "
 const ALICE_BOB_AND_CAROL_DAVE: &str = r#"{"pairings": [{"league": "classical", "season": "47", "round": 3, "white": "alice", "black": "bob", "game_link": "", "result": ""}, {"league": "rapid", "season": "12", "round": 1, "white": "Carol", "black": "dave", "game_link": "", "result": ""}]}"#;
 const NO_ACTIVE_ROUND: &str = r#"{"pairings": null, "error": "no_matching_rounds"}"#;
 
-struct Request {
-    path: String,
-    query: Option<String>,
-    headers: HeaderMap,
-}
-
-#[derive(Clone, Default)]
-struct FakeHeltour {
-    requests: Arc<Mutex<Vec<Request>>>,
-    pairings: Arc<Mutex<VecDeque<(StatusCode, &'static str)>>>,
-}
-
-impl FakeHeltour {
-    fn answer(&self, request: Request) -> (StatusCode, &'static str) {
-        let leagues = request.path.ends_with("/get_leagues/");
-        self.requests.lock().unwrap().push(request);
-        if leagues {
-            return (StatusCode::OK, LEAGUES);
-        }
-        let mut pairings = self.pairings.lock().unwrap();
-        if pairings.len() > 1 {
-            pairings.pop_front().unwrap()
-        } else {
-            pairings[0]
-        }
-    }
-
-    fn request_count(&self) -> usize {
-        self.requests.lock().unwrap().len()
-    }
-}
-
-async fn heltour_answering(pairings: &[(StatusCode, &'static str)]) -> (FakeHeltour, Heltour) {
-    let fake = FakeHeltour {
-        pairings: Arc::new(Mutex::new(pairings.iter().copied().collect())),
-        ..FakeHeltour::default()
+async fn heltour_answering(pairings: &[(u16, &'static str)]) -> (MockServer, Heltour) {
+    let heltour = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/get_leagues/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(LEAGUES))
+        .mount(&heltour)
+        .await;
+    let find_pairing = |(status, body): &(u16, &str)| {
+        Mock::given(method("GET"))
+            .and(path("/api/find_pairing/"))
+            .respond_with(ResponseTemplate::new(*status).set_body_string(*body))
     };
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let answering = fake.clone();
-    let answer = get(
-        move |OriginalUri(uri): OriginalUri, RawQuery(query): RawQuery, headers: HeaderMap| {
-            std::future::ready(answering.answer(Request {
-                path: uri.path().to_owned(),
-                query,
-                headers,
-            }))
-        },
-    );
-    let router = Router::new()
-        .route("/api/find_pairing/", answer.clone())
-        .route("/api/get_leagues/", answer);
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    for answer in pairings {
+        find_pairing(answer).up_to_n_times(1).mount(&heltour).await;
+    }
+    if let Some(last) = pairings.last() {
+        find_pairing(last).mount(&heltour).await;
+    }
     let config = heltour::Config {
-        base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
+        base_url: Url::parse(&format!("{}/api/", heltour.uri())).unwrap(),
         token: SecretString::from("heltour_secret"),
     };
-    (fake, Heltour::new(http_client().unwrap(), &config))
+    (heltour, Heltour::new(http_client().unwrap(), &config))
 }
 
 #[derive(Debug)]
@@ -124,13 +83,13 @@ impl Message<ActiveLeagues> for Recorder {
 }
 
 struct Syncing {
-    heltour: FakeHeltour,
+    heltour: MockServer,
     sync: tokio::task::JoinHandle<()>,
     told: mpsc::UnboundedReceiver<Told>,
 }
 
 impl Syncing {
-    async fn start(pairings: &[(StatusCode, &'static str)], refresh_interval: Duration) -> Self {
+    async fn start(pairings: &[(u16, &'static str)], refresh_interval: Duration) -> Self {
         let (heltour, client) = heltour_answering(pairings).await;
         let (sender, told) = mpsc::unbounded_channel();
         let recorder = Recorder::spawn(Recorder(sender));
@@ -183,21 +142,10 @@ fn watching(names: &[&str]) -> Watch {
     Watch(names.iter().map(|name| user_id(name)).collect())
 }
 
-async fn eventually(what: &str, condition: impl Fn() -> bool) {
-    let deadline = Instant::now() + PATIENCE;
-    while !condition() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-}
-
 #[tokio::test]
 async fn the_monitor_is_told_every_paired_player_and_followers_the_active_leagues() {
-    let mut syncing = Syncing::start(
-        &[(StatusCode::OK, ALICE_BOB_AND_CAROL_DAVE)],
-        Duration::from_hours(1),
-    )
-    .await;
+    let mut syncing =
+        Syncing::start(&[(200, ALICE_BOB_AND_CAROL_DAVE)], Duration::from_hours(1)).await;
 
     let pairing = |league: &str, white: &str, black: &str| Pairing {
         league: tag(league),
@@ -239,19 +187,15 @@ async fn the_monitor_is_told_every_paired_player_and_followers_the_active_league
 
 #[tokio::test]
 async fn heltour_is_asked_about_every_league_with_the_api_token_and_our_user_agent() {
-    let mut syncing =
-        Syncing::start(&[(StatusCode::OK, ALICE_AND_BOB)], Duration::from_hours(1)).await;
+    let mut syncing = Syncing::start(&[(200, ALICE_AND_BOB)], Duration::from_hours(1)).await;
     syncing.next_watch().await;
 
-    let mut requests = std::mem::take(&mut *syncing.heltour.requests.lock().unwrap());
-    requests.sort_by(|left, right| left.path.cmp(&right.path));
-    let paths: Vec<_> = requests
-        .iter()
-        .map(|request| request.path.as_str())
-        .collect();
+    let mut requests = syncing.heltour.received_requests().await.unwrap();
+    requests.sort_by(|left, right| left.url.path().cmp(right.url.path()));
+    let paths: Vec<_> = requests.iter().map(|request| request.url.path()).collect();
     assert_eq!(paths, ["/api/find_pairing/", "/api/get_leagues/"]);
-    for request in requests {
-        assert_eq!(request.query, None);
+    for request in &requests {
+        assert_eq!(request.url.query(), None);
         assert_eq!(request.headers[AUTHORIZATION], "Token heltour_secret");
         assert_eq!(
             request.headers[USER_AGENT],
@@ -266,21 +210,14 @@ async fn heltour_is_asked_about_every_league_with_the_api_token_and_our_user_age
 
 #[tokio::test]
 async fn without_an_active_round_no_one_is_watched() {
-    let mut syncing = Syncing::start(
-        &[(StatusCode::OK, NO_ACTIVE_ROUND)],
-        Duration::from_hours(1),
-    )
-    .await;
+    let mut syncing = Syncing::start(&[(200, NO_ACTIVE_ROUND)], Duration::from_hours(1)).await;
     assert_eq!(syncing.next_watch().await, watching(&[]));
 }
 
 #[tokio::test]
 async fn new_pairings_reach_the_monitor_at_a_later_refresh() {
     let mut syncing = Syncing::start(
-        &[
-            (StatusCode::OK, ALICE_AND_BOB),
-            (StatusCode::OK, ALICE_BOB_AND_CAROL_DAVE),
-        ],
+        &[(200, ALICE_AND_BOB), (200, ALICE_BOB_AND_CAROL_DAVE)],
         Duration::from_millis(50),
     )
     .await;
@@ -295,26 +232,25 @@ async fn new_pairings_reach_the_monitor_at_a_later_refresh() {
 #[tokio::test]
 async fn a_refused_request_keeps_the_previous_watchlist_and_sync_carries_on() {
     let mut syncing = Syncing::start(
-        &[
-            (StatusCode::OK, ALICE_AND_BOB),
-            (StatusCode::UNAUTHORIZED, "Unauthorized"),
-        ],
+        &[(200, ALICE_AND_BOB), (401, "Unauthorized")],
         Duration::from_millis(50),
     )
     .await;
 
     assert_eq!(syncing.next_watch().await, watching(&["alice", "bob"]));
-    eventually("heltour has refused twice", || {
-        syncing.heltour.request_count() >= 6
-    })
-    .await;
+    let refused_twice = async {
+        while syncing.heltour.received_requests().await.unwrap().len() < 6 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(PATIENCE, refused_twice).await.unwrap();
     assert!(syncing.told.try_recv().is_err());
     assert!(!syncing.sync.is_finished());
 }
 
 #[tokio::test]
 async fn sync_ends_once_a_follower_has_stopped() {
-    let (_, heltour) = heltour_answering(&[(StatusCode::OK, ALICE_AND_BOB)]).await;
+    let (_server, heltour) = heltour_answering(&[(200, ALICE_AND_BOB)]).await;
     let (sender, _told) = mpsc::unbounded_channel();
     let monitor = Recorder::spawn(Recorder(sender.clone()));
     let stopped = Recorder::spawn(Recorder(sender));
