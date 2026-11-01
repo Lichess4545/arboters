@@ -49,7 +49,7 @@ impl FakeZulip {
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let config = Config {
             site: format!("http://{address}").parse().unwrap(),
-            email: BotEmail::try_new("bot@chess.zulipchat.com").unwrap(),
+            email: BotEmail::try_new("bot@chess.zulipchat.example.com").unwrap(),
             api_key: SecretString::from("key"),
             inbox: InboxConfig::default(),
         };

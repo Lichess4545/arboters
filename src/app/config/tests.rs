@@ -18,8 +18,14 @@ fn load(jail: &mut Jail) -> Result<Config, Box<figment::Error>> {
     jail.set_env("ARBOTERS_DATABASE__URL", "postgres://localhost/arboters");
     jail.set_env("ARBOTERS_HELTOUR__BASE_URL", "https://heltour.example/api/");
     jail.set_env("ARBOTERS_HELTOUR__TOKEN", "secret");
-    jail.set_env("ARBOTERS_ZULIP__SITE", "https://chess.zulipchat.com");
-    jail.set_env("ARBOTERS_ZULIP__EMAIL", "arboters@chess.zulipchat.com");
+    jail.set_env(
+        "ARBOTERS_ZULIP__SITE",
+        "https://chess.zulipchat.example.com",
+    );
+    jail.set_env(
+        "ARBOTERS_ZULIP__EMAIL",
+        "arboters@chess.zulipchat.example.com",
+    );
     jail.set_env("ARBOTERS_ZULIP__API_KEY", "secret");
     Config::from_env()
 }
@@ -41,8 +47,14 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
 fn heltour_has_no_default_location() {
     in_clean_environment(|jail| {
         jail.set_env("ARBOTERS_DATABASE__URL", "postgres://localhost/arboters");
-        jail.set_env("ARBOTERS_ZULIP__SITE", "https://chess.zulipchat.com");
-        jail.set_env("ARBOTERS_ZULIP__EMAIL", "arboters@chess.zulipchat.com");
+        jail.set_env(
+            "ARBOTERS_ZULIP__SITE",
+            "https://chess.zulipchat.example.com",
+        );
+        jail.set_env(
+            "ARBOTERS_ZULIP__EMAIL",
+            "arboters@chess.zulipchat.example.com",
+        );
         jail.set_env("ARBOTERS_ZULIP__API_KEY", "secret");
         assert!(Config::from_env().is_err());
     });

@@ -14,7 +14,7 @@ use crate::responses::PostgresResponses;
 
 const MEMBER: ChatUserId = ChatUserId(10);
 const MODERATOR: ChatUserId = ChatUserId(11);
-const SITE: &str = "https://chess.zulipchat.com";
+const SITE: &str = "https://chess.zulipchat.example.com";
 const GOOD_GAME: MessageId = MessageId(1234);
 const WELL_PLAYED: MessageId = MessageId(1235);
 const HIDDEN: MessageId = MessageId(999);
@@ -411,7 +411,7 @@ async fn a_link_to_another_site_is_refused(pool: PgPool) {
 
     let reply = bot
         .moderator_says(&format!(
-            r#"response add "gg" https://other.zulipchat.com/#narrow/channel/7-chess/topic/games/near/{}"#,
+            r#"response add "gg" https://other.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/{}"#,
             GOOD_GAME.0
         ))
         .await;
@@ -419,7 +419,7 @@ async fn a_link_to_another_site_is_refused(pool: PgPool) {
     assert_eq!(bot.saved().await, []);
     assert_eq!(
         reply,
-        "That link is to another site. Link to a message on https://chess.zulipchat.com/."
+        "That link is to another site. Link to a message on https://chess.zulipchat.example.com/."
     );
 }
 

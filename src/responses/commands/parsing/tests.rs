@@ -1,9 +1,10 @@
 use super::*;
 
-const LINK: &str = "https://chess.zulipchat.com/#narrow/channel/7-chess/topic/games/near/1234";
+const LINK: &str =
+    "https://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/1234";
 
 fn site() -> Url {
-    Url::parse("https://chess.zulipchat.com").unwrap()
+    Url::parse("https://chess.zulipchat.example.com").unwrap()
 }
 
 fn command(text: &str) -> Result<Command, Mistake> {
@@ -95,7 +96,7 @@ fn add_without_quotes_or_a_link_is_a_mistake() {
 #[test]
 fn add_reports_what_is_wrong_with_the_link() {
     assert_eq!(
-        command(r#"response add "gg" https://other.zulipchat.com/#narrow/near/1"#),
+        command(r#"response add "gg" https://other.zulipchat.example.com/#narrow/near/1"#),
         Err(Mistake::Link(LinkMistake::OtherSite))
     );
     assert_eq!(
