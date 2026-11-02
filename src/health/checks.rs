@@ -61,7 +61,15 @@ pub async fn lichess_token_owner(lichess: &lichess::Api) -> Result<TokenOwner, F
 }
 
 pub async fn find_zulip_bot(zulip: &zulip::Api) -> Result<(), Failure> {
-    zulip.own_user().await.map(drop).map_err(Failure::retry)
+    zulip.own_user().await.map(drop).map_err(|error| {
+        let outcome = match &error {
+            zulip::ApiError::Rejected { status, .. }
+            | zulip::ApiError::Unreadable { status, .. } => outcome_of_status(*status),
+            zulip::ApiError::Request(_) | zulip::ApiError::BadEventQueue => Outcome::Retry,
+            zulip::ApiError::Url(_) => Outcome::Exit,
+        };
+        Failure::new(outcome, error)
+    })
 }
 
 fn failed_request(error: reqwest::Error) -> Failure {
@@ -71,12 +79,18 @@ fn failed_request(error: reqwest::Error) -> Failure {
 }
 
 fn refused(status: StatusCode) -> Failure {
-    let outcome = match status {
+    Failure::new(
+        outcome_of_status(status),
+        anyhow::anyhow!("answered {status}"),
+    )
+}
+
+fn outcome_of_status(status: StatusCode) -> Outcome {
+    match status {
         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => Outcome::Retry,
         status if status.is_client_error() => Outcome::Report,
         _ => Outcome::Retry,
-    };
-    Failure::new(outcome, anyhow::anyhow!("answered {status}"))
+    }
 }
 
 // https://www.postgresql.org/docs/current/errcodes-appendix.html#ERRCODES-TABLE
