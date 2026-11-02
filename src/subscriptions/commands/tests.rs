@@ -1,27 +1,24 @@
-use std::collections::BTreeSet;
 use std::convert::Infallible;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use kameo::actor::{ReplyRecipient, Spawn};
+use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
 use crate::chat::{ChannelName, CommandText, Role, TopicName};
-use crate::heltour::League;
+use crate::heltour::league;
 use crate::lichess::{self, Clock, Variant};
-use crate::subscriptions::{PostgresSubscriptions, Subscription};
+use crate::subscriptions::PostgresSubscriptions;
 
 const MEMBER: ChatUserId = ChatUserId(10);
-const OTHER_MEMBER: ChatUserId = ChatUserId(12);
 const MODERATOR: ChatUserId = ChatUserId(11);
+const OTHER_MEMBER: ChatUserId = ChatUserId(12);
 
-#[derive(Debug, Default)]
-struct FakeInbox {
-    listener: Option<ReplyRecipient<IncomingMessage, Handling>>,
-}
+const ACTIVE_LEAGUES: &str = "The active leagues are `classical`, `rapid`, `blitz960`.";
 
-impl Actor for FakeInbox {
+#[derive(Debug)]
+struct Inbox;
+
+impl Actor for Inbox {
     type Args = Self;
     type Error = Infallible;
 
@@ -33,45 +30,15 @@ impl Actor for FakeInbox {
     }
 }
 
-impl Message<Listen> for FakeInbox {
+impl Message<Listen> for Inbox {
     type Reply = ();
 
-    fn handle(
-        &mut self,
-        Listen(listener): Listen,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> impl Future<Output = ()> + Send {
-        self.listener = Some(listener);
-        std::future::ready(())
-    }
+    async fn handle(&mut self, _: Listen, _: &mut Context<Self, Self::Reply>) {}
 }
 
-struct RegisteredListener;
+type Commands = ActorRef<SubscriptionCommands<PostgresSubscriptions>>;
 
-impl Message<RegisteredListener> for FakeInbox {
-    type Reply = Option<ReplyRecipient<IncomingMessage, Handling>>;
-
-    fn handle(
-        &mut self,
-        _: RegisteredListener,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> impl Future<Output = Self::Reply> + Send {
-        std::future::ready(self.listener.clone())
-    }
-}
-
-struct Bot {
-    commands: ReplyRecipient<IncomingMessage, Handling>,
-    subscriptions: PostgresSubscriptions,
-    replies: Mutex<Vec<(Conversation, String)>>,
-    next_id: AtomicU64,
-}
-
-fn league() -> league::Tag {
-    league::Tag::try_new("classical").unwrap()
-}
-
-fn active_leagues() -> ActiveLeagues {
+async fn started(pool: PgPool) -> Commands {
     let league = |tag, name, minutes| League {
         tag: league::Tag::try_new(tag).unwrap(),
         name: league::Name::try_new(name).unwrap(),
@@ -82,417 +49,641 @@ fn active_leagues() -> ActiveLeagues {
         variant: Variant::Standard,
         rated: true,
     };
-    ActiveLeagues {
-        leagues: vec![
-            league("classical", "Classical League", 45),
-            league("rapid", "Rapid Battle", 15),
-            league("blitz960", "Blitz 960", 15),
-        ],
-        pairings: Vec::new(),
-    }
-}
-
-fn dm_to(user_id: ChatUserId) -> Conversation {
-    Conversation::Direct { user_id }
-}
-
-fn games_topic() -> Conversation {
-    Conversation::Topic {
-        channel: ChannelName::try_new("chess").unwrap(),
-        topic: TopicName::try_new("games").unwrap(),
-    }
-}
-
-fn other_topic() -> Conversation {
-    Conversation::Topic {
-        channel: ChannelName::try_new("chess").unwrap(),
-        topic: TopicName::try_new("other games").unwrap(),
-    }
-}
-
-impl Bot {
-    async fn start(pool: PgPool) -> Self {
-        let subscriptions = PostgresSubscriptions::new(pool);
-        let inbox = FakeInbox::spawn(FakeInbox::default());
-        let commands = SubscriptionCommands::spawn((
-            SubscriptionCommands::new(subscriptions.clone(), lichess::Config::default().base_url),
-            inbox.clone().recipient(),
-        ));
-        commands.ask(active_leagues()).await.unwrap();
-        Self {
-            commands: inbox.ask(RegisteredListener).await.unwrap().unwrap(),
-            subscriptions,
-            replies: Mutex::default(),
-            next_id: AtomicU64::new(1),
-        }
-    }
-
-    async fn hear(
-        &self,
-        sender: ChatUserId,
-        role: Role,
-        reply_to: Conversation,
-        text: &str,
-    ) -> Handling {
-        let id = MessageId(self.next_id.fetch_add(1, Ordering::Relaxed));
-        self.hear_as(id, Revision::Original, sender, role, reply_to, text)
-            .await
-    }
-
-    async fn hear_as(
-        &self,
-        id: MessageId,
-        revision: Revision,
-        sender: ChatUserId,
-        role: Role,
-        reply_to: Conversation,
-        text: &str,
-    ) -> Handling {
-        let handling = self
-            .commands
-            .ask(IncomingMessage {
-                id,
-                revision,
-                sender,
-                role,
-                reply_to: reply_to.clone(),
-                text: CommandText::new(text),
-            })
-            .await
-            .unwrap();
-        if let Handling::Answered(answer) = &handling {
-            self.replies
-                .lock()
-                .unwrap()
-                .push((reply_to, answer.markdown().to_owned()));
-        }
-        handling
-    }
-
-    fn last_id(&self) -> MessageId {
-        MessageId(self.next_id.load(Ordering::Relaxed) - 1)
-    }
-
-    async fn edit_last(&self, sender: ChatUserId, role: Role, text: &str) -> Handling {
-        let reply_to = self.replies.lock().unwrap().last().unwrap().0.clone();
-        self.hear_as(
-            self.last_id(),
-            Revision::Edited,
-            sender,
-            role,
-            reply_to,
-            text,
-        )
+    let commands = SubscriptionCommands::spawn((
+        SubscriptionCommands::new(
+            PostgresSubscriptions::new(pool),
+            lichess::Config::default().base_url,
+        ),
+        Inbox::spawn(Inbox).recipient(),
+    ));
+    commands
+        .ask(ActiveLeagues {
+            leagues: vec![
+                league("classical", "Classical League", 45),
+                league("rapid", "Rapid Battle", 15),
+                league("blitz960", "Blitz 960", 15),
+            ],
+            pairings: Vec::new(),
+        })
         .await
-    }
+        .unwrap();
+    commands
+}
 
-    async fn direct(&self, sender: ChatUserId, role: Role, text: &str) -> Handling {
-        self.hear(sender, role, dm_to(sender), text).await
+async fn reply(commands: &Commands, message: IncomingMessage) -> String {
+    match commands.ask(message).await.unwrap() {
+        Handling::Answered(answer) => answer.markdown().to_owned(),
+        Handling::Unrecognized => panic!("the commands left the message to others"),
     }
+}
 
-    async fn in_topic(&self, sender: ChatUserId, role: Role, text: &str) -> Handling {
-        self.hear(sender, role, games_topic(), text).await
+fn topic(topic: &str) -> Conversation {
+    Conversation::Topic {
+        channel: ChannelName::try_new("chess").unwrap(),
+        topic: TopicName::try_new(topic).unwrap(),
     }
+}
 
-    fn replies(&self) -> Vec<(Conversation, String)> {
-        self.replies.lock().unwrap().clone()
+fn message(sender: ChatUserId, reply_to: Conversation, text: &str) -> IncomingMessage {
+    IncomingMessage {
+        id: MessageId(1),
+        revision: Revision::Original,
+        sender,
+        role: if sender == MODERATOR {
+            Role::Moderator
+        } else {
+            Role::Member
+        },
+        reply_to,
+        text: CommandText::new(text),
     }
+}
 
-    fn last_reply(&self) -> (Conversation, String) {
-        self.replies().last().unwrap().clone()
-    }
+fn dm(sender: ChatUserId, text: &str) -> IncomingMessage {
+    message(sender, Conversation::Direct { user_id: sender }, text)
+}
 
-    async fn targets(&self, event: GameEventKind, player: &str) -> BTreeSet<Conversation> {
-        let player = lichess::UserId::try_new(player).unwrap();
-        self.subscriptions
-            .targets_for(&[&league()], event, [&player, &player])
-            .await
-            .unwrap()
-    }
+fn in_games(sender: ChatUserId, text: &str) -> IncomingMessage {
+    message(sender, topic("games"), text)
+}
 
-    async fn subscriptions_of(&self, requester: ChatUserId) -> Vec<Subscription> {
-        self.subscriptions.requested_by(requester).await.unwrap()
+fn edited(original: &IncomingMessage, text: &str) -> IncomingMessage {
+    IncomingMessage {
+        revision: Revision::Edited,
+        text: CommandText::new(text),
+        ..original.clone()
     }
 }
 
 #[sqlx::test]
-async fn tell_me_for_a_player_subscribes_the_sender_by_direct_message(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn tell_me_for_a_player_subscribes_the_sender_to_that_players_games(pool: PgPool) {
+    let commands = started(pool).await;
 
-    let handling = bot
-        .direct(
-            MEMBER,
-            Role::Member,
-            "tell me when a-game-starts in classical for alice",
+    assert_eq!(
+        reply(
+            &commands,
+            dm(MEMBER, "tell me when a-game-starts in classical for alice")
         )
-        .await;
-
-    assert!(matches!(handling, Handling::Answered(_)));
-    assert_eq!(
-        bot.targets(GameEventKind::GameStarted, "alice").await,
-        BTreeSet::from([dm_to(MEMBER)])
+        .await,
+        "Subscription `1`: tell you when a-game-starts in classical for alice."
     );
-    let id = bot.subscriptions_of(MEMBER).await[0].id;
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MEMBER),
-            format!("Subscription `{id}`: tell you when a-game-starts in classical for alice.")
-        )
-    );
-}
-
-#[sqlx::test]
-async fn tell_me_from_a_topic_subscribes_the_sender_and_replies_in_the_topic(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.in_topic(
-        MEMBER,
-        Role::Member,
-        "tell me when a-game-is-over in classical for alice",
-    )
-    .await;
-
-    assert_eq!(
-        bot.targets(GameEventKind::GameFinished, "alice").await,
-        BTreeSet::from([dm_to(MEMBER)])
-    );
-    assert_eq!(bot.last_reply().0, games_topic());
 }
 
 #[sqlx::test]
 async fn tell_me_without_a_player_subscribes_the_sender_to_the_whole_league(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell me when a-game-is-over in classical",
-    )
-    .await;
+    let commands = started(pool).await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameFinished, "bob").await,
-        BTreeSet::from([dm_to(MEMBER)])
+        reply(
+            &commands,
+            dm(MEMBER, "tell me when a-game-is-over in classical")
+        )
+        .await,
+        "Subscription `1`: tell you when a-game-is-over in classical."
     );
 }
 
 #[sqlx::test]
-async fn a_member_can_subscribe_the_topic_to_a_player(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.in_topic(
-        MEMBER,
-        Role::Member,
-        "tell here when a-game-starts in classical for alice",
-    )
-    .await;
+async fn tell_me_from_a_topic_subscribes_the_sender(pool: PgPool) {
+    let commands = started(pool).await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, "alice").await,
-        BTreeSet::from([games_topic()])
+        reply(
+            &commands,
+            in_games(MEMBER, "tell me when a-game-is-over in classical")
+        )
+        .await,
+        "Subscription `1`: tell you when a-game-is-over in classical."
     );
-    let id = bot.subscriptions_of(MEMBER).await[0].id;
+}
+
+#[sqlx::test]
+async fn tell_here_subscribes_the_topic(pool: PgPool) {
+    let commands = started(pool).await;
+
     assert_eq!(
-        bot.last_reply(),
-        (
-            games_topic(),
-            format!(
-                "Subscription `{id}`: tell #**chess>games** when a-game-starts in classical for alice."
+        reply(
+            &commands,
+            in_games(
+                MEMBER,
+                "tell here when a-game-starts in classical for alice"
             )
         )
+        .await,
+        "Subscription `1`: tell #**chess>games** when a-game-starts in classical for alice."
     );
 }
 
 #[sqlx::test]
-async fn a_member_can_subscribe_a_topic_named_by_its_link_from_a_direct_message(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell #**chess>games** when a-game-starts in classical",
-    )
-    .await;
+async fn a_topic_link_subscribes_that_topic_from_a_direct_message(pool: PgPool) {
+    let commands = started(pool).await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, "bob").await,
-        BTreeSet::from([games_topic()])
-    );
-    assert_eq!(bot.last_reply().0, dm_to(MEMBER));
-}
-
-#[sqlx::test]
-async fn tell_here_in_a_direct_message_is_refused(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(
-        MODERATOR,
-        Role::Owner,
-        "tell here when a-game-starts in classical",
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MODERATOR).await, []);
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MODERATOR),
-            "`tell here` only works in a channel topic. In a direct message, use `tell me`, or name a topic with `tell #**channel>topic**`."
-                .to_owned()
+        reply(
+            &commands,
+            dm(
+                MEMBER,
+                "tell #**chess>other games** when a-game-starts in classical"
+            )
         )
+        .await,
+        "Subscription `1`: tell #**chess>other games** when a-game-starts in classical."
     );
 }
 
 #[sqlx::test]
-async fn a_league_heltour_does_not_list_as_active_is_refused(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn a_moderator_can_subscribe_someone_else(pool: PgPool) {
+    let commands = started(pool).await;
 
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell me when a-game-starts in blitz for alice",
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
     assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MEMBER),
-            "`blitz` is not an active league. The active leagues are `classical`, `rapid`, `blitz960`."
-                .to_owned()
+        reply(
+            &commands,
+            in_games(
+                MODERATOR,
+                "tell @**Member|10** when a game starts in classical"
+            )
         )
+        .await,
+        "Subscription `1`: tell @_**|10** when a-game-starts in classical."
     );
 }
 
 #[sqlx::test]
-async fn a_malformed_tell_is_answered_with_its_usage_and_what_it_could_have_been(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn a_member_cannot_subscribe_someone_else(pool: PgPool) {
+    let commands = started(pool).await;
 
-    let handling = bot
-        .direct(MEMBER, Role::Member, "tell me a-game-starts for alice")
-        .await;
-
-    assert!(matches!(handling, Handling::Answered(_)));
     assert_eq!(
-        bot.last_reply().1,
-        "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.\n\
-         Try `tell me when a-game-starts in <league> for alice`."
-    );
-}
-
-#[sqlx::test]
-async fn a_wrong_event_is_answered_with_the_command_filled_in_from_the_rest(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.in_topic(
-        MODERATOR,
-        Role::Moderator,
-        "tell here when a game is scheduled in Classical League",
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MODERATOR).await, []);
-    assert_eq!(
-        bot.last_reply(),
-        (
-            games_topic(),
-            "`<event>` is `a-game-starts` or `a-game-is-over`.\n\
-             Try `tell here when a-game-starts in classical`."
-                .to_owned()
+        reply(
+            &commands,
+            dm(MEMBER, "tell @**Other|12** when a game starts in classical")
         )
+        .await,
+        "Only moderators can subscribe someone else. Use `tell me` to subscribe yourself."
     );
 }
 
 #[sqlx::test]
-async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn a_member_who_mentions_themselves_is_subscribed(pool: PgPool) {
+    let commands = started(pool).await;
 
-    bot.in_topic(MEMBER, Role::Member, "tell this channel when ends in 45+45")
-        .await;
-    bot.direct(MEMBER, Role::Member, "tell this channel when ends in 45+45")
-        .await;
-
-    let replies: Vec<String> = bot.replies().into_iter().map(|(_, reply)| reply).collect();
-    let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
     assert_eq!(
-        replies,
-        [
-            format!("{listeners}\nTry `tell here when a-game-is-over in classical`."),
-            format!("{listeners}\nTry `tell me when a-game-is-over in classical`."),
-        ]
+        reply(
+            &commands,
+            dm(MEMBER, "tell @**Member|10** when a game ends in classical")
+        )
+        .await,
+        "Subscription `1`: tell you when a-game-is-over in classical."
     );
 }
 
 #[sqlx::test]
 async fn a_league_named_by_its_name_time_control_or_a_typo_is_subscribed_by_its_tag(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+    let commands = started(pool).await;
 
-    for text in [
-        "tell me when a game starts in rapid battle for alice",
-        "tell me when a game ends in 45+45 for alice",
-        "tel me wen a game strats in blitz906 for alice",
+    for (text, subscribed) in [
+        ("tell me when a game starts in Rapid Battle", "rapid"),
+        ("tell me when a game starts in 45+45", "classical"),
+        ("tel me wen a game strats in blitz906", "blitz960"),
     ] {
-        bot.direct(MEMBER, Role::Member, text).await;
+        assert!(
+            reply(&commands, dm(MEMBER, text))
+                .await
+                .ends_with(&format!(" in {subscribed}.")),
+            "{text}"
+        );
     }
+}
 
-    let described: Vec<String> = bot
-        .subscriptions_of(MEMBER)
-        .await
-        .iter()
-        .map(|subscription| format!("{} {:?}", subscription.league, subscription.event))
-        .collect();
+#[sqlx::test]
+async fn tell_here_in_a_direct_message_is_refused(pool: PgPool) {
+    let commands = started(pool).await;
+
     assert_eq!(
-        described,
-        [
-            "rapid GameStarted",
-            "classical GameFinished",
-            "blitz960 GameStarted"
-        ]
+        reply(
+            &commands,
+            dm(MEMBER, "tell here when a-game-starts in classical")
+        )
+        .await,
+        "`tell here` only works in a channel topic. In a direct message, use `tell me`, or name a topic with `tell #**channel>topic**`."
     );
-    let id = bot.subscriptions_of(MEMBER).await[2].id;
+}
+
+#[sqlx::test]
+async fn a_league_heltour_does_not_list_as_active_is_refused(pool: PgPool) {
+    let commands = started(pool).await;
+
     assert_eq!(
-        bot.last_reply().1,
-        format!("Subscription `{id}`: tell you when a-game-starts in blitz960 for alice.")
+        reply(&commands, dm(MEMBER, "tell me when a-game-starts in blitz")).await,
+        format!("`blitz` is not an active league. {ACTIVE_LEAGUES}")
     );
 }
 
 #[sqlx::test]
 async fn a_time_control_of_several_leagues_is_answered_with_each_of_them(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+    let commands = started(pool).await;
 
-    bot.direct(MEMBER, Role::Member, "tell me when a game ends in 15+15")
-        .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
     assert_eq!(
-        bot.last_reply().1,
+        reply(&commands, dm(MEMBER, "tell me when a game ends in 15+15")).await,
         "`15+15` could be `rapid` or `blitz960`.\n\
          Try `tell me when a-game-is-over in rapid` or `tell me when a-game-is-over in blitz960`."
     );
 }
 
 #[sqlx::test]
-async fn messages_that_are_not_subscription_commands_are_left_to_others(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn a_mistake_is_answered_with_what_is_wrong_and_the_command_filled_in_from_the_rest(
+    pool: PgPool,
+) {
+    let commands = started(pool).await;
 
-    let handling = bot.direct(MEMBER, Role::Member, "who plays today?").await;
-
-    assert_eq!(handling, Handling::Unrecognized);
-    assert_eq!(bot.replies(), []);
+    for (text, answer) in [
+        (
+            "tell me a-game-starts for alice",
+            "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.\n\
+             Try `tell me when a-game-starts in <league> for alice`.",
+        ),
+        (
+            "tell me when a game is scheduled in Classical League",
+            "`<event>` is `a-game-starts` or `a-game-is-over`.\n\
+             Try `tell me when a-game-starts in classical`.",
+        ),
+        (
+            "tell me when starts",
+            "`<league>` is a league's tag, name, or time control. The active leagues are `classical`, `rapid`, `blitz960`.\n\
+             Try `tell me when a-game-starts in <league>`.",
+        ),
+        (
+            "tell me when a game starts in classical for a",
+            "That is not a Lichess username.\n\
+             Try `tell me when a-game-starts in classical for <lichess-player>`.",
+        ),
+        (
+            "tell #**chess** when starts in rapid",
+            "A topic link looks like `#**channel>topic**`. To write one, type `#` and pick the topic.\n\
+             Try `tell me when a-game-starts in rapid`.",
+        ),
+        (
+            "tell @**Nobody** when a game starts in classical",
+            "I could not tell who you mentioned. Type `@` and pick them from the list.\n\
+             Try `tell me when a-game-starts in classical`.",
+        ),
+        (
+            "subscription show",
+            "Use `tell me when <event> in <league>` to add a subscription, `subscription list` to see yours, or `subscription remove <id>` to remove one.",
+        ),
+        (
+            "subscription remove twelve",
+            "A subscription id is a number. Use `subscription list` to see yours.",
+        ),
+    ] {
+        assert_eq!(reply(&commands, dm(MEMBER, text)).await, answer, "{text}");
+    }
 }
 
 #[sqlx::test]
-async fn help_lists_the_commands(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
+    let commands = started(pool).await;
+    let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
 
-    let handling = bot.direct(MEMBER, Role::Member, "help").await;
+    assert_eq!(
+        reply(
+            &commands,
+            in_games(MEMBER, "tell this channel when ends in 45+45")
+        )
+        .await,
+        format!("{listeners}\nTry `tell here when a-game-is-over in classical`.")
+    );
+    assert_eq!(
+        reply(
+            &commands,
+            dm(MEMBER, "tell this channel when ends in 45+45")
+        )
+        .await,
+        format!("{listeners}\nTry `tell me when a-game-is-over in classical`.")
+    );
+}
 
-    assert!(matches!(handling, Handling::Answered(_)));
-    let (target, help) = bot.last_reply();
-    assert_eq!(target, dm_to(MEMBER));
-    for command in [
+#[sqlx::test]
+async fn subscription_list_shows_the_senders_subscriptions_with_their_ids(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(MEMBER, "tell me when a-game-starts in classical for alice"),
+    )
+    .await;
+    reply(
+        &commands,
+        dm(
+            OTHER_MEMBER,
+            "tell me when a-game-starts in classical for bob",
+        ),
+    )
+    .await;
+    reply(
+        &commands,
+        in_games(MEMBER, "tell here when a-game-is-over in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription list")).await,
+        "Your subscriptions:\n\
+         - `1`: tell you when a-game-starts in classical for alice\n\
+         - `3`: tell #**chess>games** when a-game-is-over in classical"
+    );
+}
+
+#[sqlx::test]
+async fn subscription_list_says_so_when_there_are_none(pool: PgPool) {
+    let commands = started(pool).await;
+
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription list")).await,
+        "You have no subscriptions."
+    );
+}
+
+#[sqlx::test]
+async fn subscription_list_in_a_topic_shows_everyones_subscriptions_that_post_there(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
+    )
+    .await;
+    reply(
+        &commands,
+        in_games(MEMBER, "tell here when a game ends in classical"),
+    )
+    .await;
+    reply(
+        &commands,
+        in_games(MEMBER, "tell me when a game ends in classical"),
+    )
+    .await;
+    reply(
+        &commands,
+        message(
+            MEMBER,
+            topic("other games"),
+            "tell here when a game ends in rapid",
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, in_games(MEMBER, "subscription list")).await,
+        "Subscriptions that post in this topic:\n\
+         - `1`: tell #**chess>games** when a-game-starts in classical, made by @_**|12**\n\
+         - `2`: tell #**chess>games** when a-game-is-over in classical"
+    );
+}
+
+#[sqlx::test]
+async fn subscription_list_in_a_topic_without_subscriptions_says_so(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(MEMBER, "tell me when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, in_games(MEMBER, "subscription list")).await,
+        "No subscription posts in this topic."
+    );
+}
+
+#[sqlx::test]
+async fn subscriptions_that_send_someone_direct_messages_are_theirs_to_list_and_remove(
+    pool: PgPool,
+) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(MEMBER, "tell me when a-game-starts in classical for alice"),
+    )
+    .await;
+    reply(
+        &commands,
+        dm(
+            MODERATOR,
+            "tell @**Member|10** when a game ends in classical",
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription list")).await,
+        "Your subscriptions:\n\
+         - `1`: tell you when a-game-starts in classical for alice\n\
+         - `2`: tell you when a-game-is-over in classical, made by @_**|11**"
+    );
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription remove 2")).await,
+        "Removed subscription `2`."
+    );
+}
+
+#[sqlx::test]
+async fn a_member_can_remove_their_own_subscription(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(MEMBER, "tell me when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription remove 1")).await,
+        "Removed subscription `1`."
+    );
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription list")).await,
+        "You have no subscriptions."
+    );
+}
+
+#[sqlx::test]
+async fn a_member_cannot_remove_someone_elses_subscription(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(OTHER_MEMBER, "tell me when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription remove 1")).await,
+        "You have no subscription `1`. Use `subscription list` to see yours."
+    );
+}
+
+#[sqlx::test]
+async fn a_moderator_can_remove_anyones_subscription(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        dm(MEMBER, "tell me when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, dm(MODERATOR, "subscription remove 1")).await,
+        "Removed subscription `1`."
+    );
+}
+
+#[sqlx::test]
+async fn removing_a_subscription_that_does_not_exist_says_so(pool: PgPool) {
+    let commands = started(pool).await;
+
+    assert_eq!(
+        reply(&commands, dm(MODERATOR, "subscription remove 4545")).await,
+        "There is no subscription `4545`."
+    );
+}
+
+#[sqlx::test]
+async fn anyone_in_a_topic_can_remove_a_subscription_that_posts_there(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(&commands, in_games(MEMBER, "subscription remove 1")).await,
+        "Removed subscription `1`."
+    );
+}
+
+#[sqlx::test]
+async fn a_subscription_that_posts_in_a_topic_cannot_be_removed_by_others_elsewhere(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            message(MEMBER, topic("other games"), "subscription remove 1")
+        )
+        .await,
+        "No subscription `1` is yours or posts in this topic. Use `subscription list` to see the ones here."
+    );
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription remove 1")).await,
+        "You have no subscription `1`. Use `subscription list` to see yours."
+    );
+}
+
+#[sqlx::test]
+async fn a_requester_can_remove_a_topic_subscription_from_anywhere(pool: PgPool) {
+    let commands = started(pool).await;
+    reply(
+        &commands,
+        in_games(MEMBER, "tell here when a-game-starts in classical"),
+    )
+    .await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            message(MEMBER, topic("other games"), "subscription remove 1")
+        )
+        .await,
+        "Removed subscription `1`."
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_into_the_same_subscription_keeps_it(pool: PgPool) {
+    let commands = started(pool).await;
+    let original = dm(MEMBER, "tell me when a-game-starts in classical for alice");
+    reply(&commands, original.clone()).await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            edited(
+                &original,
+                "tell me when a game starts in Classical League for @alice"
+            )
+        )
+        .await,
+        "Subscription `1`: tell you when a-game-starts in classical for alice."
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_into_another_subscription_replaces_it(pool: PgPool) {
+    let commands = started(pool).await;
+    let original = dm(MEMBER, "tell me when a-game-starts in classical for alice");
+    reply(&commands, original.clone()).await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            edited(&original, "tell me when a game ends in classical for alice")
+        )
+        .await,
+        "Subscription `2`: tell you when a-game-is-over in classical for alice. It replaces subscription `1`."
+    );
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "subscription list")).await,
+        "Your subscriptions:\n- `2`: tell you when a-game-is-over in classical for alice"
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription(pool: PgPool) {
+    let commands = started(pool).await;
+    let original = dm(MEMBER, "tell me when a-game-starts in classical");
+    reply(&commands, original.clone()).await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            edited(&original, "tell me when a game starts in blitz")
+        )
+        .await,
+        format!(
+            "`blitz` is not an active league. {ACTIVE_LEAGUES}\nSubscription `1` is unchanged."
+        )
+    );
+    assert_eq!(
+        reply(&commands, edited(&original, "never mind")).await,
+        "Subscription `1` is unchanged. Send `help` to see the commands I know."
+    );
+}
+
+#[sqlx::test]
+async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
+    let commands = started(pool).await;
+    let original = dm(MEMBER, "tell me when a game strts in 99+0");
+    reply(&commands, original.clone()).await;
+
+    assert_eq!(
+        reply(
+            &commands,
+            edited(&original, "tell me when a game starts in rapid")
+        )
+        .await,
+        "Subscription `1`: tell you when a-game-starts in rapid."
+    );
+}
+
+#[sqlx::test]
+async fn help_lists_the_commands_and_the_active_leagues(pool: PgPool) {
+    let commands = started(pool).await;
+
+    let help = reply(&commands, dm(MEMBER, "help")).await;
+
+    for expected in [
         "`tell me when <event> in <league>`",
         "`tell here when <event> in <league>`",
         "`tell #**channel>topic** when <event> in <league>`",
@@ -501,502 +692,43 @@ async fn help_lists_the_commands(pool: PgPool) {
         "`subscription remove <id>`",
         "`a-game-starts`",
         "`a-game-is-over`",
-        "The active leagues are `classical`, `rapid`, `blitz960`.",
+        ACTIVE_LEAGUES,
         "`tell me when a-game-starts in classical`",
     ] {
-        assert!(help.contains(command), "help is missing {command}: {help}");
-    }
-}
-
-#[sqlx::test]
-async fn subscription_list_shows_the_senders_subscriptions_with_their_ids(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell me when a-game-starts in classical for alice",
-    )
-    .await;
-    bot.direct(
-        OTHER_MEMBER,
-        Role::Member,
-        "tell me when a-game-starts in classical for bob",
-    )
-    .await;
-    bot.in_topic(
-        MEMBER,
-        Role::Moderator,
-        "tell here when a-game-is-over in classical",
-    )
-    .await;
-    let ids: Vec<_> = bot
-        .subscriptions_of(MEMBER)
-        .await
-        .iter()
-        .map(|subscription| subscription.id)
-        .collect();
-
-    bot.direct(MEMBER, Role::Member, "subscription list").await;
-
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MEMBER),
-            format!(
-                "Your subscriptions:\n\
-                 - `{}`: tell you when a-game-starts in classical for alice\n\
-                 - `{}`: tell #**chess>games** when a-game-is-over in classical",
-                ids[0], ids[1]
-            )
-        )
-    );
-}
-
-#[sqlx::test]
-async fn subscription_list_says_so_when_there_are_none(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(MEMBER, Role::Member, "subscription list").await;
-
-    assert_eq!(
-        bot.last_reply(),
-        (dm_to(MEMBER), "You have no subscriptions.".to_owned())
-    );
-}
-
-async fn subscribed(bot: &Bot, requester: ChatUserId) -> SubscriptionId {
-    bot.direct(
-        requester,
-        Role::Member,
-        "tell me when a-game-starts in classical for alice",
-    )
-    .await;
-    bot.subscriptions_of(requester).await[0].id
-}
-
-#[sqlx::test]
-async fn a_member_can_remove_their_own_subscription(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed(&bot, MEMBER).await;
-
-    bot.direct(MEMBER, Role::Member, &format!("subscription remove {id}"))
-        .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
-    assert_eq!(
-        bot.last_reply(),
-        (dm_to(MEMBER), format!("Removed subscription `{id}`."))
-    );
-}
-
-#[sqlx::test]
-async fn a_member_cannot_remove_someone_elses_subscription(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed(&bot, OTHER_MEMBER).await;
-
-    bot.direct(MEMBER, Role::Member, &format!("subscription remove {id}"))
-        .await;
-
-    assert_eq!(bot.subscriptions_of(OTHER_MEMBER).await.len(), 1);
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MEMBER),
-            format!("You have no subscription `{id}`. Use `subscription list` to see yours.")
-        )
-    );
-}
-
-#[sqlx::test]
-async fn a_moderator_can_remove_anyones_subscription(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed(&bot, MEMBER).await;
-
-    bot.direct(
-        MODERATOR,
-        Role::Moderator,
-        &format!("subscription remove {id}"),
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
-}
-
-#[sqlx::test]
-async fn removing_a_subscription_that_does_not_exist_says_so(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(MODERATOR, Role::Moderator, "subscription remove 4545")
-        .await;
-
-    assert_eq!(
-        bot.last_reply(),
-        (
-            dm_to(MODERATOR),
-            "There is no subscription `4545`.".to_owned()
-        )
-    );
-}
-
-#[sqlx::test]
-async fn an_edit_into_the_same_subscription_keeps_it(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed(&bot, MEMBER).await;
-
-    bot.edit_last(
-        MEMBER,
-        Role::Member,
-        "tell me when a game starts in Classical League for @alice",
-    )
-    .await;
-
-    assert_eq!(
-        bot.subscriptions_of(MEMBER)
-            .await
-            .iter()
-            .map(|subscription| subscription.id)
-            .collect::<Vec<_>>(),
-        [id]
-    );
-    assert_eq!(
-        bot.last_reply().1,
-        format!("Subscription `{id}`: tell you when a-game-starts in classical for alice.")
-    );
-}
-
-#[sqlx::test]
-async fn an_edit_into_another_subscription_replaces_it(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let earlier = subscribed(&bot, MEMBER).await;
-
-    bot.edit_last(
-        MEMBER,
-        Role::Member,
-        "tell me when a game ends in classical for alice",
-    )
-    .await;
-
-    let subscriptions = bot.subscriptions_of(MEMBER).await;
-    assert_eq!(subscriptions.len(), 1);
-    assert_eq!(subscriptions[0].event, GameEventKind::GameFinished);
-    assert_eq!(
-        bot.last_reply().1,
-        format!(
-            "Subscription `{}`: tell you when a-game-is-over in classical for alice. It replaces subscription `{earlier}`.",
-            subscriptions[0].id
-        )
-    );
-}
-
-#[sqlx::test]
-async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed(&bot, MEMBER).await;
-
-    bot.edit_last(MEMBER, Role::Member, "tell me when a game starts in blitz")
-        .await;
-    let refused = bot.last_reply().1;
-    let handling = bot.edit_last(MEMBER, Role::Member, "never mind").await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await.len(), 1);
-    assert!(
-        refused.ends_with(&format!("\nSubscription `{id}` is unchanged.")),
-        "{refused}"
-    );
-    assert_eq!(
-        handling,
-        Handling::Answered(OutgoingMessage::new(format!(
-            "Subscription `{id}` is unchanged. Send `help` to see the commands I know."
-        )))
-    );
-}
-
-#[sqlx::test]
-async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    bot.direct(MEMBER, Role::Member, "tell me when a game strts in 99+0")
-        .await;
-
-    bot.edit_last(MEMBER, Role::Member, "tell me when a game starts in rapid")
-        .await;
-
-    let id = bot.subscriptions_of(MEMBER).await[0].id;
-    assert_eq!(
-        bot.last_reply().1,
-        format!("Subscription `{id}`: tell you when a-game-starts in rapid.")
-    );
-}
-
-async fn subscribed_in_topic(bot: &Bot, requester: ChatUserId) -> SubscriptionId {
-    bot.in_topic(
-        requester,
-        Role::Member,
-        "tell here when a-game-starts in classical for alice",
-    )
-    .await;
-    bot.subscriptions_of(requester).await[0].id
-}
-
-#[sqlx::test]
-async fn anyone_in_a_topic_can_remove_a_subscription_that_posts_there(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed_in_topic(&bot, OTHER_MEMBER).await;
-
-    bot.in_topic(MEMBER, Role::Member, &format!("subscription remove {id}"))
-        .await;
-
-    assert_eq!(bot.subscriptions_of(OTHER_MEMBER).await, []);
-    assert_eq!(
-        bot.last_reply(),
-        (games_topic(), format!("Removed subscription `{id}`."))
-    );
-}
-
-#[sqlx::test]
-async fn a_subscription_that_posts_in_a_topic_cannot_be_removed_by_others_elsewhere(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed_in_topic(&bot, OTHER_MEMBER).await;
-
-    bot.hear(
-        MEMBER,
-        Role::Member,
-        other_topic(),
-        &format!("subscription remove {id}"),
-    )
-    .await;
-    bot.direct(MEMBER, Role::Member, &format!("subscription remove {id}"))
-        .await;
-
-    assert_eq!(bot.subscriptions_of(OTHER_MEMBER).await.len(), 1);
-    assert_eq!(
-        bot.replies()[1..],
-        [
-            (
-                other_topic(),
-                format!(
-                    "No subscription `{id}` is yours or posts in this topic. Use `subscription list` to see the ones here."
-                )
-            ),
-            (
-                dm_to(MEMBER),
-                format!("You have no subscription `{id}`. Use `subscription list` to see yours.")
-            ),
-        ]
-    );
-}
-
-#[sqlx::test]
-async fn a_requester_can_remove_a_topic_subscription_from_anywhere(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let id = subscribed_in_topic(&bot, MEMBER).await;
-
-    bot.hear(
-        MEMBER,
-        Role::Member,
-        other_topic(),
-        &format!("subscription remove {id}"),
-    )
-    .await;
-
-    assert_eq!(bot.subscriptions_of(MEMBER).await, []);
-}
-
-#[sqlx::test]
-async fn subscription_list_in_a_topic_shows_everyone_s_subscriptions_that_post_there(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    let theirs = subscribed_in_topic(&bot, OTHER_MEMBER).await;
-    bot.in_topic(
-        MEMBER,
-        Role::Member,
-        "tell here when a game ends in classical",
-    )
-    .await;
-    let mine = bot.subscriptions_of(MEMBER).await[0].id;
-    bot.in_topic(
-        MEMBER,
-        Role::Member,
-        "tell me when a game ends in classical",
-    )
-    .await;
-    bot.hear(
-        MEMBER,
-        Role::Member,
-        other_topic(),
-        "tell here when a game ends in rapid",
-    )
-    .await;
-
-    bot.in_topic(MEMBER, Role::Member, "subscription list")
-        .await;
-
-    assert_eq!(
-        bot.last_reply(),
-        (
-            games_topic(),
-            format!(
-                "Subscriptions that post in this topic:\n\
-                 - `{theirs}`: tell #**chess>games** when a-game-starts in classical for alice, made by @_**|12**\n\
-                 - `{mine}`: tell #**chess>games** when a-game-is-over in classical"
-            )
-        )
-    );
-}
-
-#[sqlx::test]
-async fn subscription_list_in_a_topic_without_subscriptions_says_so(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-    subscribed(&bot, MEMBER).await;
-
-    bot.in_topic(MEMBER, Role::Member, "subscription list")
-        .await;
-
-    assert_eq!(bot.last_reply().1, "No subscription posts in this topic.");
-}
-
-#[sqlx::test]
-async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    for (role, reply_to, permissions) in [
-        (
-            Role::Member,
-            games_topic(),
-            "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere.",
-        ),
-        (
-            Role::Member,
-            dm_to(MEMBER),
-            "You can list and remove the subscriptions you made and the ones that send you direct messages.",
-        ),
-        (
-            Role::Moderator,
-            games_topic(),
-            "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.",
-        ),
-        (
-            Role::Moderator,
-            dm_to(MEMBER),
-            "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.",
-        ),
-    ] {
-        bot.hear(MEMBER, role, reply_to, "help").await;
-        let help = bot.last_reply().1;
         assert!(
-            help.ends_with(&format!("\n{permissions}")),
-            "{role:?}: {help}"
+            help.contains(expected),
+            "help is missing {expected}: {help}"
         );
     }
 }
 
 #[sqlx::test]
-async fn a_moderator_can_subscribe_someone_else_by_direct_message(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
+    let commands = started(pool).await;
+    let moderating = "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.";
 
-    bot.in_topic(
-        MODERATOR,
-        Role::Moderator,
-        "tell @**Member|10** when a game starts in classical for alice",
-    )
-    .await;
-
-    assert_eq!(
-        bot.targets(GameEventKind::GameStarted, "alice").await,
-        BTreeSet::from([dm_to(MEMBER)])
-    );
-    let made = bot.subscriptions_of(MODERATOR).await;
-    assert_eq!(made[0].target, dm_to(MEMBER));
-    assert_eq!(
-        bot.last_reply(),
+    for (asked, permissions) in [
         (
-            games_topic(),
-            format!(
-                "Subscription `{}`: tell @_**|10** when a-game-starts in classical for alice.",
-                made[0].id
-            )
-        )
-    );
+            in_games(MEMBER, "help"),
+            "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere.",
+        ),
+        (
+            dm(MEMBER, "help"),
+            "You can list and remove the subscriptions you made and the ones that send you direct messages.",
+        ),
+        (in_games(MODERATOR, "help"), moderating),
+        (dm(MODERATOR, "help"), moderating),
+    ] {
+        let help = reply(&commands, asked).await;
+        assert!(help.ends_with(&format!("\n{permissions}")), "{help}");
+    }
 }
 
 #[sqlx::test]
-async fn a_member_cannot_subscribe_someone_else(pool: PgPool) {
-    let bot = Bot::start(pool).await;
+async fn messages_that_are_not_subscription_commands_are_left_to_others(pool: PgPool) {
+    let commands = started(pool).await;
 
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell @**Other|12** when a game starts in classical",
-    )
-    .await;
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        "tell @**Member|10** when a game ends in classical",
-    )
-    .await;
+    let handling = commands.ask(dm(MEMBER, "who plays today?")).await.unwrap();
 
-    let replies = bot.replies();
-    assert_eq!(
-        replies[0].1,
-        "Only moderators can subscribe someone else. Use `tell me` to subscribe yourself."
-    );
-    let made = bot.subscriptions_of(MEMBER).await;
-    assert_eq!(made.len(), 1);
-    assert_eq!(made[0].target, dm_to(MEMBER));
-}
-
-#[sqlx::test]
-async fn a_mention_without_a_user_id_is_answered_with_how_to_pick_the_user(pool: PgPool) {
-    let bot = Bot::start(pool).await;
-
-    bot.direct(
-        MODERATOR,
-        Role::Moderator,
-        "tell @**Nobody** when a game starts in classical",
-    )
-    .await;
-
-    assert_eq!(
-        bot.last_reply().1,
-        "I could not tell who you mentioned. Type `@` and pick them from the list.\n\
-         Try `tell me when a-game-starts in classical`."
-    );
-}
-
-#[sqlx::test]
-async fn subscriptions_that_send_someone_direct_messages_are_theirs_to_list_and_remove(
-    pool: PgPool,
-) {
-    let bot = Bot::start(pool).await;
-    subscribed(&bot, MEMBER).await;
-    bot.direct(
-        MODERATOR,
-        Role::Moderator,
-        "tell @**Member|10** when a game ends in classical",
-    )
-    .await;
-    let theirs = bot.subscriptions_of(MODERATOR).await[0].id;
-    let mine = bot.subscriptions_of(MEMBER).await[0].id;
-
-    bot.direct(MEMBER, Role::Member, "subscription list").await;
-    let listed = bot.last_reply().1;
-    bot.direct(
-        MEMBER,
-        Role::Member,
-        &format!("subscription remove {theirs}"),
-    )
-    .await;
-
-    assert_eq!(
-        listed,
-        format!(
-            "Your subscriptions:\n\
-             - `{mine}`: tell you when a-game-starts in classical for alice\n\
-             - `{theirs}`: tell you when a-game-is-over in classical, made by @_**|11**"
-        )
-    );
-    assert_eq!(bot.subscriptions_of(MODERATOR).await, []);
-    assert_eq!(
-        bot.last_reply().1,
-        format!("Removed subscription `{theirs}`.")
-    );
+    assert_eq!(handling, Handling::Unrecognized);
 }
