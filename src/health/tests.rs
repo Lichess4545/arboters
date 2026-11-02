@@ -107,13 +107,11 @@ fn checking(pool: PgPool, services: &FakeServices, lichess_token: Option<&str>) 
     };
     let health_check = HealthCheck::new(
         config,
-        http_client().unwrap(),
         pool,
         services.heltour(),
         lichess_token.map(|token| services.lichess(token)),
         None,
-    )
-    .unwrap();
+    );
     let health = health_check.health();
     Checking {
         health_check: HealthCheck::spawn(health_check),

@@ -1,16 +1,12 @@
-use reqwest::{Response, StatusCode};
-use secrecy::{ExposeSecret, SecretString};
+use reqwest::StatusCode;
 use sqlx::PgPool;
 use sqlx::postgres::{PgDatabaseError, PgSeverity};
-use url::Url;
 
 use crate::heltour::Heltour;
 use crate::lichess;
-use crate::zulip::{BotEmail, ZulipSettings};
+use crate::zulip;
 
 use super::TokenOwner;
-
-const ZULIP_OWN_USER_PATH: &str = "api/v1/users/me";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -35,23 +31,6 @@ impl Failure {
 
     pub fn retry(error: impl Into<anyhow::Error>) -> Self {
         Self::new(Outcome::Retry, error)
-    }
-}
-
-#[derive(Debug)]
-pub struct ZulipBot {
-    url: Url,
-    email: BotEmail,
-    api_key: SecretString,
-}
-
-impl ZulipBot {
-    pub fn new(zulip: &ZulipSettings) -> Result<Self, url::ParseError> {
-        Ok(Self {
-            url: zulip.site.join(ZULIP_OWN_USER_PATH)?,
-            email: zulip.email.clone(),
-            api_key: zulip.api_key.clone(),
-        })
     }
 }
 
@@ -81,14 +60,8 @@ pub async fn lichess_token_owner(lichess: &lichess::Api) -> Result<TokenOwner, F
         })
 }
 
-pub async fn find_zulip_bot(http: &reqwest::Client, bot: &ZulipBot) -> Result<(), Failure> {
-    http.get(bot.url.clone())
-        .basic_auth(bot.email.as_str(), Some(bot.api_key.expose_secret()))
-        .send()
-        .await
-        .and_then(Response::error_for_status)
-        .map(drop)
-        .map_err(Failure::retry)
+pub async fn find_zulip_bot(zulip: &zulip::Api) -> Result<(), Failure> {
+    zulip.own_user().await.map(drop).map_err(Failure::retry)
 }
 
 fn failed_request(error: reqwest::Error) -> Failure {

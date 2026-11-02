@@ -16,8 +16,8 @@ use tokio::time::MissedTickBehavior;
 
 use crate::heltour::Heltour;
 use crate::lichess;
-use crate::zulip::ZulipSettings;
-use checks::{Failure, Outcome, ZulipBot};
+use crate::zulip;
+use checks::{Failure, Outcome};
 pub use config::Config;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,31 +66,29 @@ struct CheckEverything;
 pub struct HealthCheck {
     config: Config,
     health: watch::Sender<Option<Health>>,
-    http: reqwest::Client,
     pool: PgPool,
     heltour: Heltour,
     lichess: Option<lichess::Api>,
-    zulip: Option<ZulipBot>,
+    zulip: Option<zulip::Api>,
 }
 
 impl HealthCheck {
+    #[must_use]
     pub fn new(
         config: Config,
-        http: reqwest::Client,
         pool: PgPool,
         heltour: Heltour,
         lichess: Option<lichess::Api>,
-        zulip: Option<&ZulipSettings>,
-    ) -> Result<Self, url::ParseError> {
-        Ok(Self {
+        zulip: Option<zulip::Api>,
+    ) -> Self {
+        Self {
             config,
             health: watch::Sender::new(None),
-            http,
             pool,
             heltour,
             lichess,
-            zulip: zulip.map(ZulipBot::new).transpose()?,
-        })
+            zulip,
+        }
     }
 
     #[must_use]
@@ -134,7 +132,7 @@ impl HealthCheck {
                 OptionFuture::from(
                     self.zulip
                         .as_ref()
-                        .map(|bot| self.check("Zulip", || checks::find_zulip_bot(&self.http, bot)))
+                        .map(|zulip| self.check("Zulip", || checks::find_zulip_bot(zulip)))
                 ),
             );
         let health = Health {

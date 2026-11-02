@@ -21,7 +21,7 @@ use crate::lichess;
 use crate::responses::{PostgresResponses, Responder, ResponseCommands};
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
-use crate::zulip::{Inbox, ZulipMessageReader, ZulipMessenger};
+use crate::zulip::{self, Inbox, ZulipMessageReader, ZulipMessenger};
 use config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
@@ -155,7 +155,6 @@ fn start_health(
 ) -> Result<(ActorRef<HealthCheck>, watch::Receiver<Option<Health>>), url::ParseError> {
     let health_check = HealthCheck::new(
         config.health,
-        http.clone(),
         pool.clone(),
         heltour,
         config
@@ -164,8 +163,11 @@ fn start_health(
             .clone()
             .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token))
             .transpose()?,
-        config.zulip.as_ref(),
-    )?;
+        config
+            .zulip
+            .as_ref()
+            .map(|zulip| zulip::Api::new(http.clone(), zulip)),
+    );
     let health = health_check.health();
     Ok((HealthCheck::spawn(health_check), health))
 }
