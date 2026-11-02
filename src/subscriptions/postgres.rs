@@ -224,10 +224,11 @@ impl Subscriptions for PostgresSubscriptions {
             .collect::<Result<_, _>>()?)
     }
 
-    async fn requested_by(
+    async fn listed_in(
         &self,
-        requester: ChatUserId,
+        conversation: &Conversation,
     ) -> Result<Vec<Subscription>, SubscriptionsError> {
+        let at = StoredTarget::from_target(conversation)?;
         let rows = sqlx::query_as!(
             StoredSubscription,
             r#"
@@ -237,39 +238,16 @@ impl Subscriptions for PostgresSubscriptions {
                 event AS "event: StoredEvent", target_user_id, target_channel, target_topic
             FROM subscriptions
             WHERE requester_user_id = $1
+                OR (
+                    target_user_id IS NOT DISTINCT FROM $1
+                    AND target_channel IS NOT DISTINCT FROM $2
+                    AND target_topic IS NOT DISTINCT FROM $3
+                )
             ORDER BY id
             "#,
-            stored_user_id(requester)?,
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(StoredSubscription::into_subscription)
-            .collect::<Result<_, _>>()?)
-    }
-
-    async fn posting_to(
-        &self,
-        target: &Conversation,
-    ) -> Result<Vec<Subscription>, SubscriptionsError> {
-        let target = StoredTarget::from_target(target)?;
-        let rows = sqlx::query_as!(
-            StoredSubscription,
-            r#"
-            SELECT
-                id, requester_user_id, league,
-                source_kind AS "source_kind: StoredSourceKind", source_name,
-                event AS "event: StoredEvent", target_user_id, target_channel, target_topic
-            FROM subscriptions
-            WHERE target_user_id IS NOT DISTINCT FROM $1
-                AND target_channel IS NOT DISTINCT FROM $2
-                AND target_topic IS NOT DISTINCT FROM $3
-            ORDER BY id
-            "#,
-            target.user_id,
-            target.channel,
-            target.topic,
+            at.user_id,
+            at.channel,
+            at.topic,
         )
         .fetch_all(&self.pool)
         .await?;

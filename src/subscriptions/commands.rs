@@ -154,23 +154,13 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 
     async fn list(&self, message: &IncomingMessage) -> Result<String, SubscriptionsError> {
-        let (subscriptions, heading, none) = match listing(message) {
-            Listing::Topic(topic) => (
-                self.subscriptions.posting_to(topic).await?,
+        let subscriptions = self.subscriptions.listed_in(&message.reply_to).await?;
+        let (heading, none) = match message.reply_to {
+            Conversation::Topic { .. } => (
                 "Subscriptions that post in this topic:",
                 "No subscription posts in this topic.",
             ),
-            Listing::Mine(user_id) => {
-                let mut yours = self.subscriptions.requested_by(user_id).await?;
-                yours.extend(
-                    self.subscriptions
-                        .posting_to(&Conversation::Direct { user_id })
-                        .await?,
-                );
-                yours.sort_by_key(|subscription| subscription.id);
-                yours.dedup_by_key(|subscription| subscription.id);
-                (yours, "Your subscriptions:", "You have no subscriptions.")
-            }
+            Conversation::Direct { .. } => ("Your subscriptions:", "You have no subscriptions."),
         };
         if subscriptions.is_empty() {
             return Ok(none.to_owned());
@@ -225,14 +215,14 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 
     fn permissions(message: &IncomingMessage) -> String {
-        let removing = match (remover(message), listing(message)) {
+        let removing = match (remover(message), &message.reply_to) {
             (Remover::Moderator, _) => {
                 "You are a moderator, so you can remove any subscription from anywhere."
             }
-            (Remover::Owner { .. }, Listing::Topic(_)) => {
+            (Remover::Owner { .. }, Conversation::Topic { .. }) => {
                 "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere."
             }
-            (Remover::Owner { .. }, Listing::Mine(_)) => {
+            (Remover::Owner { .. }, Conversation::Direct { .. }) => {
                 "You can list and remove the subscriptions you made and the ones that send you direct messages."
             }
         };
@@ -366,18 +356,6 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 self.active_leagues()
             ),
         }
-    }
-}
-
-enum Listing<'a> {
-    Topic(&'a Conversation),
-    Mine(ChatUserId),
-}
-
-const fn listing(message: &IncomingMessage) -> Listing<'_> {
-    match &message.reply_to {
-        topic @ Conversation::Topic { .. } => Listing::Topic(topic),
-        Conversation::Direct { .. } => Listing::Mine(message.sender),
     }
 }
 

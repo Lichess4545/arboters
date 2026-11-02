@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT\n                id, requester_user_id, league,\n                source_kind AS \"source_kind: StoredSourceKind\", source_name,\n                event AS \"event: StoredEvent\", target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE target_user_id IS NOT DISTINCT FROM $1\n                AND target_channel IS NOT DISTINCT FROM $2\n                AND target_topic IS NOT DISTINCT FROM $3\n            ORDER BY id\n            ",
+  "query": "\n            SELECT\n                id, requester_user_id, league,\n                source_kind AS \"source_kind: StoredSourceKind\", source_name,\n                event AS \"event: StoredEvent\", target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE requester_user_id = $1\n                OR (\n                    target_user_id IS NOT DISTINCT FROM $1\n                    AND target_channel IS NOT DISTINCT FROM $2\n                    AND target_topic IS NOT DISTINCT FROM $3\n                )\n            ORDER BY id\n            ",
   "describe": {
     "columns": [
       {
@@ -143,5 +143,5 @@
       true
     ]
   },
-  "hash": "8f7026238704d1ecacb0c32dfaf90288b8d10a5f7b642538060b793171d61f97"
+  "hash": "eea51c9821c20c7db081f13a2c84066f51a8151294f0a83ae45b1595d594af8c"
 }
