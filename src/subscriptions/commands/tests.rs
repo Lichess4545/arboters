@@ -110,10 +110,6 @@ fn other_topic() -> Conversation {
     }
 }
 
-fn player(name: &str) -> SubscriptionSource {
-    SubscriptionSource::Player(lichess::UserId::try_new(name).unwrap())
-}
-
 impl Bot {
     async fn start(pool: PgPool) -> Self {
         let subscriptions = PostgresSubscriptions::new(pool);
@@ -206,13 +202,10 @@ impl Bot {
         self.replies().last().unwrap().clone()
     }
 
-    async fn targets(
-        &self,
-        event: GameEventKind,
-        source: SubscriptionSource,
-    ) -> BTreeSet<Conversation> {
+    async fn targets(&self, event: GameEventKind, player: &str) -> BTreeSet<Conversation> {
+        let player = lichess::UserId::try_new(player).unwrap();
         self.subscriptions
-            .targets_for(&league(), event, &[source])
+            .targets_for(&[&league()], event, [&player, &player])
             .await
             .unwrap()
     }
@@ -236,8 +229,7 @@ async fn tell_me_for_a_player_subscribes_the_sender_by_direct_message(pool: PgPo
 
     assert!(matches!(handling, Handling::Answered(_)));
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, player("alice"))
-            .await,
+        bot.targets(GameEventKind::GameStarted, "alice").await,
         BTreeSet::from([dm_to(MEMBER)])
     );
     let id = bot.subscriptions_of(MEMBER).await[0].id;
@@ -262,8 +254,7 @@ async fn tell_me_from_a_topic_subscribes_the_sender_and_replies_in_the_topic(poo
     .await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameFinished, player("alice"))
-            .await,
+        bot.targets(GameEventKind::GameFinished, "alice").await,
         BTreeSet::from([dm_to(MEMBER)])
     );
     assert_eq!(bot.last_reply().0, games_topic());
@@ -281,8 +272,7 @@ async fn tell_me_without_a_player_subscribes_the_sender_to_the_whole_league(pool
     .await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameFinished, SubscriptionSource::League)
-            .await,
+        bot.targets(GameEventKind::GameFinished, "bob").await,
         BTreeSet::from([dm_to(MEMBER)])
     );
 }
@@ -299,8 +289,7 @@ async fn a_member_can_subscribe_the_topic_to_a_player(pool: PgPool) {
     .await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, player("alice"))
-            .await,
+        bot.targets(GameEventKind::GameStarted, "alice").await,
         BTreeSet::from([games_topic()])
     );
     let id = bot.subscriptions_of(MEMBER).await[0].id;
@@ -327,8 +316,7 @@ async fn a_member_can_subscribe_a_topic_named_by_its_link_from_a_direct_message(
     .await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, SubscriptionSource::League)
-            .await,
+        bot.targets(GameEventKind::GameStarted, "bob").await,
         BTreeSet::from([games_topic()])
     );
     assert_eq!(bot.last_reply().0, dm_to(MEMBER));
@@ -912,8 +900,7 @@ async fn a_moderator_can_subscribe_someone_else_by_direct_message(pool: PgPool) 
     .await;
 
     assert_eq!(
-        bot.targets(GameEventKind::GameStarted, player("alice"))
-            .await,
+        bot.targets(GameEventKind::GameStarted, "alice").await,
         BTreeSet::from([dm_to(MEMBER)])
     );
     let made = bot.subscriptions_of(MODERATOR).await;

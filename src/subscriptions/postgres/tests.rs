@@ -48,12 +48,14 @@ async fn subscribed(
     subscriptions
 }
 
-async fn started_targets(
-    subscriptions: &PostgresSubscriptions,
-    sources: &[SubscriptionSource],
-) -> BTreeSet<Conversation> {
+async fn targets_of_alice_vs_bob(subscriptions: &PostgresSubscriptions) -> BTreeSet<Conversation> {
+    let [alice, bob] = ["alice", "bob"].map(|name| lichess::UserId::try_new(name).unwrap());
     subscriptions
-        .targets_for(&league("team4545"), GameEventKind::GameStarted, sources)
+        .targets_for(
+            &[&league("team4545")],
+            GameEventKind::GameStarted,
+            [&alice, &bob],
+        )
         .await
         .unwrap()
 }
@@ -70,21 +72,21 @@ async fn subscribing_to_the_same_intent_twice_returns_the_same_id(pool: PgPool) 
 }
 
 #[sqlx::test]
-async fn targets_of_every_requested_source_are_returned(pool: PgPool) {
+async fn a_games_targets_are_its_players_and_its_leagues_subscribers(pool: PgPool) {
     let subscriptions = subscribed(
         pool,
         vec![
             subscription(player("alice"), direct_message(7)),
-            subscription(team("knights"), channel("4545", "knights")),
+            subscription(SubscriptionSource::League, channel("4545", "games")),
         ],
     )
     .await;
 
-    let targets = started_targets(&subscriptions, &[player("alice"), team("knights")]).await;
+    let targets = targets_of_alice_vs_bob(&subscriptions).await;
 
     assert_eq!(
         targets,
-        BTreeSet::from([direct_message(7), channel("4545", "knights")])
+        BTreeSet::from([direct_message(7), channel("4545", "games")])
     );
 }
 
@@ -93,11 +95,7 @@ async fn a_player_and_a_team_with_the_same_name_are_different_sources(pool: PgPo
     let subscriptions =
         subscribed(pool, vec![subscription(team("alice"), direct_message(7))]).await;
 
-    assert!(
-        started_targets(&subscriptions, &[player("alice")])
-            .await
-            .is_empty()
-    );
+    assert!(targets_of_alice_vs_bob(&subscriptions).await.is_empty());
 }
 
 #[sqlx::test]
@@ -108,11 +106,7 @@ async fn subscriptions_in_another_league_are_not_targets(pool: PgPool) {
     };
     let subscriptions = subscribed(pool, vec![elsewhere]).await;
 
-    assert!(
-        started_targets(&subscriptions, &[player("alice")])
-            .await
-            .is_empty()
-    );
+    assert!(targets_of_alice_vs_bob(&subscriptions).await.is_empty());
 }
 
 #[sqlx::test]
@@ -123,22 +117,7 @@ async fn subscriptions_to_another_event_are_not_targets(pool: PgPool) {
     };
     let subscriptions = subscribed(pool, vec![finished]).await;
 
-    assert!(
-        started_targets(&subscriptions, &[player("alice")])
-            .await
-            .is_empty()
-    );
-}
-
-#[sqlx::test]
-async fn team_names_match_regardless_of_case(pool: PgPool) {
-    let subscriptions =
-        subscribed(pool, vec![subscription(team("Knights"), direct_message(7))]).await;
-
-    assert_eq!(
-        started_targets(&subscriptions, &[team("knights")]).await,
-        BTreeSet::from([direct_message(7)])
-    );
+    assert!(targets_of_alice_vs_bob(&subscriptions).await.is_empty());
 }
 
 #[sqlx::test]
@@ -150,7 +129,7 @@ async fn league_tags_match_regardless_of_case(pool: PgPool) {
     let subscriptions = subscribed(pool, vec![shouted]).await;
 
     assert_eq!(
-        started_targets(&subscriptions, &[player("alice")]).await,
+        targets_of_alice_vs_bob(&subscriptions).await,
         BTreeSet::from([direct_message(7)])
     );
 }
@@ -163,7 +142,7 @@ fn user_ids_beyond_the_storable_range_are_rejected() {
 }
 
 #[sqlx::test]
-async fn league_subscriptions_are_targets_of_the_league_source(pool: PgPool) {
+async fn league_subscriptions_are_targets_of_every_game_in_the_league(pool: PgPool) {
     let subscriptions = subscribed(
         pool,
         vec![subscription(
@@ -174,7 +153,7 @@ async fn league_subscriptions_are_targets_of_the_league_source(pool: PgPool) {
     .await;
 
     assert_eq!(
-        started_targets(&subscriptions, &[SubscriptionSource::League]).await,
+        targets_of_alice_vs_bob(&subscriptions).await,
         BTreeSet::from([channel("4545", "games")])
     );
 }
@@ -187,11 +166,7 @@ async fn league_subscriptions_of_another_league_are_not_targets(pool: PgPool) {
     };
     let subscriptions = subscribed(pool, vec![elsewhere]).await;
 
-    assert!(
-        started_targets(&subscriptions, &[SubscriptionSource::League])
-            .await
-            .is_empty()
-    );
+    assert!(targets_of_alice_vs_bob(&subscriptions).await.is_empty());
 }
 
 fn requested_by(requester: u64, subscription: NewSubscription) -> NewSubscription {
@@ -228,13 +203,6 @@ async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool:
         })
         .await
         .unwrap();
-    let knights = subscriptions
-        .subscribe(requested_by(
-            1,
-            subscription(team("Knights"), direct_message(1)),
-        ))
-        .await
-        .unwrap();
 
     assert_eq!(
         subscriptions.requested_by(ChatUserId(1)).await.unwrap(),
@@ -254,14 +222,6 @@ async fn a_requesters_subscriptions_are_listed_in_the_order_they_were_made(pool:
                 source: SubscriptionSource::League,
                 event: GameEventKind::GameFinished,
                 target: channel("4545", "games"),
-            },
-            Subscription {
-                id: knights,
-                requester: ChatUserId(1),
-                league: league("team4545"),
-                source: team("knights"),
-                event: GameEventKind::GameStarted,
-                target: direct_message(1),
             },
         ]
     );

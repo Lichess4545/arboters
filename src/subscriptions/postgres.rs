@@ -191,36 +191,37 @@ impl Subscriptions for PostgresSubscriptions {
 
     async fn targets_for(
         &self,
-        league: &league::Tag,
+        leagues: &[&league::Tag],
         event: GameEventKind,
-        sources: &[SubscriptionSource],
+        players: [&lichess::UserId; 2],
     ) -> Result<BTreeSet<Conversation>, SubscriptionsError> {
-        let mut targets = BTreeSet::new();
-        for source in sources {
-            let (source_kind, source_name) = stored_source(source, league);
-            let rows = sqlx::query!(
-                r#"
-                SELECT target_user_id, target_channel, target_topic
-                FROM subscriptions
-                WHERE league = $1 AND event = $2 AND source_kind = $3 AND source_name = $4
-                "#,
-                league.as_str(),
-                StoredEvent::from(event) as StoredEvent,
-                source_kind as StoredSourceKind,
-                source_name,
-            )
-            .fetch_all(&self.pool)
-            .await?;
-            for row in rows {
-                let stored = StoredTarget {
+        let leagues: Vec<&str> = leagues.iter().map(|league| league.as_str()).collect();
+        let players = players.map(|player| player.as_str());
+        let rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT target_user_id, target_channel, target_topic
+            FROM subscriptions
+            WHERE league = ANY($1)
+                AND event = $2
+                AND (source_kind = 'league' OR (source_kind = 'player' AND source_name = ANY($3)))
+            "#,
+            &leagues as &[&str],
+            StoredEvent::from(event) as StoredEvent,
+            &players as &[&str],
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                StoredTarget {
                     user_id: row.target_user_id,
                     channel: row.target_channel,
                     topic: row.target_topic,
-                };
-                targets.insert(stored.into_target()?);
-            }
-        }
-        Ok(targets)
+                }
+                .into_target()
+            })
+            .collect::<Result<_, _>>()?)
     }
 
     async fn requested_by(

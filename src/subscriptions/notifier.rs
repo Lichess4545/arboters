@@ -1,7 +1,5 @@
 mod rendering;
 
-use std::collections::BTreeSet;
-
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
@@ -11,7 +9,7 @@ use crate::chat::Messenger;
 use crate::game_monitor::{Follow, GameEvent, MonitorUnavailable};
 use crate::heltour::ActiveLeagues;
 
-use super::{SubscriptionSource, Subscriptions};
+use super::Subscriptions;
 use rendering::render;
 
 #[derive(Debug)]
@@ -35,27 +33,21 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let [white, black] = game
-            .user_ids()
-            .map(|user_id| SubscriptionSource::Player(user_id.clone()));
-        let sources = [white, black, SubscriptionSource::League];
-        let mut targets = BTreeSet::new();
-        for league in self.active.leagues_of(game) {
-            match self
-                .subscriptions
-                .targets_for(league, event.kind(), &sources)
-                .await
-            {
-                Ok(found) => targets.extend(found),
-                Err(error) => {
-                    tracing::error!(error = %error, game_id = %game.id, %league, "could not look up notification targets");
-                    return;
-                }
-            }
-        }
-        if targets.is_empty() {
+        let leagues: Vec<_> = self.active.leagues_of(game).into_iter().collect();
+        if leagues.is_empty() {
             return;
         }
+        let targets = match self
+            .subscriptions
+            .targets_for(&leagues, event.kind(), game.user_ids())
+            .await
+        {
+            Ok(targets) => targets,
+            Err(error) => {
+                tracing::error!(error = %error, game_id = %game.id, "could not look up notification targets");
+                return;
+            }
+        };
         let notification = render(event, &self.lichess);
         for target in &targets {
             match self.messenger.send(target, &notification).await {

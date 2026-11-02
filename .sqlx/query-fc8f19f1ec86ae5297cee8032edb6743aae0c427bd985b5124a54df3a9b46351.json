@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n                SELECT target_user_id, target_channel, target_topic\n                FROM subscriptions\n                WHERE league = $1 AND event = $2 AND source_kind = $3 AND source_name = $4\n                ",
+  "query": "\n            SELECT DISTINCT target_user_id, target_channel, target_topic\n            FROM subscriptions\n            WHERE league = ANY($1)\n                AND event = $2\n                AND (source_kind = 'league' OR (source_kind = 'player' AND source_name = ANY($3)))\n            ",
   "describe": {
     "columns": [
       {
@@ -39,7 +39,7 @@
     ],
     "parameters": {
       "Left": [
-        "Text",
+        "TextArray",
         {
           "Custom": {
             "name": "subscription_event",
@@ -51,19 +51,7 @@
             }
           }
         },
-        {
-          "Custom": {
-            "name": "subscription_source_kind",
-            "kind": {
-              "Enum": [
-                "player",
-                "team",
-                "league"
-              ]
-            }
-          }
-        },
-        "Text"
+        "TextArray"
       ]
     },
     "nullable": [
@@ -72,5 +60,5 @@
       true
     ]
   },
-  "hash": "c4b8925e79197f904d862f86733c14642645f6344c41b095d33bf8a634d29760"
+  "hash": "fc8f19f1ec86ae5297cee8032edb6743aae0c427bd985b5124a54df3a9b46351"
 }

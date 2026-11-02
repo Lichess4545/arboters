@@ -11,7 +11,7 @@ use crate::chat::{
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
-use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
+use crate::subscriptions::{NewSubscription, PostgresSubscriptions, SubscriptionSource};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
