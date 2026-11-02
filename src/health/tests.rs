@@ -13,6 +13,7 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::http_client;
+use crate::heltour::HeltourSettings;
 
 const PATIENCE: Duration = Duration::from_secs(5);
 const KNOWN_LICHESS_TOKEN: &str = "lip_known";
@@ -45,11 +46,12 @@ impl FakeServices {
         *self.heltour_answers.lock().unwrap() = VecDeque::from([status]);
     }
 
-    fn heltour(&self) -> HeltourSettings {
-        HeltourSettings {
+    fn heltour(&self) -> Heltour {
+        let settings = HeltourSettings {
             base_url: Url::parse(&format!("http://{}/api/", self.address)).unwrap(),
             token: SecretString::from("heltour_secret"),
-        }
+        };
+        Heltour::new(http_client().unwrap(), &settings).unwrap()
     }
 
     fn lichess(&self, token: Option<&str>) -> LichessSettings {
@@ -110,7 +112,7 @@ fn checking(pool: PgPool, services: &FakeServices, lichess_token: Option<&str>) 
         config,
         http_client().unwrap(),
         pool,
-        &services.heltour(),
+        services.heltour(),
         &services.lichess(lichess_token),
         None,
     )

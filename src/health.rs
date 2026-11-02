@@ -15,7 +15,7 @@ use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 
 use crate::game_monitor::LichessSettings;
-use crate::heltour::HeltourSettings;
+use crate::heltour::Heltour;
 use crate::lichess;
 use crate::zulip::ZulipSettings;
 use checks::{Failure, Outcome, Token, ZulipBot};
@@ -69,7 +69,7 @@ pub struct HealthCheck {
     health: watch::Sender<Option<Health>>,
     http: reqwest::Client,
     pool: PgPool,
-    heltour: Token,
+    heltour: Heltour,
     lichess: Option<Token>,
     zulip: Option<ZulipBot>,
 }
@@ -79,7 +79,7 @@ impl HealthCheck {
         config: Config,
         http: reqwest::Client,
         pool: PgPool,
-        heltour: &HeltourSettings,
+        heltour: Heltour,
         lichess: &LichessSettings,
         zulip: Option<&ZulipSettings>,
     ) -> Result<Self, url::ParseError> {
@@ -88,7 +88,7 @@ impl HealthCheck {
             health: watch::Sender::new(None),
             http,
             pool,
-            heltour: Token::heltour(heltour)?,
+            heltour,
             lichess: Token::lichess(lichess)?,
             zulip: zulip.map(ZulipBot::new).transpose()?,
         })
@@ -127,10 +127,7 @@ impl HealthCheck {
     async fn check_everything(&self) -> Result<(), String> {
         let (postgres, heltour, lichess, zulip) = tokio::join!(
             self.check("Postgres", || checks::read_our_tables(&self.pool)),
-            self.check("heltour", || checks::test_heltour_token(
-                &self.http,
-                &self.heltour
-            )),
+            self.check("heltour", || checks::test_heltour_token(&self.heltour)),
             OptionFuture::from(self.lichess.as_ref().map(|token| {
                 self.check("Lichess", || checks::lichess_token_owner(&self.http, token))
             })),

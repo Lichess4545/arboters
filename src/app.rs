@@ -53,7 +53,7 @@ async fn run_with<M: Messenger + Clone>(
     let lichess = &config.lichess.base_url;
     let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
 
-    let (health_check, health) = start_health(&config, &http, &pool)?;
+    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone())?;
     let status = Status::spawn((status, health.clone()));
     let conversations = match inbox {
         Some(inbox) => Some(Conversations::spawn(inbox, commands).await),
@@ -150,12 +150,13 @@ fn start_health(
     config: &Config,
     http: &reqwest::Client,
     pool: &PgPool,
+    heltour: Heltour,
 ) -> Result<(ActorRef<HealthCheck>, watch::Receiver<Option<Health>>), url::ParseError> {
     let health_check = HealthCheck::new(
         config.health,
         http.clone(),
         pool.clone(),
-        &config.heltour,
+        heltour,
         &config.lichess,
         config.zulip.as_ref(),
     )?;

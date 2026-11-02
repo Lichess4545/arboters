@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use reqwest::RequestBuilder;
 use reqwest::header::AUTHORIZATION;
+use reqwest::{RequestBuilder, Response};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use super::pairing::Pairing;
 
 const FIND_PAIRING_PATH: &str = "find_pairing/";
 const GET_LEAGUES_PATH: &str = "get_leagues/";
+const TOKEN_TEST_PATH: &str = "v2/token/test/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -97,6 +98,7 @@ pub struct Heltour {
     http: reqwest::Client,
     find_pairing: Url,
     get_leagues: Url,
+    token_test: Url,
     update_pairing: Url,
     token: SecretString,
 }
@@ -107,12 +109,13 @@ impl Heltour {
             http,
             find_pairing: settings.base_url.join(FIND_PAIRING_PATH)?,
             get_leagues: settings.base_url.join(GET_LEAGUES_PATH)?,
+            token_test: settings.base_url.join(TOKEN_TEST_PATH)?,
             update_pairing: settings.base_url.join(UPDATE_PAIRING_PATH)?,
             token: settings.token.clone(),
         })
     }
 
-    async fn answer<T: DeserializeOwned>(&self, request: RequestBuilder) -> reqwest::Result<T> {
+    async fn send(&self, request: RequestBuilder) -> reqwest::Result<Response> {
         request
             .header(
                 AUTHORIZATION,
@@ -120,9 +123,17 @@ impl Heltour {
             )
             .send()
             .await?
-            .error_for_status()?
-            .json()
+            .error_for_status()
+    }
+
+    async fn answer<T: DeserializeOwned>(&self, request: RequestBuilder) -> reqwest::Result<T> {
+        self.send(request).await?.json().await
+    }
+
+    pub async fn test_token(&self) -> reqwest::Result<()> {
+        self.send(self.http.get(self.token_test.clone()))
             .await
+            .map(drop)
     }
 
     pub async fn active_leagues(

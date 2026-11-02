@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::CONTENT_TYPE;
 use reqwest::{Response, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
@@ -9,14 +9,13 @@ use sqlx::postgres::{PgDatabaseError, PgSeverity};
 use url::Url;
 
 use crate::game_monitor::LichessSettings;
-use crate::heltour::HeltourSettings;
+use crate::heltour::Heltour;
 use crate::lichess;
 use crate::zulip::{BotEmail, ZulipSettings};
 
 use super::TokenOwner;
 
 const LICHESS_TOKEN_TEST_PATH: &str = "api/token/test";
-const HELTOUR_TOKEN_TEST_PATH: &str = "v2/token/test/";
 const ZULIP_OWN_USER_PATH: &str = "api/v1/users/me";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,13 +51,6 @@ pub struct Token {
 }
 
 impl Token {
-    pub fn heltour(heltour: &HeltourSettings) -> Result<Self, url::ParseError> {
-        Ok(Self {
-            url: heltour.base_url.join(HELTOUR_TOKEN_TEST_PATH)?,
-            secret: heltour.token.clone(),
-        })
-    }
-
     pub fn lichess(lichess: &LichessSettings) -> Result<Option<Self>, url::ParseError> {
         let Some(secret) = lichess.token.clone() else {
             return Ok(None);
@@ -101,17 +93,8 @@ pub async fn read_our_tables(pool: &PgPool) -> Result<(), Failure> {
         .map_err(|error| Failure::new(outcome_of_database(&error), error))
 }
 
-pub async fn test_heltour_token(http: &reqwest::Client, token: &Token) -> Result<(), Failure> {
-    let response = http
-        .get(token.url.clone())
-        .header(
-            AUTHORIZATION,
-            format!("Token {}", token.secret.expose_secret()),
-        )
-        .send()
-        .await
-        .map_err(Failure::retry)?;
-    accepted(response).map(drop)
+pub async fn test_heltour_token(heltour: &Heltour) -> Result<(), Failure> {
+    heltour.test_token().await.map_err(failed_request)
 }
 
 pub async fn lichess_token_owner(
@@ -155,12 +138,22 @@ fn accepted(response: Response) -> Result<Response, Failure> {
     if status.is_success() {
         return Ok(response);
     }
+    Err(refused(status))
+}
+
+fn failed_request(error: reqwest::Error) -> Failure {
+    error
+        .status()
+        .map_or_else(|| Failure::retry(error), refused)
+}
+
+fn refused(status: StatusCode) -> Failure {
     let outcome = match status {
         StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => Outcome::Retry,
         status if status.is_client_error() => Outcome::Report,
         _ => Outcome::Retry,
     };
-    Err(Failure::new(outcome, anyhow::anyhow!("answered {status}")))
+    Failure::new(outcome, anyhow::anyhow!("answered {status}"))
 }
 
 // https://www.postgresql.org/docs/current/errcodes-appendix.html#ERRCODES-TABLE
