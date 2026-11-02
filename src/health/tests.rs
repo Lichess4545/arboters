@@ -53,12 +53,12 @@ impl FakeServices {
             base_url: Url::parse(&format!("http://{}/api/", self.address)).unwrap(),
             token: SecretString::from("heltour_secret"),
         };
-        Heltour::new(http_client().unwrap(), &settings).unwrap()
+        Heltour::new(http_client().unwrap(), &settings)
     }
 
     fn lichess(&self, token: &str) -> lichess::Api {
         let site = Url::parse(&format!("http://{}/", self.address)).unwrap();
-        lichess::Api::new(http_client().unwrap(), &site, SecretString::from(token)).unwrap()
+        lichess::Api::new(http_client().unwrap(), &site, SecretString::from(token))
     }
 
     fn zulip(&self) -> zulip::Api {

@@ -87,7 +87,7 @@ async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEv
     };
     let reporter = Reporter::spawn((
         Reporter::new(
-            Heltour::new(http_client().unwrap(), &settings).unwrap(),
+            Heltour::new(http_client().unwrap(), &settings),
             LichessSettings::default().base_url,
         ),
         Monitor::spawn(Monitor).recipient(),

@@ -23,7 +23,7 @@ async fn lichess_answering(answer: MethodRouter, token: Option<&str>) -> Lichess
         token: token.map(SecretString::from),
         ..LichessSettings::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings).unwrap()
+    LichessStream::new(http_client().unwrap(), &settings)
 }
 
 fn user_ids(names: &[&str]) -> Vec<UserId> {
@@ -161,7 +161,7 @@ fn stream_with_token(token: Option<&str>) -> LichessStream {
         token: token.map(SecretString::from),
         ..LichessSettings::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings).unwrap()
+    LichessStream::new(http_client().unwrap(), &settings)
 }
 
 #[test]

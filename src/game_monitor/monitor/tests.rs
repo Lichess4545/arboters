@@ -212,7 +212,7 @@ async fn harness_with_token(token: Option<&str>, stream: StreamSettings) -> Harn
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
     let monitor = GameMonitor::spawn(GameMonitor::new(
-        LichessStream::new(http_client().unwrap(), &settings).unwrap(),
+        LichessStream::new(http_client().unwrap(), &settings),
         settings.stream,
         Collector::spawn(Collector(connection_sender)).recipient(),
         health,

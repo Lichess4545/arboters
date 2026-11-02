@@ -12,7 +12,7 @@ const TOKEN_TEST_PATH: &str = "api/token/test";
 #[derive(Clone, Debug)]
 pub struct Api {
     http: reqwest::Client,
-    token_test: Url,
+    site: Url,
     token: SecretString,
 }
 
@@ -23,22 +23,20 @@ struct Owner {
 }
 
 impl Api {
-    pub fn new(
-        http: reqwest::Client,
-        site: &Url,
-        token: SecretString,
-    ) -> Result<Self, url::ParseError> {
-        Ok(Self {
+    #[must_use]
+    pub fn new(http: reqwest::Client, site: &Url, token: SecretString) -> Self {
+        Self {
             http,
-            token_test: site.join(TOKEN_TEST_PATH)?,
+            site: site.clone(),
             token,
-        })
+        }
     }
 
+    #[expect(clippy::expect_used)]
     pub async fn token_owner(&self) -> reqwest::Result<Option<UserId>> {
         let owners: HashMap<String, Option<Owner>> = self
             .http
-            .post(self.token_test.clone())
+            .post(self.site.join(TOKEN_TEST_PATH).expect("constant path"))
             .header(CONTENT_TYPE, "text/plain")
             .body(self.token.expose_secret().to_owned())
             .send()

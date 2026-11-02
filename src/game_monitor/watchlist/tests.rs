@@ -84,10 +84,7 @@ async fn heltour_answering(pairings: &[(StatusCode, &'static str)]) -> (FakeHelt
         base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
         token: SecretString::from("heltour_secret"),
     };
-    (
-        fake,
-        Heltour::new(http_client().unwrap(), &settings).unwrap(),
-    )
+    (fake, Heltour::new(http_client().unwrap(), &settings))
 }
 
 #[derive(Debug)]

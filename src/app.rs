@@ -48,13 +48,13 @@ async fn run_with<M: Messenger + Clone>(
 ) -> anyhow::Result<()> {
     let listener = http::bind(&config.http).await?;
     let subscriptions = PostgresSubscriptions::new(pool.clone());
-    let stream = LichessStream::new(http.clone(), &config.lichess)?;
-    let heltour = Heltour::new(http.clone(), &config.heltour)?;
+    let stream = LichessStream::new(http.clone(), &config.lichess);
+    let heltour = Heltour::new(http.clone(), &config.heltour);
     let status = Status::new(messenger.clone(), config.status.clone())?;
     let lichess = &config.lichess.base_url;
     let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
 
-    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone())?;
+    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone());
     let status = Status::spawn((status, health.clone()));
     let conversations = match inbox {
         Some(inbox) => Some(Conversations::spawn(inbox, commands).await),
@@ -152,7 +152,7 @@ fn start_health(
     http: &reqwest::Client,
     pool: &PgPool,
     heltour: Heltour,
-) -> Result<(ActorRef<HealthCheck>, watch::Receiver<Option<Health>>), url::ParseError> {
+) -> (ActorRef<HealthCheck>, watch::Receiver<Option<Health>>) {
     let health_check = HealthCheck::new(
         config.health,
         pool.clone(),
@@ -161,15 +161,14 @@ fn start_health(
             .lichess
             .token
             .clone()
-            .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token))
-            .transpose()?,
+            .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token)),
         config
             .zulip
             .as_ref()
             .map(|zulip| zulip::Api::new(http.clone(), zulip)),
     );
     let health = health_check.health();
-    Ok((HealthCheck::spawn(health_check), health))
+    (HealthCheck::spawn(health_check), health)
 }
 
 fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> anyhow::Result<()> {

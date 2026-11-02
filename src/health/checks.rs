@@ -66,7 +66,6 @@ pub async fn find_zulip_bot(zulip: &zulip::Api) -> Result<(), Failure> {
             zulip::ApiError::Rejected { status, .. }
             | zulip::ApiError::Unreadable { status, .. } => outcome_of_status(*status),
             zulip::ApiError::Request(_) | zulip::ApiError::BadEventQueue => Outcome::Retry,
-            zulip::ApiError::Url(_) => Outcome::Exit,
         };
         Failure::new(outcome, error)
     })

@@ -90,19 +90,20 @@ impl From<GameStreamError> for FeedError {
 #[derive(Clone, Debug)]
 pub struct LichessStream {
     http: reqwest::Client,
-    endpoint: Url,
+    site: Url,
     token: Option<SecretString>,
     inactivity_timeout: Duration,
 }
 
 impl LichessStream {
-    pub fn new(http: reqwest::Client, settings: &LichessSettings) -> Result<Self, url::ParseError> {
-        Ok(Self {
+    #[must_use]
+    pub fn new(http: reqwest::Client, settings: &LichessSettings) -> Self {
+        Self {
             http,
-            endpoint: settings.base_url.join(GAMES_BY_USERS_PATH)?,
+            site: settings.base_url.clone(),
             token: settings.token.clone(),
             inactivity_timeout: settings.stream.inactivity_timeout,
-        })
+        }
     }
 
     #[must_use]
@@ -116,6 +117,7 @@ impl LichessStream {
         }
     }
 
+    #[expect(clippy::expect_used)]
     async fn open(&self, user_ids: &[UserId]) -> Result<reqwest::Response, FeedError> {
         let body = user_ids
             .iter()
@@ -124,7 +126,7 @@ impl LichessStream {
             .join(",");
         let mut request = self
             .http
-            .post(self.endpoint.clone())
+            .post(self.site.join(GAMES_BY_USERS_PATH).expect("constant path"))
             .header(CONTENT_TYPE, "text/plain")
             .body(body);
         if let Some(token) = &self.token {
