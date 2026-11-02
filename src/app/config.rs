@@ -7,6 +7,7 @@ use super::http::HttpSettings;
 use super::telemetry::TelemetrySettings;
 use crate::game_monitor::LichessSettings;
 use crate::game_monitor::watchlist::WatchlistSettings;
+use crate::health;
 use crate::heltour::HeltourSettings;
 use crate::responses::ResponsesSettings;
 use crate::status::StatusSettings;
@@ -21,6 +22,8 @@ pub struct Config {
     #[serde(default)]
     pub http: HttpSettings,
     pub database: DatabaseSettings,
+    #[serde(default)]
+    pub health: health::Config,
     #[serde(default)]
     pub lichess: LichessSettings,
     pub heltour: HeltourSettings,

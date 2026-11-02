@@ -23,7 +23,7 @@ async fn lichess_answering(answer: MethodRouter, token: Option<&str>) -> Lichess
         token: token.map(SecretString::from),
         ..LichessSettings::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings).unwrap()
+    LichessStream::new(http_client().unwrap(), &settings)
 }
 
 fn user_ids(names: &[&str]) -> Vec<UserId> {
@@ -161,37 +161,28 @@ fn stream_with_token(token: Option<&str>) -> LichessStream {
         token: token.map(SecretString::from),
         ..LichessSettings::default()
     };
-    LichessStream::new(http_client().unwrap(), &settings).unwrap()
-}
-
-fn owned_by(name: &str) -> TokenState {
-    TokenState::Valid {
-        owner: UserId::try_new(name).unwrap(),
-    }
+    LichessStream::new(http_client().unwrap(), &settings)
 }
 
 #[test]
 fn without_a_token_a_connection_watches_up_to_300_users() {
     let stream = stream_with_token(None);
-    assert_eq!(stream.users_per_connection(&TokenState::Untested), 300);
+    assert_eq!(stream.users_per_connection(None), 300);
 }
 
 #[test]
 fn with_a_token_not_known_to_be_lichess4545s_a_connection_watches_up_to_500_users() {
     let stream = stream_with_token(Some("lip_secret"));
-    let tokens = [
-        TokenState::Untested,
-        TokenState::Invalid,
-        owned_by("arbiter"),
-    ];
+    let arbiter = UserId::try_new("arbiter").unwrap();
     assert_eq!(
-        tokens.map(|token| stream.users_per_connection(&token)),
-        [500; 3]
+        [None, Some(&arbiter)].map(|owner| stream.users_per_connection(owner)),
+        [500; 2]
     );
 }
 
 #[test]
 fn with_lichess4545s_token_a_connection_watches_up_to_900_users() {
     let stream = stream_with_token(Some("lip_secret"));
-    assert_eq!(stream.users_per_connection(&owned_by("lichess4545")), 900);
+    let lichess4545 = UserId::try_new("lichess4545").unwrap();
+    assert_eq!(stream.users_per_connection(Some(&lichess4545)), 900);
 }

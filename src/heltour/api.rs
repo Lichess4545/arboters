@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-use reqwest::RequestBuilder;
 use reqwest::header::AUTHORIZATION;
+use reqwest::{Method, RequestBuilder, Response};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use super::pairing::Pairing;
 
 const FIND_PAIRING_PATH: &str = "find_pairing/";
 const GET_LEAGUES_PATH: &str = "get_leagues/";
+const TOKEN_TEST_PATH: &str = "v2/token/test/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -22,11 +23,11 @@ const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 #[serde(deny_unknown_fields)]
 pub struct HeltourSettings {
     pub base_url: Url,
-    pub token: Option<SecretString>,
+    pub token: SecretString,
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not read the active leagues from heltour")]
+#[error("could not read the active leagues from Heltour")]
 pub struct ActiveLeaguesError(#[from] reqwest::Error);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -60,9 +61,9 @@ pub enum Refusal {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdatePairingError {
-    #[error("heltour refused to update the pairing: {0:?}")]
+    #[error("Heltour refused to update the pairing: {0:?}")]
     Refused(Refusal),
-    #[error("could not ask heltour to update the pairing")]
+    #[error("could not ask Heltour to update the pairing")]
     Request(#[from] reqwest::Error),
 }
 
@@ -95,41 +96,44 @@ struct UpdatePairingAnswer {
 #[derive(Clone, Debug)]
 pub struct Heltour {
     http: reqwest::Client,
-    find_pairing: Url,
-    get_leagues: Url,
-    update_pairing: Url,
-    token: Option<SecretString>,
+    base_url: Url,
+    token: SecretString,
 }
 
 impl Heltour {
-    pub fn new(http: reqwest::Client, settings: &HeltourSettings) -> Result<Self, url::ParseError> {
-        Ok(Self {
+    #[must_use]
+    pub fn new(http: reqwest::Client, settings: &HeltourSettings) -> Self {
+        Self {
             http,
-            find_pairing: settings.base_url.join(FIND_PAIRING_PATH)?,
-            get_leagues: settings.base_url.join(GET_LEAGUES_PATH)?,
-            update_pairing: settings.base_url.join(UPDATE_PAIRING_PATH)?,
+            base_url: settings.base_url.clone(),
             token: settings.token.clone(),
-        })
+        }
     }
 
-    async fn answer<T: DeserializeOwned>(&self, request: RequestBuilder) -> reqwest::Result<T> {
-        let request = match &self.token {
-            Some(token) => {
-                request.header(AUTHORIZATION, format!("Token {}", token.expose_secret()))
-            }
-            None => request,
-        };
-        request.send().await?.error_for_status()?.json().await
+    #[expect(clippy::expect_used)]
+    fn request(&self, method: Method, path: &str) -> RequestBuilder {
+        self.http
+            .request(method, self.base_url.join(path).expect("constant path"))
+            .header(
+                AUTHORIZATION,
+                format!("Token {}", self.token.expose_secret()),
+            )
+    }
+
+    pub async fn test_token(&self) -> reqwest::Result<()> {
+        send(self.request(Method::GET, TOKEN_TEST_PATH))
+            .await
+            .map(drop)
     }
 
     pub async fn active_leagues(
         &self,
         timeout: Duration,
     ) -> Result<ActiveLeagues, ActiveLeaguesError> {
-        let get = |endpoint: &Url| self.http.get(endpoint.clone()).timeout(timeout);
+        let get = |path| self.request(Method::GET, path).timeout(timeout);
         let (leagues, pairings): (GetLeaguesAnswer, FindPairingAnswer) = tokio::try_join!(
-            self.answer(get(&self.get_leagues)),
-            self.answer(get(&self.find_pairing)),
+            answer(get(GET_LEAGUES_PATH)),
+            answer(get(FIND_PAIRING_PATH)),
         )?;
         Ok(ActiveLeagues {
             leagues: leagues.leagues,
@@ -147,13 +151,20 @@ impl Heltour {
             strict: true,
         };
         let request = self
-            .http
-            .post(self.update_pairing.clone())
+            .request(Method::POST, UPDATE_PAIRING_PATH)
             .form(&form)
             .timeout(UPDATE_PAIRING_TIMEOUT);
-        let answer: UpdatePairingAnswer = self.answer(request).await?;
+        let answer: UpdatePairingAnswer = answer(request).await?;
         answer
             .error
             .map_or(Ok(()), |refusal| Err(UpdatePairingError::Refused(refusal)))
     }
+}
+
+async fn send(request: RequestBuilder) -> reqwest::Result<Response> {
+    request.send().await?.error_for_status()
+}
+
+async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> reqwest::Result<T> {
+    send(request).await?.json().await
 }

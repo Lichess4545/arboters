@@ -4,15 +4,18 @@ use std::time::{Duration, SystemTime};
 
 use kameo::Actor;
 use kameo::actor::ActorRef;
-use kameo::message::{Context, Message};
+use kameo::message::{Context, Message, StreamMessage};
 use serde::Deserialize;
+use tokio::sync::watch;
 use tokio::time::Instant;
+use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
 use crate::chat::{
     ChannelName, Conversation, Messenger, OutgoingMessage, TopicName, TopicNameError,
 };
 use crate::game_monitor::StreamConnected;
+use crate::health::{Availability, Health, Recovery, Unavailable};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
@@ -71,6 +74,7 @@ pub struct Status<M> {
     instance: InstanceId,
     conversation: Option<Conversation>,
     started: Instant,
+    health: Option<Health>,
 }
 
 impl<M: Messenger> Status<M> {
@@ -89,6 +93,7 @@ impl<M: Messenger> Status<M> {
             instance,
             conversation,
             started: Instant::now(),
+            health: None,
         })
     }
 
@@ -118,6 +123,60 @@ impl<M: Messenger> Status<M> {
     }
 }
 
+fn unavailable(health: Option<&Health>) -> [(&'static str, Option<&Unavailable>); 3] {
+    [
+        (
+            "Postgres",
+            health.and_then(|health| health.postgres.unavailable()),
+        ),
+        (
+            "Heltour",
+            health.and_then(|health| health.heltour.unavailable()),
+        ),
+        (
+            "Lichess",
+            health.and_then(|health| health.lichess.as_ref()?.unavailable()),
+        ),
+    ]
+}
+
+fn working(health: &Health) -> Option<String> {
+    let lines: Vec<String> = [
+        ("Postgres", health.postgres.unavailable().is_none()),
+        ("Heltour", health.heltour.unavailable().is_none()),
+        (
+            "Lichess",
+            matches!(health.lichess, Some(Availability::Available(_))),
+        ),
+    ]
+    .into_iter()
+    .filter(|(_, works)| *works)
+    .map(|(service, _)| format!(":check: {service} works"))
+    .collect();
+    (!lines.is_empty()).then(|| lines.join("\n"))
+}
+
+fn change(
+    service: &str,
+    before: Option<&Unavailable>,
+    after: Option<&Unavailable>,
+) -> Option<String> {
+    match (before.map(|before| before.recovery), after) {
+        (Some(_), None) => Some(format!(":check: {service} works again")),
+        (before, Some(Unavailable { recovery, error })) if before != Some(*recovery) => {
+            Some(match recovery {
+                Recovery::Recoverable => {
+                    format!(":warning: Cannot use {service}, will keep trying: {error}")
+                }
+                Recovery::NeedsAPerson => format!(
+                    ":rotating_light: {service} refuses arboters, a person must fix it: {error}"
+                ),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn topic_for(instance: InstanceId, started: SystemTime) -> Result<TopicName, TopicNameError> {
     let timestamp = humantime::format_rfc3339_seconds(started).to_string();
     let date = timestamp
@@ -127,16 +186,20 @@ fn topic_for(instance: InstanceId, started: SystemTime) -> Result<TopicName, Top
 }
 
 impl<M: Messenger> Actor for Status<M> {
-    type Args = Self;
+    type Args = (Self, watch::Receiver<Option<Health>>);
     type Error = Infallible;
 
-    async fn on_start(status: Self, _: ActorRef<Self>) -> Result<Self, Self::Error> {
+    async fn on_start(
+        (status, health): Self::Args,
+        status_ref: ActorRef<Self>,
+    ) -> Result<Self, Self::Error> {
         tracing::info!(instance = %status.instance, conversation = ?status.conversation, "arboters started");
         status
             .post(format!(
                 ":rocket: arboters v{VERSION} started — [changelog]({REPOSITORY}/releases/tag/v{VERSION})"
             ))
             .await;
+        status_ref.attach_stream(WatchStream::new(health), (), ());
         Ok(status)
     }
 }
@@ -153,6 +216,34 @@ impl<M: Messenger> Message<StreamConnected> for Status<M> {
             ":chess_pawn: Connected to the Lichess game stream, watching {players} players"
         ))
         .await;
+    }
+}
+
+impl<M: Messenger> Message<StreamMessage<Option<Health>, (), ()>> for Status<M> {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        health: StreamMessage<Option<Health>, (), ()>,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        let StreamMessage::Next(Some(health)) = health else {
+            return;
+        };
+        if self.health.is_none()
+            && let Some(working) = working(&health)
+        {
+            self.post(working).await;
+        }
+        let changes: Vec<String> = unavailable(self.health.as_ref())
+            .into_iter()
+            .zip(unavailable(Some(&health)))
+            .filter_map(|((service, before), (_, after))| change(service, before, after))
+            .collect();
+        for change in changes {
+            self.post(change).await;
+        }
+        self.health = Some(health);
     }
 }
 

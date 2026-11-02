@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT FROM subscriptions, responses LIMIT 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "41c6b35df699fe60f92ca639212db8fecd2f0e5d22462b7ccd3ac1c07b88a57a"
+}

@@ -26,8 +26,6 @@ pub struct Api {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
-    #[error("zulip endpoint url is invalid")]
-    Url(#[from] url::ParseError),
     #[error("zulip request failed")]
     Request(#[from] reqwest::Error),
     #[error("zulip answered {status} with a body that is not a zulip response")]
@@ -237,25 +235,22 @@ impl Api {
         }
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url, ApiError> {
-        Ok(self.site.join("api/v1/")?.join(path)?)
-    }
-
-    fn request(&self, method: Method, path: &str) -> Result<reqwest::RequestBuilder, ApiError> {
-        Ok(self
-            .http
-            .request(method, self.endpoint(path)?)
+    #[expect(clippy::expect_used)]
+    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
+        let endpoint = self.site.join("api/v1/").and_then(|api| api.join(path));
+        self.http
+            .request(method, endpoint.expect("relative path"))
             .basic_auth(self.email.as_str(), Some(self.key.expose_secret()))
-            .timeout(REQUEST_TIMEOUT))
+            .timeout(REQUEST_TIMEOUT)
     }
 
     pub async fn own_user(&self) -> Result<Bot, ApiError> {
-        read(self.request(Method::GET, "users/me")?.send().await?).await
+        read(self.request(Method::GET, "users/me").send().await?).await
     }
 
     pub async fn role_of(&self, user_id: ChatUserId) -> Result<Role, ApiError> {
         let found: UserEnvelope = read(
-            self.request(Method::GET, &format!("users/{}", user_id.0))?
+            self.request(Method::GET, &format!("users/{}", user_id.0))
                 .send()
                 .await?,
         )
@@ -264,13 +259,13 @@ impl Api {
     }
 
     pub async fn members(&self) -> Result<Vec<Member>, ApiError> {
-        let Members { members } = read(self.request(Method::GET, "users")?.send().await?).await?;
+        let Members { members } = read(self.request(Method::GET, "users").send().await?).await?;
         Ok(members)
     }
 
     pub async fn markdown_of(&self, id: MessageId) -> Result<MessageText, ApiError> {
         let found: LinkedMessageEnvelope = read(
-            self.request(Method::GET, &format!("messages/{}", id.0))?
+            self.request(Method::GET, &format!("messages/{}", id.0))
                 .query(&[("apply_markdown", "false")])
                 .send()
                 .await?,
@@ -281,7 +276,7 @@ impl Api {
 
     pub async fn register(&self) -> Result<Queue, ApiError> {
         let response = self
-            .request(Method::POST, "register")?
+            .request(Method::POST, "register")
             .form(&[
                 ("event_types", r#"["message","update_message"]"#),
                 ("apply_markdown", "false"),
@@ -294,7 +289,7 @@ impl Api {
 
     pub async fn events(&self, queue: &Queue) -> Result<Batch, ApiError> {
         let response = self
-            .request(Method::GET, "events")?
+            .request(Method::GET, "events")
             .query(&[
                 ("queue_id", queue.id.to_string()),
                 ("last_event_id", queue.last_event_id.0.to_string()),
@@ -333,7 +328,7 @@ impl Api {
         conversation: &Conversation,
         message: &OutgoingMessage,
     ) -> Result<MessageId, ApiError> {
-        let request = self.request(Method::POST, "messages")?;
+        let request = self.request(Method::POST, "messages");
         let request = match conversation {
             Conversation::Direct { user_id } => {
                 let to = format!("[{}]", user_id.0);
@@ -360,7 +355,7 @@ impl Api {
         message: &OutgoingMessage,
     ) -> Result<(), ApiError> {
         let request = self
-            .request(Method::PATCH, &format!("messages/{}", id.0))?
+            .request(Method::PATCH, &format!("messages/{}", id.0))
             .form(&[("content", message.markdown())]);
         read::<IgnoredAny>(request.send().await?).await?;
         Ok(())

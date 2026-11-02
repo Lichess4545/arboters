@@ -45,7 +45,7 @@ impl Reporter {
             let result = match judge(event, league) {
                 Ok(result) => result,
                 Err(breach) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?breach, "game not reported to heltour");
+                    tracing::info!(game = %game.id, league = %league.tag, ?breach, "game not reported to Heltour");
                     continue;
                 }
             };
@@ -58,13 +58,13 @@ impl Reporter {
             };
             match self.heltour.update_pairing(&update).await {
                 Ok(()) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?result, "game reported to heltour");
+                    tracing::info!(game = %game.id, league = %league.tag, ?result, "game reported to Heltour");
                 }
                 Err(UpdatePairingError::Refused(refusal)) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?refusal, "heltour declined the game");
+                    tracing::info!(game = %game.id, league = %league.tag, ?refusal, "Heltour declined the game");
                 }
                 Err(error) => {
-                    tracing::warn!(error = %error, cause = ?std::error::Error::source(&error), game = %game.id, "could not report the game to heltour");
+                    tracing::warn!(error = %error, cause = ?std::error::Error::source(&error), game = %game.id, "could not report the game to Heltour");
                 }
             }
         }

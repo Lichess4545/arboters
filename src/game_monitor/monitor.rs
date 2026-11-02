@@ -6,8 +6,8 @@ use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
 use tokio::sync::watch;
 
+use crate::health::{Availability, Health, TokenOwner};
 use crate::lichess;
-use crate::lichess_token_check::TokenState;
 
 use super::connection::Connection;
 use super::event::GameEvent;
@@ -21,7 +21,8 @@ pub struct GameMonitor {
     settings: StreamSettings,
     followers: Vec<Recipient<GameEvent>>,
     connected: Recipient<StreamConnected>,
-    token: watch::Receiver<TokenState>,
+    health: watch::Receiver<Option<Health>>,
+    token_owner: Option<lichess::UserId>,
     watched: BTreeSet<lichess::UserId>,
     users_per_connection: usize,
     connections: Vec<Connection>,
@@ -33,14 +34,15 @@ impl GameMonitor {
         stream: LichessStream,
         settings: StreamSettings,
         connected: Recipient<StreamConnected>,
-        token: watch::Receiver<TokenState>,
+        health: watch::Receiver<Option<Health>>,
     ) -> Self {
         Self {
             stream,
             settings,
             followers: Vec::new(),
             connected,
-            token,
+            health,
+            token_owner: None,
             watched: BTreeSet::new(),
             users_per_connection: 0,
             connections: Vec::new(),
@@ -88,7 +90,14 @@ impl Message<Watch> for GameMonitor {
     type Reply = ();
 
     async fn handle(&mut self, Watch(user_ids): Watch, ctx: &mut Context<Self, Self::Reply>) {
-        let users_per_connection = self.stream.users_per_connection(&self.token.borrow());
+        if let Some(Health {
+            lichess: Some(Availability::Available(TokenOwner(owner))),
+            ..
+        }) = &*self.health.borrow()
+        {
+            self.token_owner = Some(owner.clone());
+        }
+        let users_per_connection = self.stream.users_per_connection(self.token_owner.as_ref());
         if user_ids == self.watched && users_per_connection == self.users_per_connection {
             tracing::debug!(users = user_ids.len(), "watchlist unchanged");
             return;

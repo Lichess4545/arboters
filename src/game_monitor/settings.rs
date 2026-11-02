@@ -9,8 +9,6 @@ use url::Url;
 pub struct LichessSettings {
     pub base_url: Url,
     pub token: Option<SecretString>,
-    #[serde(with = "humantime_serde")]
-    pub token_check_interval: Duration,
     pub stream: StreamSettings,
 }
 
@@ -20,7 +18,6 @@ impl Default for LichessSettings {
         Self {
             base_url: Url::parse("https://lichess.org").expect("static url is valid"),
             token: None,
-            token_check_interval: Duration::from_mins(15),
             stream: StreamSettings::default(),
         }
     }

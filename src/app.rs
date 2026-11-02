@@ -13,14 +13,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chat::{LoggingMessenger, Messenger};
 use crate::game_monitor::watchlist;
-use crate::game_monitor::{GameMonitor, LichessSettings, LichessStream, http_client};
+use crate::game_monitor::{GameMonitor, LichessStream, http_client};
+use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
-use crate::lichess_token_check::{TokenCheck, TokenState};
+use crate::lichess;
 use crate::responses::{PostgresResponses, Responder, ResponseCommands};
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
-use crate::zulip::{Inbox, ZulipMessageReader, ZulipMessenger};
+use crate::zulip::{self, Inbox, ZulipMessageReader, ZulipMessenger};
 use config::Config;
 
 pub async fn run(config: Config) -> anyhow::Result<()> {
@@ -47,15 +48,14 @@ async fn run_with<M: Messenger + Clone>(
 ) -> anyhow::Result<()> {
     let listener = http::bind(&config.http).await?;
     let subscriptions = PostgresSubscriptions::new(pool.clone());
-    let stream = LichessStream::new(http.clone(), &config.lichess)?;
-    let heltour = Heltour::new(http.clone(), &config.heltour)?;
-    let (token_check, lichess_token) = lichess_token_check(http.clone(), &config.lichess)?;
+    let stream = LichessStream::new(http.clone(), &config.lichess);
+    let heltour = Heltour::new(http.clone(), &config.heltour);
     let status = Status::new(messenger.clone(), config.status.clone())?;
     let lichess = &config.lichess.base_url;
     let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
 
-    let status = Status::spawn(status);
-    let token_check = token_check.map(TokenCheck::spawn);
+    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone());
+    let status = Status::spawn((status, health.clone()));
     let conversations = match inbox {
         Some(inbox) => Some(Conversations::spawn(inbox, commands).await),
         None => None,
@@ -65,7 +65,7 @@ async fn run_with<M: Messenger + Clone>(
         stream,
         config.lichess.stream.clone(),
         status.clone().recipient(),
-        lichess_token.clone(),
+        health.clone(),
     ));
     let notifier = Notifier::spawn((
         Notifier::new(subscriptions.clone(), messenger, lichess.clone()),
@@ -89,7 +89,7 @@ async fn run_with<M: Messenger + Clone>(
     let http_stopped = CancellationToken::new();
     let mut http_server = tokio::spawn(http::serve(
         listener,
-        http::router(pool, config.http.readiness_timeout, lichess_token),
+        http::router(health),
         http_stopped.clone().cancelled_owned(),
     ));
     let mut http_server_running = true;
@@ -105,10 +105,10 @@ async fn run_with<M: Messenger + Clone>(
             }
         }
         () = status.wait_for_shutdown() => Err(anyhow::anyhow!("status stopped unexpectedly")),
+        error = HealthCheck::stopped(&health_check) => Err(error),
         () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
         () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
-        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("heltour reporter stopped unexpectedly")),
-        () = stopped(token_check.as_ref()) => Err(anyhow::anyhow!("lichess token check stopped unexpectedly")),
+        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("Heltour reporter stopped unexpectedly")),
         error = Conversations::stopped(conversations.as_ref()) => Err(error),
         error = Responding::stopped(responding.as_ref()) => Err(error),
         exit = &mut watchlist_sync => match exit {
@@ -125,9 +125,7 @@ async fn run_with<M: Messenger + Clone>(
     stop(&monitor).await;
     stop(&notifier).await;
     stop(&reporter).await;
-    if let Some(token_check) = &token_check {
-        stop(token_check).await;
-    }
+    stop(&health_check).await;
     let shutdown = match &down {
         Ok(signal) => Shutdown::Requested(*signal),
         Err(error) => Shutdown::Failed(format!("{error:#}")),
@@ -147,6 +145,30 @@ async fn run_with<M: Messenger + Clone>(
     };
 
     exit_with(down, http_exit)
+}
+
+fn start_health(
+    config: &Config,
+    http: &reqwest::Client,
+    pool: &PgPool,
+    heltour: Heltour,
+) -> (ActorRef<HealthCheck>, watch::Receiver<Option<Health>>) {
+    let health_check = HealthCheck::new(
+        config.health,
+        pool.clone(),
+        heltour,
+        config
+            .lichess
+            .token
+            .clone()
+            .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token)),
+        config
+            .zulip
+            .as_ref()
+            .map(|zulip| zulip::Api::new(http.clone(), zulip)),
+    );
+    let health = health_check.health();
+    (HealthCheck::spawn(health_check), health)
 }
 
 fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> anyhow::Result<()> {
@@ -256,32 +278,9 @@ impl<M: Messenger + Clone> Responding<M> {
     }
 }
 
-fn lichess_token_check(
-    http: reqwest::Client,
-    lichess: &LichessSettings,
-) -> Result<(Option<TokenCheck>, watch::Receiver<TokenState>), url::ParseError> {
-    let Some(token) = &lichess.token else {
-        return Ok((None, watch::channel(TokenState::Untested).1));
-    };
-    let (check, state) = TokenCheck::new(
-        http,
-        &lichess.base_url,
-        token.clone(),
-        lichess.token_check_interval,
-    )?;
-    Ok((Some(check), state))
-}
-
 async fn stop<A: kameo::Actor>(actor: &ActorRef<A>) {
     if actor.stop_gracefully().await.is_ok() {
         actor.wait_for_shutdown().await;
-    }
-}
-
-async fn stopped<A: kameo::Actor>(actor: Option<&ActorRef<A>>) {
-    match actor {
-        Some(actor) => actor.wait_for_shutdown().await,
-        None => std::future::pending().await,
     }
 }
 

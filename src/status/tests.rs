@@ -55,6 +55,22 @@ impl Messenger for RecordingMessenger {
     }
 }
 
+fn everything_available() -> Health {
+    Health {
+        postgres: Availability::Available(()),
+        heltour: Availability::Available(()),
+        lichess: None,
+        zulip: Some(Availability::Available(())),
+    }
+}
+
+fn unavailable_for_now() -> Availability {
+    Availability::Unavailable(Unavailable {
+        recovery: Recovery::Recoverable,
+        error: "answered 503 Service Unavailable".to_owned(),
+    })
+}
+
 fn channel() -> ChannelName {
     ChannelName::try_new("arboters-status").unwrap()
 }
@@ -75,9 +91,26 @@ fn topic(status: &Status<RecordingMessenger>) -> String {
 }
 
 async fn started(status: Status<RecordingMessenger>) -> ActorRef<Status<RecordingMessenger>> {
-    let status = Status::spawn(status);
+    following(status, watch::channel(None).1).await
+}
+
+async fn following(
+    status: Status<RecordingMessenger>,
+    health: watch::Receiver<Option<Health>>,
+) -> ActorRef<Status<RecordingMessenger>> {
+    let status = Status::spawn((status, health));
     status.wait_for_startup().await;
     status
+}
+
+async fn until_posted(messenger: &RecordingMessenger, markdown: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !messenger.posted().iter().any(|posted| posted == markdown) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
 
 fn today() -> String {
@@ -150,6 +183,55 @@ async fn a_stream_connection_is_posted_with_its_player_count_in_the_instance_top
     assert_eq!(
         deliveries[1].1.markdown(),
         ":chess_pawn: Connected to the Lichess game stream, watching 42 players"
+    );
+}
+
+#[tokio::test]
+async fn when_zulip_and_heltour_stop_working_then_only_heltour_is_posted() {
+    let messenger = RecordingMessenger::default();
+    let health = watch::Sender::new(Some(everything_available()));
+    following(configured(&messenger), health.subscribe()).await;
+    until_posted(&messenger, ":check: Postgres works\n:check: Heltour works").await;
+    let before = messenger.posted().len();
+
+    health.send_replace(Some(Health {
+        heltour: unavailable_for_now(),
+        zulip: Some(unavailable_for_now()),
+        ..everything_available()
+    }));
+
+    let warning =
+        ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable";
+    until_posted(&messenger, warning).await;
+    assert_eq!(messenger.posted()[before..], [warning]);
+}
+
+#[tokio::test]
+async fn when_a_service_works_again_then_it_is_posted_and_a_first_snapshot_posts_what_works() {
+    let messenger = RecordingMessenger::default();
+    let health = watch::Sender::new(Some(everything_available()));
+    following(configured(&messenger), health.subscribe()).await;
+
+    until_posted(&messenger, ":check: Postgres works\n:check: Heltour works").await;
+    health.send_replace(Some(Health {
+        heltour: unavailable_for_now(),
+        ..everything_available()
+    }));
+    until_posted(
+        &messenger,
+        ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable",
+    )
+    .await;
+    health.send_replace(Some(everything_available()));
+    until_posted(&messenger, ":check: Heltour works again").await;
+
+    assert_eq!(
+        messenger.posted()[1..],
+        [
+            ":check: Postgres works\n:check: Heltour works",
+            ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable",
+            ":check: Heltour works again",
+        ]
     );
 }
 

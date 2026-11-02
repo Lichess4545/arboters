@@ -1,10 +1,10 @@
 pub mod app;
 pub mod chat;
 pub mod game_monitor;
+pub mod health;
 pub mod heltour;
 pub mod league_games;
 pub mod lichess;
-pub mod lichess_token_check;
 pub mod responses;
 pub mod status;
 pub mod subscriptions;
