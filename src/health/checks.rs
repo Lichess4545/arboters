@@ -1,21 +1,15 @@
-use std::collections::HashMap;
-
-use reqwest::header::CONTENT_TYPE;
 use reqwest::{Response, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
-use serde::Deserialize;
 use sqlx::PgPool;
 use sqlx::postgres::{PgDatabaseError, PgSeverity};
 use url::Url;
 
-use crate::game_monitor::LichessSettings;
 use crate::heltour::Heltour;
 use crate::lichess;
 use crate::zulip::{BotEmail, ZulipSettings};
 
 use super::TokenOwner;
 
-const LICHESS_TOKEN_TEST_PATH: &str = "api/token/test";
 const ZULIP_OWN_USER_PATH: &str = "api/v1/users/me";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,24 +39,6 @@ impl Failure {
 }
 
 #[derive(Debug)]
-pub struct Token {
-    url: Url,
-    secret: SecretString,
-}
-
-impl Token {
-    pub fn lichess(lichess: &LichessSettings) -> Result<Option<Self>, url::ParseError> {
-        let Some(secret) = lichess.token.clone() else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            url: lichess.base_url.join(LICHESS_TOKEN_TEST_PATH)?,
-            secret,
-        }))
-    }
-}
-
-#[derive(Debug)]
 pub struct ZulipBot {
     url: Url,
     email: BotEmail,
@@ -79,12 +55,6 @@ impl ZulipBot {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Owner {
-    user_id: lichess::UserId,
-}
-
 pub async fn read_our_tables(pool: &PgPool) -> Result<(), Failure> {
     sqlx::query!("SELECT FROM subscriptions, responses LIMIT 0")
         .execute(pool)
@@ -97,24 +67,12 @@ pub async fn test_heltour_token(heltour: &Heltour) -> Result<(), Failure> {
     heltour.test_token().await.map_err(failed_request)
 }
 
-pub async fn lichess_token_owner(
-    http: &reqwest::Client,
-    token: &Token,
-) -> Result<TokenOwner, Failure> {
-    let response = http
-        .post(token.url.clone())
-        .header(CONTENT_TYPE, "text/plain")
-        .body(token.secret.expose_secret().to_owned())
-        .send()
+pub async fn lichess_token_owner(lichess: &lichess::Api) -> Result<TokenOwner, Failure> {
+    lichess
+        .token_owner()
         .await
-        .map_err(Failure::retry)?;
-    let owners: HashMap<String, Option<Owner>> =
-        accepted(response)?.json().await.map_err(Failure::retry)?;
-    owners
-        .into_values()
-        .flatten()
-        .next()
-        .map(|owner| TokenOwner(owner.user_id))
+        .map_err(failed_request)?
+        .map(TokenOwner)
         .ok_or_else(|| {
             Failure::new(
                 Outcome::Report,
@@ -131,14 +89,6 @@ pub async fn find_zulip_bot(http: &reqwest::Client, bot: &ZulipBot) -> Result<()
         .and_then(Response::error_for_status)
         .map(drop)
         .map_err(Failure::retry)
-}
-
-fn accepted(response: Response) -> Result<Response, Failure> {
-    let status = response.status();
-    if status.is_success() {
-        return Ok(response);
-    }
-    Err(refused(status))
 }
 
 fn failed_request(error: reqwest::Error) -> Failure {

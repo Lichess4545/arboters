@@ -17,6 +17,7 @@ use crate::game_monitor::{GameMonitor, LichessStream, http_client};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
+use crate::lichess;
 use crate::responses::{PostgresResponses, Responder, ResponseCommands};
 use crate::status::{Shutdown, Signal, Status};
 use crate::subscriptions::{Notifier, PostgresSubscriptions, SubscriptionCommands};
@@ -157,7 +158,12 @@ fn start_health(
         http.clone(),
         pool.clone(),
         heltour,
-        &config.lichess,
+        config
+            .lichess
+            .token
+            .clone()
+            .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token))
+            .transpose()?,
         config.zulip.as_ref(),
     )?;
     let health = health_check.health();

@@ -14,11 +14,10 @@ use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 
-use crate::game_monitor::LichessSettings;
 use crate::heltour::Heltour;
 use crate::lichess;
 use crate::zulip::ZulipSettings;
-use checks::{Failure, Outcome, Token, ZulipBot};
+use checks::{Failure, Outcome, ZulipBot};
 pub use config::Config;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -70,7 +69,7 @@ pub struct HealthCheck {
     http: reqwest::Client,
     pool: PgPool,
     heltour: Heltour,
-    lichess: Option<Token>,
+    lichess: Option<lichess::Api>,
     zulip: Option<ZulipBot>,
 }
 
@@ -80,7 +79,7 @@ impl HealthCheck {
         http: reqwest::Client,
         pool: PgPool,
         heltour: Heltour,
-        lichess: &LichessSettings,
+        lichess: Option<lichess::Api>,
         zulip: Option<&ZulipSettings>,
     ) -> Result<Self, url::ParseError> {
         Ok(Self {
@@ -89,7 +88,7 @@ impl HealthCheck {
             http,
             pool,
             heltour,
-            lichess: Token::lichess(lichess)?,
+            lichess,
             zulip: zulip.map(ZulipBot::new).transpose()?,
         })
     }
@@ -125,18 +124,19 @@ impl HealthCheck {
     }
 
     async fn check_everything(&self) -> Result<(), String> {
-        let (postgres, heltour, lichess, zulip) = tokio::join!(
-            self.check("Postgres", || checks::read_our_tables(&self.pool)),
-            self.check("heltour", || checks::test_heltour_token(&self.heltour)),
-            OptionFuture::from(self.lichess.as_ref().map(|token| {
-                self.check("Lichess", || checks::lichess_token_owner(&self.http, token))
-            })),
-            OptionFuture::from(
-                self.zulip
-                    .as_ref()
-                    .map(|bot| self.check("Zulip", || checks::find_zulip_bot(&self.http, bot)))
-            ),
-        );
+        let (postgres, heltour, lichess, zulip) =
+            tokio::join!(
+                self.check("Postgres", || checks::read_our_tables(&self.pool)),
+                self.check("heltour", || checks::test_heltour_token(&self.heltour)),
+                OptionFuture::from(self.lichess.as_ref().map(|lichess| {
+                    self.check("Lichess", || checks::lichess_token_owner(lichess))
+                })),
+                OptionFuture::from(
+                    self.zulip
+                        .as_ref()
+                        .map(|bot| self.check("Zulip", || checks::find_zulip_bot(&self.http, bot)))
+                ),
+            );
         let health = Health {
             postgres: postgres?,
             heltour: heltour?,

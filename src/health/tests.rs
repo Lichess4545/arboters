@@ -54,12 +54,9 @@ impl FakeServices {
         Heltour::new(http_client().unwrap(), &settings).unwrap()
     }
 
-    fn lichess(&self, token: Option<&str>) -> LichessSettings {
-        LichessSettings {
-            base_url: Url::parse(&format!("http://{}/", self.address)).unwrap(),
-            token: token.map(SecretString::from),
-            ..LichessSettings::default()
-        }
+    fn lichess(&self, token: &str) -> lichess::Api {
+        let site = Url::parse(&format!("http://{}/", self.address)).unwrap();
+        lichess::Api::new(http_client().unwrap(), &site, SecretString::from(token)).unwrap()
     }
 }
 
@@ -113,7 +110,7 @@ fn checking(pool: PgPool, services: &FakeServices, lichess_token: Option<&str>) 
         http_client().unwrap(),
         pool,
         services.heltour(),
-        &services.lichess(lichess_token),
+        lichess_token.map(|token| services.lichess(token)),
         None,
     )
     .unwrap();
