@@ -108,7 +108,7 @@ async fn run_with<M: Messenger + Clone>(
         error = HealthCheck::stopped(&health_check) => Err(error),
         () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
         () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
-        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("heltour reporter stopped unexpectedly")),
+        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("Heltour reporter stopped unexpectedly")),
         error = Conversations::stopped(conversations.as_ref()) => Err(error),
         error = Responding::stopped(responding.as_ref()) => Err(error),
         exit = &mut watchlist_sync => match exit {

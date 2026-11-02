@@ -191,7 +191,7 @@ async fn when_zulip_and_heltour_stop_working_then_only_heltour_is_posted() {
     let messenger = RecordingMessenger::default();
     let health = watch::Sender::new(Some(everything_available()));
     following(configured(&messenger), health.subscribe()).await;
-    until_posted(&messenger, ":check: Postgres works\n:check: heltour works").await;
+    until_posted(&messenger, ":check: Postgres works\n:check: Heltour works").await;
     let before = messenger.posted().len();
 
     health.send_replace(Some(Health {
@@ -201,7 +201,7 @@ async fn when_zulip_and_heltour_stop_working_then_only_heltour_is_posted() {
     }));
 
     let warning =
-        ":warning: Cannot use heltour, will keep trying: answered 503 Service Unavailable";
+        ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable";
     until_posted(&messenger, warning).await;
     assert_eq!(messenger.posted()[before..], [warning]);
 }
@@ -212,25 +212,25 @@ async fn when_a_service_works_again_then_it_is_posted_and_a_first_snapshot_posts
     let health = watch::Sender::new(Some(everything_available()));
     following(configured(&messenger), health.subscribe()).await;
 
-    until_posted(&messenger, ":check: Postgres works\n:check: heltour works").await;
+    until_posted(&messenger, ":check: Postgres works\n:check: Heltour works").await;
     health.send_replace(Some(Health {
         heltour: unavailable_for_now(),
         ..everything_available()
     }));
     until_posted(
         &messenger,
-        ":warning: Cannot use heltour, will keep trying: answered 503 Service Unavailable",
+        ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable",
     )
     .await;
     health.send_replace(Some(everything_available()));
-    until_posted(&messenger, ":check: heltour works again").await;
+    until_posted(&messenger, ":check: Heltour works again").await;
 
     assert_eq!(
         messenger.posted()[1..],
         [
-            ":check: Postgres works\n:check: heltour works",
-            ":warning: Cannot use heltour, will keep trying: answered 503 Service Unavailable",
-            ":check: heltour works again",
+            ":check: Postgres works\n:check: Heltour works",
+            ":warning: Cannot use Heltour, will keep trying: answered 503 Service Unavailable",
+            ":check: Heltour works again",
         ]
     );
 }

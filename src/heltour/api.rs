@@ -27,7 +27,7 @@ pub struct HeltourSettings {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not read the active leagues from heltour")]
+#[error("could not read the active leagues from Heltour")]
 pub struct ActiveLeaguesError(#[from] reqwest::Error);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -61,9 +61,9 @@ pub enum Refusal {
 
 #[derive(Debug, thiserror::Error)]
 pub enum UpdatePairingError {
-    #[error("heltour refused to update the pairing: {0:?}")]
+    #[error("Heltour refused to update the pairing: {0:?}")]
     Refused(Refusal),
-    #[error("could not ask heltour to update the pairing")]
+    #[error("could not ask Heltour to update the pairing")]
     Request(#[from] reqwest::Error),
 }
 

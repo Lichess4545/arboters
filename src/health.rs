@@ -125,7 +125,7 @@ impl HealthCheck {
         let (postgres, heltour, lichess, zulip) =
             tokio::join!(
                 self.check("Postgres", || checks::read_our_tables(&self.pool)),
-                self.check("heltour", || checks::test_heltour_token(&self.heltour)),
+                self.check("Heltour", || checks::test_heltour_token(&self.heltour)),
                 OptionFuture::from(self.lichess.as_ref().map(|lichess| {
                     self.check("Lichess", || checks::lichess_token_owner(lichess))
                 })),

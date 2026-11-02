@@ -130,7 +130,7 @@ fn unavailable(health: Option<&Health>) -> [(&'static str, Option<&Unavailable>)
             health.and_then(|health| health.postgres.unavailable()),
         ),
         (
-            "heltour",
+            "Heltour",
             health.and_then(|health| health.heltour.unavailable()),
         ),
         (
@@ -143,7 +143,7 @@ fn unavailable(health: Option<&Health>) -> [(&'static str, Option<&Unavailable>)
 fn working(health: &Health) -> Option<String> {
     let lines: Vec<String> = [
         ("Postgres", health.postgres.unavailable().is_none()),
-        ("heltour", health.heltour.unavailable().is_none()),
+        ("Heltour", health.heltour.unavailable().is_none()),
         (
             "Lichess",
             matches!(health.lichess, Some(Availability::Available(_))),
