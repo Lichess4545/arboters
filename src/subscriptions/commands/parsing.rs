@@ -6,7 +6,7 @@ use crate::game_monitor::GameEventKind;
 use crate::lichess;
 use crate::subscriptions::SubscriptionId;
 
-use super::spelling::{Closest, closest, matches};
+use super::spelling::{Found, closest, matches};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
@@ -120,12 +120,12 @@ pub fn parse(text: &str, lichess: &Url) -> Option<Result<Command, Mistake>> {
         ("subscription", Verb::Subscription),
     ];
     match closest(verb, verbs) {
-        Closest::One(Verb::Help) => Some(Ok(Command::Help)),
-        Closest::One(Verb::Tell) => {
+        Found::One(Verb::Help) => Some(Ok(Command::Help)),
+        Found::One(Verb::Tell) => {
             Some(tell(rest, link.as_deref(), mention.as_deref(), lichess).map(Command::Tell))
         }
-        Closest::One(Verb::Subscription) => Some(subscription(rest)),
-        Closest::Tie(_) | Closest::Nothing => None,
+        Found::One(Verb::Subscription) => Some(subscription(rest)),
+        Found::Several(_) | Found::Nothing => None,
     }
 }
 
@@ -311,8 +311,8 @@ fn event(phrase: &[&str]) -> Option<GameEventKind> {
         .filter(|word| !word.is_empty() && !ARTICLES.contains(word))
         .map(
             |word| match closest(word, EVENT_WORDS.map(|known| (known, known))) {
-                Closest::One(known) => known,
-                Closest::Tie(_) | Closest::Nothing => word,
+                Found::One(known) => known,
+                Found::Several(_) | Found::Nothing => word,
             },
         )
         .collect();

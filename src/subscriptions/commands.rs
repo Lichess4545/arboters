@@ -19,8 +19,8 @@ use crate::heltour::{ActiveLeagues, League, league};
 
 use super::model::{NewSubscription, Remover, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
-use league_lookup::Found;
 use parsing::{Command, Draft, IS_OVER, Listener, Mistake, Problem, STARTS, Tell, parse};
+use spelling::Found;
 
 #[derive(Debug)]
 pub struct SubscriptionCommands<R> {
@@ -323,7 +323,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         &self,
         message: &IncomingMessage,
         draft: &Draft,
-        found: &Found<'_>,
+        found: &Found<&League>,
     ) -> String {
         let written = draft
             .league

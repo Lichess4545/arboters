@@ -2,49 +2,33 @@ use crate::heltour::{ActiveLeagues, League};
 use crate::lichess::Clock;
 
 use super::parsing::WrittenLeague;
-use super::spelling::{Closest, closest};
+use super::spelling::{Found, closest};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Found<'a> {
-    One(&'a League),
-    Several(Vec<&'a League>),
-    Nothing,
-}
-
-pub fn find<'a>(active: &'a ActiveLeagues, written: &WrittenLeague) -> Found<'a> {
+pub fn find<'a>(active: &'a ActiveLeagues, written: &WrittenLeague) -> Found<&'a League> {
     let leagues = &active.leagues;
     let written = written.as_str();
-    if let Some(league) = leagues.iter().find(|league| league.tag.as_str() == written) {
-        return Found::One(league);
-    }
-    if let Some(league) = leagues
+    let named = leagues
         .iter()
-        .find(|league| same_words(league.name.as_str(), written))
-    {
+        .find(|league| league.tag.as_str() == written)
+        .or_else(|| {
+            leagues
+                .iter()
+                .find(|league| same_words(league.name.as_str(), written))
+        });
+    if let Some(league) = named {
         return Found::One(league);
     }
     if let Some(clock) = time_control(written) {
-        let mut timed: Vec<&League> = leagues
+        return leagues
             .iter()
             .filter(|league| league.time_control == Some(clock))
-            .collect();
-        return match (timed.pop(), timed.is_empty()) {
-            (None, _) => Found::Nothing,
-            (Some(league), true) => Found::One(league),
-            (Some(league), false) => {
-                timed.push(league);
-                Found::Several(timed)
-            }
-        };
+            .collect::<Vec<_>>()
+            .into();
     }
-    match closest(
+    closest(
         written,
         leagues.iter().map(|league| (league.tag.as_str(), league)),
-    ) {
-        Closest::One(league) => Found::One(league),
-        Closest::Tie(leagues) => Found::Several(leagues),
-        Closest::Nothing => Found::Nothing,
-    }
+    )
 }
 
 fn same_words(name: &str, written: &str) -> bool {

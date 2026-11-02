@@ -1,10 +1,19 @@
 use strsim::damerau_levenshtein;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Closest<T> {
+pub enum Found<T> {
     One(T),
-    Tie(Vec<T>),
+    Several(Vec<T>),
     Nothing,
+}
+
+impl<T> From<Vec<T>> for Found<T> {
+    fn from(mut found: Vec<T>) -> Self {
+        match found.len() {
+            0 | 1 => found.pop().map_or(Self::Nothing, Self::One),
+            _ => Self::Several(found),
+        }
+    }
 }
 
 fn allowed_edits(word: &str) -> usize {
@@ -22,7 +31,7 @@ pub fn matches(written: &str, word: &str) -> bool {
 pub fn closest<'a, T>(
     written: &str,
     candidates: impl IntoIterator<Item = (&'a str, T)>,
-) -> Closest<T> {
+) -> Found<T> {
     let mut best: Option<usize> = None;
     let mut nearest = Vec::new();
     for (word, candidate) in candidates {
@@ -36,12 +45,7 @@ pub fn closest<'a, T>(
         }
         nearest.push(candidate);
     }
-    let mut nearest = nearest.into_iter();
-    match (nearest.next(), nearest.len()) {
-        (None, _) => Closest::Nothing,
-        (Some(one), 0) => Closest::One(one),
-        (Some(first), _) => Closest::Tie(std::iter::once(first).chain(nearest).collect()),
-    }
+    nearest.into()
 }
 
 #[cfg(test)]
