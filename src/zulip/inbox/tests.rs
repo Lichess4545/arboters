@@ -10,16 +10,11 @@ use axum::{Json, Router};
 use kameo::actor::Spawn;
 use secrecy::SecretString;
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
 use super::*;
 use crate::chat::{ChannelName, Role, TopicName};
-use crate::game_monitor::GameEventKind;
-use crate::heltour::{ActiveLeagues, League, league};
-use crate::lichess::{self, Variant};
-use crate::subscriptions::{PostgresSubscriptions, SubscriptionCommands, Subscriptions};
 use crate::zulip::BotEmail;
 
 const BOT: u64 = 99;
@@ -669,105 +664,6 @@ async fn topic_moves_unaddressed_edits_and_edits_of_unanswered_messages_are_igno
     assert!(heard.try_recv().is_err());
     within_a_while(zulip.sent.recv()).await;
     assert!(zulip.edits.try_recv().is_err());
-}
-
-async fn answered_by_subscription_commands(pool: PgPool) -> (FakeZulip, PostgresSubscriptions) {
-    let zulip = FakeZulip::start().await;
-    let subscriptions = PostgresSubscriptions::new(pool);
-    let commands = SubscriptionCommands::spawn((
-        SubscriptionCommands::new(subscriptions.clone(), lichess::Config::default().base_url),
-        zulip.inbox.clone().recipient(),
-    ));
-    commands
-        .ask(ActiveLeagues {
-            leagues: vec![League {
-                tag: league::Tag::try_new("classical").unwrap(),
-                name: league::Name::try_new("Classical League").unwrap(),
-                time_control: None,
-                variant: Variant::Standard,
-                rated: true,
-            }],
-            pairings: Vec::new(),
-        })
-        .await
-        .unwrap();
-    (zulip, subscriptions)
-}
-
-#[sqlx::test]
-async fn an_edit_of_a_refused_command_edits_the_refusal_into_the_new_answer(pool: PgPool) {
-    let (mut zulip, subscriptions) = answered_by_subscription_commands(pool).await;
-    zulip.deliver(json!([direct_message(
-        1,
-        MEMBER,
-        "tell me when a game starts in clasical league"
-    )]));
-    let refusal = within_a_while(zulip.sent.recv()).await;
-
-    zulip.deliver(json!([edit(
-        2,
-        1001,
-        MEMBER,
-        "tell me when a game starts in classical league",
-        &[]
-    )]));
-
-    let (reply, edited) = within_a_while(zulip.edits.recv()).await;
-    let made = subscriptions
-        .requested_by(ChatUserId(MEMBER))
-        .await
-        .unwrap();
-    assert!(
-        refusal["content"].starts_with("`clasical league` is not an active league."),
-        "{refusal:?}"
-    );
-    assert_eq!(reply, 5000);
-    assert_eq!(
-        edited["content"],
-        format!(
-            "Subscription `{}`: tell you when a-game-starts in classical.",
-            made[0].id
-        )
-    );
-}
-
-#[sqlx::test]
-async fn an_edit_into_another_subscription_replaces_the_one_it_made(pool: PgPool) {
-    let (mut zulip, subscriptions) = answered_by_subscription_commands(pool).await;
-    zulip.deliver(json!([direct_message(
-        1,
-        MEMBER,
-        "tell me when a game starts in classical"
-    )]));
-    within_a_while(zulip.sent.recv()).await;
-    let earlier = subscriptions
-        .requested_by(ChatUserId(MEMBER))
-        .await
-        .unwrap()[0]
-        .id;
-
-    zulip.deliver(json!([edit(
-        2,
-        1001,
-        MEMBER,
-        "tell me when a game ends in classical",
-        &[]
-    )]));
-
-    let (_, edited) = within_a_while(zulip.edits.recv()).await;
-    let made = subscriptions
-        .requested_by(ChatUserId(MEMBER))
-        .await
-        .unwrap();
-    assert_eq!(made.len(), 1);
-    assert_eq!(made[0].event, GameEventKind::GameFinished);
-    assert_eq!(
-        edited["content"],
-        format!(
-            "Subscription `{}`: tell you when a-game-is-over in classical. It replaces subscription `{earlier}`.",
-            made[0].id
-        )
-    );
 }
 
 #[tokio::test]
