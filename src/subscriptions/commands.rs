@@ -11,8 +11,8 @@ use kameo::message::{Context, Message};
 use url::Url;
 
 use crate::chat::{
-    ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId, OutgoingMessage,
-    Revision,
+    ChannelName, ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId,
+    OutgoingMessage, Revision, TopicName,
 };
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{ActiveLeagues, League, league};
@@ -96,15 +96,10 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 channel @ Conversation::Topic { .. } => channel.clone(),
             },
             Listener::Topic { channel, topic } => Conversation::Topic { channel, topic },
-            Listener::User(user_id) if user_id == message.sender => {
-                Conversation::Direct { user_id }
+            Listener::User(user_id) if user_id != message.sender && !message.role.moderates() => {
+                return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
             }
-            Listener::User(user_id) => {
-                if !subscribes_others(message) {
-                    return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
-                }
-                Conversation::Direct { user_id }
-            }
+            Listener::User(user_id) => Conversation::Direct { user_id },
         };
         Ok(NewSubscription {
             requester: message.sender,
@@ -226,7 +221,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 "You can list and remove the subscriptions you made and the ones that send you direct messages."
             }
         };
-        if subscribes_others(message) {
+        if message.role.moderates() {
             format!(
                 "{removing} You can also subscribe someone else with `tell @**user** when <event> in <league>`."
             )
@@ -370,12 +365,19 @@ fn remover(message: &IncomingMessage) -> Remover {
     }
 }
 
-const fn subscribes_others(message: &IncomingMessage) -> bool {
-    message.role.moderates()
-}
-
 fn mention(user: ChatUserId) -> String {
     format!("@_**|{}**", user.0)
+}
+
+fn topic_link(channel: &ChannelName, topic: &TopicName) -> String {
+    format!("#**{}>{}**", channel.as_str(), topic.as_str())
+}
+
+const fn event_name(event: GameEventKind) -> &'static str {
+    match event {
+        GameEventKind::GameStarted => STARTS,
+        GameEventKind::GameFinished => IS_OVER,
+    }
 }
 
 fn suggestion(
@@ -387,19 +389,14 @@ fn suggestion(
     let listener = match &draft.listener {
         Some(Listener::Me) => "me".to_owned(),
         Some(Listener::Here) => "here".to_owned(),
-        Some(Listener::Topic { channel, topic }) => {
-            format!("#**{}>{}**", channel.as_str(), topic.as_str())
-        }
+        Some(Listener::Topic { channel, topic }) => topic_link(channel, topic),
         Some(Listener::User(user_id)) => mention(*user_id),
         None => match message.reply_to {
             Conversation::Topic { .. } => "here".to_owned(),
             Conversation::Direct { .. } => "me".to_owned(),
         },
     };
-    let event = match draft.event {
-        Some(GameEventKind::GameFinished) => IS_OVER,
-        Some(GameEventKind::GameStarted) | None => STARTS,
-    };
+    let event = event_name(draft.event.unwrap_or(GameEventKind::GameStarted));
     let league = league.map_or_else(|| "<league>".to_owned(), |league| league.tag.to_string());
     let player = match (&draft.player, problem) {
         (Some(player), _) => format!(" for {player}"),
@@ -419,14 +416,9 @@ fn describe(
     let listener = match target {
         Conversation::Direct { user_id } if *user_id == viewer => "you".to_owned(),
         Conversation::Direct { user_id } => mention(*user_id),
-        Conversation::Topic { channel, topic } => {
-            format!("#**{}>{}**", channel.as_str(), topic.as_str())
-        }
+        Conversation::Topic { channel, topic } => topic_link(channel, topic),
     };
-    let event = match event {
-        GameEventKind::GameStarted => STARTS,
-        GameEventKind::GameFinished => IS_OVER,
-    };
+    let event = event_name(event);
     match source {
         SubscriptionSource::Player(player) => {
             format!("tell {listener} when {event} in {league} for {player}")
