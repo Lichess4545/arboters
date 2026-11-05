@@ -30,7 +30,7 @@ pub struct Config {
     pub heltour: HeltourSettings,
     #[serde(default)]
     pub league_games: league_games::Config,
-    pub zulip: Option<ZulipSettings>,
+    pub zulip: ZulipSettings,
     pub status: Option<StatusSettings>,
     #[serde(default)]
     pub responses: ResponsesSettings,

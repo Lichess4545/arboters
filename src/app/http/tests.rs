@@ -10,7 +10,7 @@ fn postgres(postgres: Availability) -> Health {
         postgres,
         heltour: Availability::Available(()),
         lichess: None,
-        zulip: None,
+        zulip: Availability::Available(()),
     }
 }
 
