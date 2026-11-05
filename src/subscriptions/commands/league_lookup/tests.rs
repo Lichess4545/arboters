@@ -27,7 +27,7 @@ fn active() -> ActiveLeagues {
     }
 }
 
-fn tags(found: &Found<'_>) -> Vec<String> {
+fn tags(found: &Found<&League>) -> Vec<String> {
     match found {
         Found::One(league) => vec![league.tag.to_string()],
         Found::Several(leagues) => leagues

@@ -11,16 +11,16 @@ use kameo::message::{Context, Message};
 use url::Url;
 
 use crate::chat::{
-    ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId, OutgoingMessage,
-    Revision,
+    ChannelName, ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId,
+    OutgoingMessage, Revision, TopicName,
 };
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{ActiveLeagues, League, league};
 
 use super::model::{NewSubscription, Remover, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
-use league_lookup::Found;
 use parsing::{Command, Draft, IS_OVER, Listener, Mistake, Problem, STARTS, Tell, parse};
+use spelling::Found;
 
 #[derive(Debug)]
 pub struct SubscriptionCommands<R> {
@@ -96,15 +96,10 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 channel @ Conversation::Topic { .. } => channel.clone(),
             },
             Listener::Topic { channel, topic } => Conversation::Topic { channel, topic },
-            Listener::User(user_id) if user_id == message.sender => {
-                Conversation::Direct { user_id }
+            Listener::User(user_id) if user_id != message.sender && !message.role.moderates() => {
+                return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
             }
-            Listener::User(user_id) => {
-                if !subscribes_others(message) {
-                    return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
-                }
-                Conversation::Direct { user_id }
-            }
+            Listener::User(user_id) => Conversation::Direct { user_id },
         };
         Ok(NewSubscription {
             requester: message.sender,
@@ -154,23 +149,13 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 
     async fn list(&self, message: &IncomingMessage) -> Result<String, SubscriptionsError> {
-        let (subscriptions, heading, none) = match listing(message) {
-            Listing::Topic(topic) => (
-                self.subscriptions.posting_to(topic).await?,
+        let subscriptions = self.subscriptions.listed_in(&message.reply_to).await?;
+        let (heading, none) = match message.reply_to {
+            Conversation::Topic { .. } => (
                 "Subscriptions that post in this topic:",
                 "No subscription posts in this topic.",
             ),
-            Listing::Mine(user_id) => {
-                let mut yours = self.subscriptions.requested_by(user_id).await?;
-                yours.extend(
-                    self.subscriptions
-                        .posting_to(&Conversation::Direct { user_id })
-                        .await?,
-                );
-                yours.sort_by_key(|subscription| subscription.id);
-                yours.dedup_by_key(|subscription| subscription.id);
-                (yours, "Your subscriptions:", "You have no subscriptions.")
-            }
+            Conversation::Direct { .. } => ("Your subscriptions:", "You have no subscriptions."),
         };
         if subscriptions.is_empty() {
             return Ok(none.to_owned());
@@ -225,18 +210,18 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 
     fn permissions(message: &IncomingMessage) -> String {
-        let removing = match (remover(message), listing(message)) {
+        let removing = match (remover(message), &message.reply_to) {
             (Remover::Moderator, _) => {
                 "You are a moderator, so you can remove any subscription from anywhere."
             }
-            (Remover::Owner { .. }, Listing::Topic(_)) => {
+            (Remover::Owner { .. }, Conversation::Topic { .. }) => {
                 "In this topic you can list and remove any subscription that posts here. You can remove the ones you made from anywhere."
             }
-            (Remover::Owner { .. }, Listing::Mine(_)) => {
+            (Remover::Owner { .. }, Conversation::Direct { .. }) => {
                 "You can list and remove the subscriptions you made and the ones that send you direct messages."
             }
         };
-        if subscribes_others(message) {
+        if message.role.moderates() {
             format!(
                 "{removing} You can also subscribe someone else with `tell @**user** when <event> in <league>`."
             )
@@ -333,7 +318,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         &self,
         message: &IncomingMessage,
         draft: &Draft,
-        found: &Found<'_>,
+        found: &Found<&League>,
     ) -> String {
         let written = draft
             .league
@@ -369,18 +354,6 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 }
 
-enum Listing<'a> {
-    Topic(&'a Conversation),
-    Mine(ChatUserId),
-}
-
-const fn listing(message: &IncomingMessage) -> Listing<'_> {
-    match &message.reply_to {
-        topic @ Conversation::Topic { .. } => Listing::Topic(topic),
-        Conversation::Direct { .. } => Listing::Mine(message.sender),
-    }
-}
-
 fn remover(message: &IncomingMessage) -> Remover {
     if message.role.moderates() {
         Remover::Moderator
@@ -392,12 +365,19 @@ fn remover(message: &IncomingMessage) -> Remover {
     }
 }
 
-const fn subscribes_others(message: &IncomingMessage) -> bool {
-    message.role.moderates()
-}
-
 fn mention(user: ChatUserId) -> String {
     format!("@_**|{}**", user.0)
+}
+
+fn topic_link(channel: &ChannelName, topic: &TopicName) -> String {
+    format!("#**{}>{}**", channel.as_str(), topic.as_str())
+}
+
+const fn event_name(event: GameEventKind) -> &'static str {
+    match event {
+        GameEventKind::GameStarted => STARTS,
+        GameEventKind::GameFinished => IS_OVER,
+    }
 }
 
 fn suggestion(
@@ -409,19 +389,14 @@ fn suggestion(
     let listener = match &draft.listener {
         Some(Listener::Me) => "me".to_owned(),
         Some(Listener::Here) => "here".to_owned(),
-        Some(Listener::Topic { channel, topic }) => {
-            format!("#**{}>{}**", channel.as_str(), topic.as_str())
-        }
+        Some(Listener::Topic { channel, topic }) => topic_link(channel, topic),
         Some(Listener::User(user_id)) => mention(*user_id),
         None => match message.reply_to {
             Conversation::Topic { .. } => "here".to_owned(),
             Conversation::Direct { .. } => "me".to_owned(),
         },
     };
-    let event = match draft.event {
-        Some(GameEventKind::GameFinished) => IS_OVER,
-        Some(GameEventKind::GameStarted) | None => STARTS,
-    };
+    let event = event_name(draft.event.unwrap_or(GameEventKind::GameStarted));
     let league = league.map_or_else(|| "<league>".to_owned(), |league| league.tag.to_string());
     let player = match (&draft.player, problem) {
         (Some(player), _) => format!(" for {player}"),
@@ -441,14 +416,9 @@ fn describe(
     let listener = match target {
         Conversation::Direct { user_id } if *user_id == viewer => "you".to_owned(),
         Conversation::Direct { user_id } => mention(*user_id),
-        Conversation::Topic { channel, topic } => {
-            format!("#**{}>{}**", channel.as_str(), topic.as_str())
-        }
+        Conversation::Topic { channel, topic } => topic_link(channel, topic),
     };
-    let event = match event {
-        GameEventKind::GameStarted => STARTS,
-        GameEventKind::GameFinished => IS_OVER,
-    };
+    let event = event_name(event);
     match source {
         SubscriptionSource::Player(player) => {
             format!("tell {listener} when {event} in {league} for {player}")

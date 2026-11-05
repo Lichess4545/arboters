@@ -1,6 +1,6 @@
 use super::*;
 use crate::game_monitor::Ending;
-use crate::lichess::{self, GameId, Player, Speed, Variant};
+use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
 
 fn game() -> Game {
     let player = |name| Player {

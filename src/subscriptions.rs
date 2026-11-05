@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
-use crate::chat::{ChatUserId, Conversation};
+use crate::chat::Conversation;
 use crate::game_monitor::GameEventKind;
 use crate::heltour::league;
+use crate::lichess;
 
 mod commands;
 mod model;
@@ -26,19 +27,14 @@ pub trait Subscriptions: Clone + Send + Sync + 'static {
 
     fn targets_for(
         &self,
-        league: &league::Tag,
+        leagues: &[&league::Tag],
         event: GameEventKind,
-        sources: &[SubscriptionSource],
+        players: [&lichess::UserId; 2],
     ) -> impl Future<Output = Result<BTreeSet<Conversation>, SubscriptionsError>> + Send;
 
-    fn requested_by(
+    fn listed_in(
         &self,
-        requester: ChatUserId,
-    ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
-
-    fn posting_to(
-        &self,
-        target: &Conversation,
+        conversation: &Conversation,
     ) -> impl Future<Output = Result<Vec<Subscription>, SubscriptionsError>> + Send;
 
     fn remove(

@@ -18,8 +18,8 @@ fn short_words_must_be_exact_and_longer_words_allow_more_typos() {
 fn the_closest_candidate_wins_and_an_equal_distance_is_a_tie() {
     let candidates = [("team4545", 1), ("team4546", 2), ("lonewolf", 3)];
 
-    assert_eq!(closest("team4545", candidates), Closest::One(1));
-    assert_eq!(closest("lonewlof", candidates), Closest::One(3));
-    assert_eq!(closest("team454", candidates), Closest::Tie(vec![1, 2]));
-    assert_eq!(closest("chess960", candidates), Closest::Nothing);
+    assert_eq!(closest("team4545", candidates), Found::One(1));
+    assert_eq!(closest("lonewlof", candidates), Found::One(3));
+    assert_eq!(closest("team454", candidates), Found::Several(vec![1, 2]));
+    assert_eq!(closest("chess960", candidates), Found::Nothing);
 }

@@ -11,7 +11,7 @@ use crate::chat::{
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
-use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
+use crate::subscriptions::{NewSubscription, PostgresSubscriptions, SubscriptionSource};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -95,19 +95,38 @@ fn direct_message(user_id: u64) -> Conversation {
     }
 }
 
-fn subscription(
-    tag: &str,
-    source: &str,
-    event: GameEventKind,
-    target: Conversation,
-) -> NewSubscription {
+fn games_topic() -> Conversation {
+    Conversation::Topic {
+        channel: ChannelName::try_new("chess").unwrap(),
+        topic: TopicName::try_new("games").unwrap(),
+    }
+}
+
+fn starts(tag: &str, source: SubscriptionSource, target: Conversation) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
         league: league(tag),
-        source: SubscriptionSource::Player(user_id(source)),
-        event,
+        source,
+        event: GameEventKind::GameStarted,
         target,
     }
+}
+
+fn of(name: &str) -> SubscriptionSource {
+    SubscriptionSource::Player(user_id(name))
+}
+
+fn announced(
+    targets: impl IntoIterator<Item = Conversation>,
+) -> Vec<(Conversation, OutgoingMessage)> {
+    let notification = render(
+        &GameEvent::Started(game()),
+        &lichess::Config::default().base_url,
+    );
+    targets
+        .into_iter()
+        .map(|target| (target, notification.clone()))
+        .collect()
 }
 
 #[derive(Debug)]
@@ -157,154 +176,75 @@ async fn deliveries(
 
 #[sqlx::test]
 async fn subscribers_of_both_players_to_the_event_receive_it_rendered(pool: PgPool) {
-    let notification = render(
-        &GameEvent::Started(game()),
-        &lichess::Config::default().base_url,
-    );
-    assert_eq!(
-        deliveries(
-            pool,
-            [
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    direct_message(7)
-                ),
-                subscription(
-                    "classical",
-                    "bob",
-                    GameEventKind::GameStarted,
-                    direct_message(8)
-                ),
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameFinished,
-                    direct_message(9)
-                ),
-            ],
-            paired_in("classical", "alice", "bob"),
-            RecordingMessenger::default(),
-        )
-        .await,
-        vec![
-            (direct_message(7), notification.clone()),
-            (direct_message(8), notification),
-        ]
-    );
+    let finishes = NewSubscription {
+        event: GameEventKind::GameFinished,
+        ..starts("classical", of("alice"), direct_message(9))
+    };
+
+    let delivered = deliveries(
+        pool,
+        [
+            starts("classical", of("alice"), direct_message(7)),
+            starts("classical", of("bob"), direct_message(8)),
+            finishes,
+        ],
+        paired_in("classical", "alice", "bob"),
+        RecordingMessenger::default(),
+    )
+    .await;
+
+    assert_eq!(delivered, announced([direct_message(7), direct_message(8)]));
 }
 
 #[sqlx::test]
 async fn a_game_is_announced_only_in_the_league_that_pairs_its_players(pool: PgPool) {
-    assert_eq!(
-        deliveries(
-            pool,
-            [
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    direct_message(7)
-                ),
-                subscription(
-                    "rapid",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    direct_message(8)
-                ),
-            ],
-            paired_in("rapid", "bob", "alice"),
-            RecordingMessenger::default(),
-        )
-        .await,
-        vec![(
-            direct_message(8),
-            render(
-                &GameEvent::Started(game()),
-                &lichess::Config::default().base_url
-            )
-        )]
-    );
+    let delivered = deliveries(
+        pool,
+        [
+            starts("classical", of("alice"), direct_message(7)),
+            starts("rapid", of("alice"), direct_message(8)),
+        ],
+        paired_in("rapid", "bob", "alice"),
+        RecordingMessenger::default(),
+    )
+    .await;
+
+    assert_eq!(delivered, announced([direct_message(8)]));
 }
 
 #[sqlx::test]
 async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool: PgPool) {
-    assert_eq!(
-        deliveries(
-            pool,
-            [
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    direct_message(7)
-                ),
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    direct_message(8)
-                ),
-            ],
-            paired_in("classical", "alice", "bob"),
-            RecordingMessenger {
-                unreachable: Some(direct_message(7)),
-                ..RecordingMessenger::default()
-            },
-        )
-        .await,
-        vec![(
-            direct_message(8),
-            render(
-                &GameEvent::Started(game()),
-                &lichess::Config::default().base_url
-            )
-        )]
-    );
-}
+    let delivered = deliveries(
+        pool,
+        [
+            starts("classical", of("alice"), direct_message(7)),
+            starts("classical", of("alice"), direct_message(8)),
+        ],
+        paired_in("classical", "alice", "bob"),
+        RecordingMessenger {
+            unreachable: Some(direct_message(7)),
+            ..RecordingMessenger::default()
+        },
+    )
+    .await;
 
-fn games_topic() -> Conversation {
-    Conversation::Topic {
-        channel: ChannelName::try_new("chess").unwrap(),
-        topic: TopicName::try_new("games").unwrap(),
-    }
-}
-
-fn league_wide(tag: &str, target: Conversation) -> NewSubscription {
-    NewSubscription {
-        source: SubscriptionSource::League,
-        ..subscription(tag, "alice", GameEventKind::GameStarted, target)
-    }
+    assert_eq!(delivered, announced([direct_message(8)]));
 }
 
 #[sqlx::test]
 async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
-    let notification = render(
-        &GameEvent::Started(game()),
-        &lichess::Config::default().base_url,
-    );
-    assert_eq!(
-        deliveries(
-            pool,
-            [
-                league_wide("classical", direct_message(7)),
-                league_wide("rapid", direct_message(8)),
-                league_wide("classical", games_topic()),
-                subscription(
-                    "classical",
-                    "alice",
-                    GameEventKind::GameStarted,
-                    games_topic()
-                ),
-            ],
-            paired_in("classical", "alice", "bob"),
-            RecordingMessenger::default(),
-        )
-        .await,
-        vec![
-            (direct_message(7), notification.clone()),
-            (games_topic(), notification),
-        ]
-    );
+    let delivered = deliveries(
+        pool,
+        [
+            starts("classical", SubscriptionSource::League, direct_message(7)),
+            starts("rapid", SubscriptionSource::League, direct_message(8)),
+            starts("classical", SubscriptionSource::League, games_topic()),
+            starts("classical", of("alice"), games_topic()),
+        ],
+        paired_in("classical", "alice", "bob"),
+        RecordingMessenger::default(),
+    )
+    .await;
+
+    assert_eq!(delivered, announced([direct_message(7), games_topic()]));
 }
