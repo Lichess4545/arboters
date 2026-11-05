@@ -30,6 +30,7 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
         assert_eq!(config.lichess.base_url.as_str(), "https://lichess.org/");
         assert_eq!(config.watchlist.refresh_interval, Duration::from_mins(5));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
+        assert!(!config.league_games.report);
     });
 }
 
@@ -52,6 +53,7 @@ fn the_variables_deployments_set_are_recognized() {
         jail.set_env("ARBOTERS_ZULIP__API_KEY", "secret");
         jail.set_env("ARBOTERS_LICHESS__TOKEN", "lip_secret");
         jail.set_env("ARBOTERS_STATUS__CHANNEL", "arboters-status");
+        jail.set_env("ARBOTERS_LEAGUE_GAMES__REPORT", "true");
         load(jail).unwrap();
     });
 }

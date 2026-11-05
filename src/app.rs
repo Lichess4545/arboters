@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::chat::{LoggingMessenger, Messenger};
 use crate::game_monitor::watchlist;
-use crate::game_monitor::{GameMonitor, LichessStream, http_client};
+use crate::game_monitor::{Follow, GameEvent, GameMonitor, LichessStream, http_client};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
@@ -71,13 +71,10 @@ async fn run_with<M: Messenger + Clone>(
         Notifier::new(subscriptions.clone(), messenger, lichess.clone()),
         monitor.clone().recipient(),
     ));
-    let reporter = Reporter::spawn((
-        Reporter::new(heltour.clone(), lichess.clone()),
-        monitor.clone().recipient(),
-    ));
+    let reporter = start_reporter(&config, &heltour, monitor.clone().recipient()).await;
     notifier.wait_for_startup().await;
-    reporter.wait_for_startup().await;
-    let mut followers = vec![notifier.clone().recipient(), reporter.clone().recipient()];
+    let mut followers = vec![notifier.clone().recipient()];
+    followers.extend(reporter.iter().map(|reporter| reporter.clone().recipient()));
     followers.extend(conversations.iter().map(Conversations::follower));
     let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
         heltour,
@@ -108,7 +105,7 @@ async fn run_with<M: Messenger + Clone>(
         error = HealthCheck::stopped(&health_check) => Err(error),
         () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
         () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
-        () = reporter.wait_for_shutdown() => Err(anyhow::anyhow!("Heltour reporter stopped unexpectedly")),
+        error = reporter_stopped(reporter.as_ref()) => Err(error),
         error = Conversations::stopped(conversations.as_ref()) => Err(error),
         error = Responding::stopped(responding.as_ref()) => Err(error),
         exit = &mut watchlist_sync => match exit {
@@ -124,7 +121,9 @@ async fn run_with<M: Messenger + Clone>(
     Responding::stop(responding.as_ref()).await;
     stop(&monitor).await;
     stop(&notifier).await;
-    stop(&reporter).await;
+    if let Some(reporter) = &reporter {
+        stop(reporter).await;
+    }
     stop(&health_check).await;
     let shutdown = match &down {
         Ok(signal) => Shutdown::Requested(*signal),
@@ -169,6 +168,31 @@ fn start_health(
     );
     let health = health_check.health();
     (HealthCheck::spawn(health_check), health)
+}
+
+async fn start_reporter(
+    config: &Config,
+    heltour: &Heltour,
+    monitor: Recipient<Follow<GameEvent>>,
+) -> Option<ActorRef<Reporter>> {
+    if !config.league_games.report {
+        tracing::info!("reports to Heltour are off");
+        return None;
+    }
+    let reporter = Reporter::spawn((
+        Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
+        monitor,
+    ));
+    reporter.wait_for_startup().await;
+    Some(reporter)
+}
+
+async fn reporter_stopped(reporter: Option<&ActorRef<Reporter>>) -> anyhow::Error {
+    let Some(reporter) = reporter else {
+        return std::future::pending().await;
+    };
+    reporter.wait_for_shutdown().await;
+    anyhow::anyhow!("Heltour reporter stopped unexpectedly")
 }
 
 fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> anyhow::Result<()> {
