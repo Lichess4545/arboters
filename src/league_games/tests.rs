@@ -1,15 +1,12 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::convert::Infallible;
-use std::sync::{Arc, Mutex};
 
-use axum::http::header::{AUTHORIZATION, USER_AGENT};
-use axum::http::{HeaderMap, StatusCode};
-use axum::routing::post;
-use axum::{Form, Router};
 use kameo::actor::Spawn;
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use secrecy::SecretString;
-use tokio::net::TcpListener;
 use url::Url;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::game_monitor::http_client;
@@ -19,35 +16,6 @@ use crate::lichess::{self, Clock, Game, GameId, Player, Speed, Variant};
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
 
 type Fields = BTreeMap<String, String>;
-
-#[derive(Clone, Default)]
-struct FakeHeltour {
-    received: Arc<Mutex<Vec<(HeaderMap, Fields)>>>,
-    answers: Arc<Mutex<VecDeque<(StatusCode, &'static str)>>>,
-}
-
-impl FakeHeltour {
-    fn answering(answers: &[(StatusCode, &'static str)]) -> Self {
-        Self {
-            answers: Arc::new(Mutex::new(answers.iter().copied().collect())),
-            ..Self::default()
-        }
-    }
-
-    fn answer(&self, headers: HeaderMap, form: Fields) -> (StatusCode, &'static str) {
-        self.received.lock().unwrap().push((headers, form));
-        self.answers
-            .lock()
-            .unwrap()
-            .pop_front()
-            .unwrap_or((StatusCode::OK, UPDATED))
-    }
-
-    fn reports(&self) -> Vec<Fields> {
-        let received = self.received.lock().unwrap();
-        received.iter().map(|(_, form)| form.clone()).collect()
-    }
-}
 
 #[derive(Debug)]
 struct Monitor;
@@ -70,19 +38,26 @@ impl Message<Follow<GameEvent>> for Monitor {
     async fn handle(&mut self, _: Follow<GameEvent>, _: &mut Context<Self, Self::Reply>) {}
 }
 
-async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEvent>) {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let answering = heltour.clone();
-    let router = Router::new().route(
-        "/api/update_pairing/",
-        post(move |headers: HeaderMap, Form(form): Form<Fields>| {
-            std::future::ready(answering.answer(headers, form))
-        }),
-    );
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+async fn report(
+    answers: &[(u16, &str)],
+    active: ActiveLeagues,
+    events: Vec<GameEvent>,
+) -> Vec<Request> {
+    let heltour = MockServer::start().await;
+    let update_pairing = || Mock::given(method("POST")).and(path("/api/update_pairing/"));
+    for (status, body) in answers {
+        update_pairing()
+            .respond_with(ResponseTemplate::new(*status).set_body_string(*body))
+            .up_to_n_times(1)
+            .mount(&heltour)
+            .await;
+    }
+    update_pairing()
+        .respond_with(ResponseTemplate::new(200).set_body_string(UPDATED))
+        .mount(&heltour)
+        .await;
     let config = heltour::Config {
-        base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
+        base_url: Url::parse(&format!("{}/api/", heltour.uri())).unwrap(),
         token: SecretString::from("heltour_secret"),
     };
     let reporter = Reporter::spawn((
@@ -97,12 +72,17 @@ async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEv
         reporter.ask(event).await.unwrap();
     }
     assert!(reporter.is_alive());
+    heltour.received_requests().await.unwrap()
+}
+
+fn form(request: &Request) -> Fields {
+    url::form_urlencoded::parse(&request.body)
+        .into_owned()
+        .collect()
 }
 
 async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields> {
-    let heltour = FakeHeltour::default();
-    report(&heltour, active, events).await;
-    heltour.reports()
+    report(&[], active, events).await.iter().map(form).collect()
 }
 
 fn tag(tag: &str) -> league::Tag {
@@ -196,11 +176,10 @@ fn report_to(league: &str, result: Option<&str>) -> Fields {
 
 #[tokio::test]
 async fn a_valid_start_is_reported_strictly_with_its_game_link_and_our_credentials() {
-    let heltour = FakeHeltour::default();
-    report(&heltour, alice_vs_bob(), vec![GameEvent::Started(game())]).await;
+    let requests = report(&[], alice_vs_bob(), vec![GameEvent::Started(game())]).await;
 
-    let (headers, form) = heltour.received.lock().unwrap().remove(0);
-    assert_eq!(form, report_to("classical", None));
+    let headers = &requests[0].headers;
+    assert_eq!(form(&requests[0]), report_to("classical", None));
     assert_eq!(headers[AUTHORIZATION], "Token heltour_secret");
     assert_eq!(
         headers[USER_AGENT],
@@ -344,21 +323,14 @@ async fn a_game_is_reported_with_its_own_colors_to_each_league_that_pairs_its_pl
 #[tokio::test]
 async fn the_reporter_carries_on_after_heltour_declines_or_fails() {
     let answers = [
-        (StatusCode::OK, r#"{"updated": 0, "error": "not_found"}"#),
-        (
-            StatusCode::OK,
-            r#"{"updated": 0, "error": "game_link_conflict"}"#,
-        ),
-        (
-            StatusCode::OK,
-            r#"{"updated": 0, "error": "result_already_set"}"#,
-        ),
-        (StatusCode::INTERNAL_SERVER_ERROR, "Server Error"),
-        (StatusCode::OK, "not json"),
+        (200, r#"{"updated": 0, "error": "not_found"}"#),
+        (200, r#"{"updated": 0, "error": "game_link_conflict"}"#),
+        (200, r#"{"updated": 0, "error": "result_already_set"}"#),
+        (500, "Server Error"),
+        (200, "not json"),
     ];
-    let heltour = FakeHeltour::answering(&answers);
     let events = vec![GameEvent::Started(game()); answers.len() + 1];
-    report(&heltour, alice_vs_bob(), events).await;
+    let reports = report(&answers, alice_vs_bob(), events).await;
 
-    assert_eq!(heltour.reports().len(), answers.len() + 1);
+    assert_eq!(reports.len(), answers.len() + 1);
 }

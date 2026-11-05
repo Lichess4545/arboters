@@ -1,10 +1,6 @@
-use std::sync::{Arc, Mutex};
-
-use axum::Router;
-use axum::http::HeaderMap;
-use axum::http::header::{AUTHORIZATION, USER_AGENT};
-use axum::routing::{MethodRouter, post};
-use tokio::net::TcpListener;
+use reqwest::header::{AUTHORIZATION, USER_AGENT};
+use wiremock::matchers::{body_string, header, method, path};
+use wiremock::{Mock, MockBuilder, MockServer, ResponseTemplate};
 
 use super::*;
 use crate::game_monitor::http_client;
@@ -13,17 +9,19 @@ use crate::lichess::{GameId, Player, Speed, Variant};
 const GAME_LINE: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 const INACTIVITY_TIMEOUT: Duration = Duration::from_secs(60);
 
-async fn lichess_answering(answer: MethodRouter, token: Option<&str>) -> LichessStream {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let router = Router::new().route("/api/stream/games-by-users", answer);
-    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+async fn lichess_answering(request: Mock, token: Option<&str>) -> (MockServer, LichessStream) {
+    let server = MockServer::start().await;
+    request.mount(&server).await;
     let config = lichess::Config {
-        base_url: Url::parse(&format!("http://{address}")).unwrap(),
+        base_url: Url::parse(&server.uri()).unwrap(),
         token: token.map(SecretString::from),
         ..lichess::Config::default()
     };
-    LichessStream::new(http_client().unwrap(), &config)
+    (server, LichessStream::new(http_client().unwrap(), &config))
+}
+
+fn games_by_users() -> MockBuilder {
+    Mock::given(method("POST")).and(path("/api/stream/games-by-users"))
 }
 
 fn user_ids(names: &[&str]) -> Vec<UserId> {
@@ -45,32 +43,24 @@ fn feed_of(lines: Vec<Result<&'static str, LinesCodecError>>) -> LichessFeed {
 
 #[tokio::test]
 async fn connecting_posts_the_usernames_comma_separated_with_the_bearer_token_and_our_user_agent() {
-    let received = Arc::new(Mutex::new(None));
-    let recorder = Arc::clone(&received);
-    let answer = post(move |headers: HeaderMap, body: String| {
-        let header = |name| headers[name].to_str().unwrap().to_owned();
-        *recorder.lock().unwrap() = Some((body, header(AUTHORIZATION), header(USER_AGENT)));
-        async {}
-    });
-    let lichess = lichess_answering(answer, Some("lip_secret")).await;
+    let user_agent = format!(
+        "arboters/{} (+https://github.com/Lichess4545/arboters)",
+        env!("CARGO_PKG_VERSION")
+    );
+    let request = games_by_users()
+        .and(body_string("alice,bob"))
+        .and(header(AUTHORIZATION, "Bearer lip_secret"))
+        .and(header(USER_AGENT, user_agent.as_str()))
+        .respond_with(ResponseTemplate::new(200));
+    let (_server, lichess) = lichess_answering(request, Some("lip_secret")).await;
 
     lichess.connect(&user_ids(&["alice", "bob"])).await.unwrap();
-
-    let expected = (
-        "alice,bob".to_owned(),
-        "Bearer lip_secret".to_owned(),
-        format!(
-            "arboters/{} (+https://github.com/Lichess4545/arboters)",
-            env!("CARGO_PKG_VERSION")
-        ),
-    );
-    assert_eq!(*received.lock().unwrap(), Some(expected));
 }
 
 #[tokio::test]
 async fn a_429_answer_is_reported_as_rate_limited() {
-    let answer = post(|| async { StatusCode::TOO_MANY_REQUESTS });
-    let lichess = lichess_answering(answer, None).await;
+    let answer = games_by_users().respond_with(ResponseTemplate::new(429));
+    let (_server, lichess) = lichess_answering(answer, None).await;
     assert!(matches!(
         lichess.connect(&user_ids(&["alice"])).await,
         Err(FeedError::RateLimited)
@@ -79,8 +69,8 @@ async fn a_429_answer_is_reported_as_rate_limited() {
 
 #[tokio::test]
 async fn any_other_failing_answer_is_reported_as_unavailable() {
-    let answer = post(|| async { StatusCode::BAD_GATEWAY });
-    let lichess = lichess_answering(answer, None).await;
+    let answer = games_by_users().respond_with(ResponseTemplate::new(502));
+    let (_server, lichess) = lichess_answering(answer, None).await;
     assert!(matches!(
         lichess.connect(&user_ids(&["alice"])).await,
         Err(FeedError::Unavailable(_))
@@ -89,8 +79,9 @@ async fn any_other_failing_answer_is_reported_as_unavailable() {
 
 #[tokio::test]
 async fn a_game_line_streamed_by_lichess_is_observed() {
-    let answer = post(|| async { format!("{GAME_LINE}\n") });
-    let lichess = lichess_answering(answer, None).await;
+    let answer = games_by_users()
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!("{GAME_LINE}\n")));
+    let (_server, lichess) = lichess_answering(answer, None).await;
     let mut feed = lichess.connect(&user_ids(&["alice"])).await.unwrap();
     assert!(matches!(
         feed.next_event().await,

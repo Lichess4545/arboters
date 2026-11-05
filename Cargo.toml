@@ -50,6 +50,7 @@ uuid = { version = "1", features = ["v4"] }
 figment = { version = "0.10", features = ["env", "test"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
+wiremock = "0.6"
 
 [lints.rust]
 unsafe_code = "forbid"

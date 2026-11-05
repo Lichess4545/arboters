@@ -1,61 +1,41 @@
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
 
-use axum::extract::{Path, State};
-use axum::routing::{patch, post};
-use axum::{Json, Router};
 use secrecy::SecretString;
 use serde_json::{Value, json};
-use tokio::net::TcpListener;
+use wiremock::matchers::{method, path, path_regex};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::chat::{ChannelName, ChatUserId, TopicName};
 use crate::zulip::{BotEmail, InboxConfig};
 
-type CapturedForms = Arc<Mutex<Vec<BTreeMap<String, String>>>>;
-
 struct FakeZulip {
+    server: MockServer,
     messenger: ZulipMessenger,
-    forms: CapturedForms,
 }
 
 impl FakeZulip {
     async fn replying(reply: Value) -> Self {
-        let forms = CapturedForms::default();
-        let router = Router::new()
-                .route(
-                    "/api/v1/messages",
-                    post(|State((forms, reply)): State<(CapturedForms, Value)>, body: String| async move {
-                        let form = url::form_urlencoded::parse(body.as_bytes())
-                            .into_owned()
-                            .collect();
-                        forms.lock().unwrap().push(form);
-                        Json(reply)
-                    }),
-                )
-                .route(
-                    "/api/v1/messages/{id}",
-                    patch(|State((forms, reply)): State<(CapturedForms, Value)>, Path(id): Path<u64>, body: String| async move {
-                        let mut form: BTreeMap<String, String> =
-                            url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
-                        form.insert("id".to_owned(), id.to_string());
-                        forms.lock().unwrap().push(form);
-                        Json(reply)
-                    }),
-                )
-                .with_state((forms.clone(), reply));
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path_regex(r"^/api/v1/messages/\d+$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&reply))
+            .mount(&server)
+            .await;
         let config = Config {
-            site: format!("http://{address}").parse().unwrap(),
+            site: server.uri().parse().unwrap(),
             email: BotEmail::try_new("bot@chess.zulipchat.example.com").unwrap(),
             api_key: SecretString::from("key"),
             inbox: InboxConfig::default(),
         };
         Self {
+            server,
             messenger: ZulipMessenger::new(reqwest::Client::new(), &config),
-            forms,
         }
     }
 
@@ -63,10 +43,16 @@ impl FakeZulip {
         Self::replying(json!({ "result": "success", "msg": "", "id": 42 })).await
     }
 
-    fn only_form(&self) -> BTreeMap<String, String> {
-        let forms = self.forms.lock().unwrap();
-        assert_eq!(forms.len(), 1);
-        forms[0].clone()
+    async fn only_request(&self) -> Request {
+        let mut requests = self.server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        requests.remove(0)
+    }
+
+    async fn only_form(&self) -> BTreeMap<String, String> {
+        url::form_urlencoded::parse(&self.only_request().await.body)
+            .into_owned()
+            .collect()
     }
 }
 
@@ -97,7 +83,7 @@ async fn a_direct_message_is_sent_as_type_direct_to_a_bracketed_user_id_list() {
         .unwrap();
 
     assert_eq!(
-        zulip.only_form(),
+        zulip.only_form().await,
         form(&[
             ("type", "direct"),
             ("to", "[17]"),
@@ -121,7 +107,7 @@ async fn a_channel_message_is_sent_as_type_channel_to_the_channel_and_topic() {
         .unwrap();
 
     assert_eq!(
-        zulip.only_form(),
+        zulip.only_form().await,
         form(&[
             ("type", "channel"),
             ("to", "4545"),
@@ -144,9 +130,14 @@ async fn an_edit_is_sent_by_id_with_its_new_content() {
         .await
         .unwrap();
 
+    let request = zulip.only_request().await;
     assert_eq!(
-        zulip.only_form(),
-        form(&[("id", "4545"), ("content", message().markdown())])
+        (request.method.as_str(), request.url.path()),
+        ("PATCH", "/api/v1/messages/4545")
+    );
+    assert_eq!(
+        zulip.only_form().await,
+        form(&[("content", message().markdown())])
     );
 }
 
