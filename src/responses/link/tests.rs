@@ -1,7 +1,7 @@
 use super::*;
 
 fn site() -> Url {
-    Url::parse("https://chess.zulipchat.com").unwrap()
+    Url::parse("https://chess.zulipchat.example.com").unwrap()
 }
 
 fn linked(text: &str) -> Result<MessageId, LinkMistake> {
@@ -11,7 +11,7 @@ fn linked(text: &str) -> Result<MessageId, LinkMistake> {
 #[test]
 fn a_near_link_names_its_message() {
     assert_eq!(
-        linked("https://chess.zulipchat.com/#narrow/channel/7-chess/topic/games/near/1234"),
+        linked("https://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/1234"),
         Ok(MessageId(1234))
     );
 }
@@ -19,7 +19,7 @@ fn a_near_link_names_its_message() {
 #[test]
 fn a_with_link_names_its_message() {
     assert_eq!(
-        linked("https://chess.zulipchat.com/#narrow/channel/7-chess/topic/games/with/1234"),
+        linked("https://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games/with/1234"),
         Ok(MessageId(1234))
     );
 }
@@ -27,11 +27,11 @@ fn a_with_link_names_its_message() {
 #[test]
 fn links_from_older_zulip_versions_and_direct_messages_name_their_message() {
     assert_eq!(
-        linked("https://chess.zulipchat.com/#narrow/stream/7-chess/topic/games/near/55"),
+        linked("https://chess.zulipchat.example.com/#narrow/stream/7-chess/topic/games/near/55"),
         Ok(MessageId(55))
     );
     assert_eq!(
-        linked("https://chess.zulipchat.com/#narrow/dm/10-alice/near/56"),
+        linked("https://chess.zulipchat.example.com/#narrow/dm/10-alice/near/56"),
         Ok(MessageId(56))
     );
 }
@@ -45,11 +45,11 @@ fn a_message_link_that_zulip_formatted_while_pasting_names_its_message() {
 #[test]
 fn a_link_to_another_site_is_refused() {
     assert_eq!(
-        linked("https://other.zulipchat.com/#narrow/channel/7-chess/topic/games/near/1234"),
+        linked("https://other.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/1234"),
         Err(LinkMistake::OtherSite)
     );
     assert_eq!(
-        linked("http://chess.zulipchat.com/#narrow/channel/7-chess/topic/games/near/1234"),
+        linked("http://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/1234"),
         Err(LinkMistake::OtherSite)
     );
 }
@@ -58,9 +58,9 @@ fn a_link_to_another_site_is_refused() {
 fn links_that_do_not_name_a_message_are_refused() {
     for text in [
         "gg",
-        "https://chess.zulipchat.com/",
-        "https://chess.zulipchat.com/#narrow/channel/7-chess/topic/games",
-        "https://chess.zulipchat.com/#narrow/channel/7-chess/topic/games/near/latest",
+        "https://chess.zulipchat.example.com/",
+        "https://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games",
+        "https://chess.zulipchat.example.com/#narrow/channel/7-chess/topic/games/near/latest",
         "#**chess>games**",
         "#**chess**",
     ] {

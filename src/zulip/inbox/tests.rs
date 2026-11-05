@@ -63,7 +63,7 @@ async fn own_user() -> Json<Value> {
     Json(success(json!({
         "user_id": BOT,
         "full_name": "Arboters",
-        "email": "arboters-bot@chess.zulipchat.com",
+        "email": "arboters-bot@chess.zulipchat.example.com",
     })))
 }
 
@@ -229,7 +229,7 @@ impl FakeZulip {
         tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let config = Config {
             site: format!("http://{address}").parse().unwrap(),
-            email: BotEmail::try_new("arboters-bot@chess.zulipchat.com").unwrap(),
+            email: BotEmail::try_new("arboters-bot@chess.zulipchat.example.com").unwrap(),
             api_key: SecretString::from("key"),
             inbox: InboxConfig {
                 initial_backoff: Duration::from_millis(10),
