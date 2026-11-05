@@ -1,28 +1,16 @@
+mod config;
+
 use std::collections::BTreeSet;
 use std::time::Duration;
 
 use kameo::actor::Recipient;
-use serde::Deserialize;
 use tokio::time::MissedTickBehavior;
 
 use crate::heltour::{ActiveLeagues, Heltour};
 
 use super::Watch;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct WatchlistSettings {
-    #[serde(with = "humantime_serde")]
-    pub refresh_interval: Duration,
-}
-
-impl Default for WatchlistSettings {
-    fn default() -> Self {
-        Self {
-            refresh_interval: Duration::from_mins(5),
-        }
-    }
-}
+pub use config::Config;
 
 pub async fn keep_in_sync(
     heltour: Heltour,

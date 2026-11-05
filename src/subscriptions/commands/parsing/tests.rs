@@ -1,8 +1,8 @@
 use super::*;
-use crate::game_monitor::LichessSettings;
+use crate::lichess;
 
 fn parse(text: &str) -> Option<Result<Command, Mistake>> {
-    super::parse(text, &LichessSettings::default().base_url)
+    super::parse(text, &lichess::Config::default().base_url)
 }
 
 fn told(text: &str) -> Tell {

@@ -1,14 +1,17 @@
+mod config;
+
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_otlp::{ExporterBuildError, LogExporter, SpanExporter};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::logs::SdkLoggerProvider;
 use opentelemetry_sdk::trace::SdkTracerProvider;
-use serde::Deserialize;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::{SubscriberInitExt, TryInitError};
 use tracing_subscriber::{EnvFilter, Layer, fmt};
+
+pub use config::{Config, LogFormat};
 
 const SERVICE_NAME: &str = env!("CARGO_PKG_NAME");
 const DEFAULT_FILTER: &str = "info,arboters=debug";
@@ -21,20 +24,6 @@ const EXPORTER_INTERNALS: [&str; 6] = [
     "opentelemetry",
     "opentelemetry_sdk",
 ];
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    #[default]
-    Json,
-    Pretty,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct TelemetrySettings {
-    pub log_format: LogFormat,
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TelemetryError {
@@ -82,9 +71,9 @@ impl OtlpPipeline {
     }
 }
 
-pub fn init(settings: &TelemetrySettings) -> Result<Telemetry, TelemetryError> {
+pub fn init(config: &Config) -> Result<Telemetry, TelemetryError> {
     let otlp = OtlpPipeline::from_environment()?;
-    let console = match settings.log_format {
+    let console = match config.log_format {
         LogFormat::Json => fmt::layer().json().boxed(),
         LogFormat::Pretty => fmt::layer().pretty().boxed(),
     };

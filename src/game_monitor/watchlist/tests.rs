@@ -18,7 +18,7 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::heltour::{HeltourSettings, League, Pairing, league};
+use crate::heltour::{self, League, Pairing, league};
 use crate::lichess::{self, Clock, Variant};
 
 const PATIENCE: Duration = Duration::from_secs(5);
@@ -80,11 +80,11 @@ async fn heltour_answering(pairings: &[(StatusCode, &'static str)]) -> (FakeHelt
         .route("/api/find_pairing/", answer.clone())
         .route("/api/get_leagues/", answer);
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = HeltourSettings {
+    let config = heltour::Config {
         base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
         token: SecretString::from("heltour_secret"),
     };
-    (fake, Heltour::new(http_client().unwrap(), &settings))
+    (fake, Heltour::new(http_client().unwrap(), &config))
 }
 
 #[derive(Debug)]

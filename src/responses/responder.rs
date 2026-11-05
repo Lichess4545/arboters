@@ -9,9 +9,9 @@ use tokio::time::Instant;
 
 use crate::chat::{Conversation, Messenger, OutgoingMessage, Overhear, OverheardMessage};
 
+use super::Config;
 use super::cooldown::Cooldown;
 use super::model::Response;
-use super::settings::ResponsesSettings;
 use super::{InboxUnavailable, Responses};
 
 #[derive(Debug)]
@@ -24,11 +24,11 @@ pub struct Responder<R, M> {
 
 impl<R: Responses, M: Messenger> Responder<R, M> {
     #[must_use]
-    pub fn new(responses: R, messenger: M, settings: &ResponsesSettings, choices: StdRng) -> Self {
+    pub fn new(responses: R, messenger: M, config: &Config, choices: StdRng) -> Self {
         Self {
             responses,
             messenger,
-            cooldown: Cooldown::new(settings.cooldown),
+            cooldown: Cooldown::new(config.cooldown),
             choices,
         }
     }

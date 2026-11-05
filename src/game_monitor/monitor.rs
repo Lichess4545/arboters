@@ -11,14 +11,13 @@ use crate::lichess;
 
 use super::connection::Connection;
 use super::event::GameEvent;
-use super::settings::StreamSettings;
 use super::stream::{GameObservation, LichessStream};
 use super::{Follow, StreamConnected, Watch};
 
 #[derive(Debug)]
 pub struct GameMonitor {
     stream: LichessStream,
-    settings: StreamSettings,
+    config: lichess::StreamConfig,
     followers: Vec<Recipient<GameEvent>>,
     connected: Recipient<StreamConnected>,
     health: watch::Receiver<Option<Health>>,
@@ -32,13 +31,13 @@ impl GameMonitor {
     #[must_use]
     pub const fn new(
         stream: LichessStream,
-        settings: StreamSettings,
+        config: lichess::StreamConfig,
         connected: Recipient<StreamConnected>,
         health: watch::Receiver<Option<Health>>,
     ) -> Self {
         Self {
             stream,
-            settings,
+            config,
             followers: Vec::new(),
             connected,
             health,
@@ -59,7 +58,7 @@ impl GameMonitor {
                 Connection::open(
                     self.stream.clone(),
                     chunk.to_vec(),
-                    self.settings.clone(),
+                    self.config.clone(),
                     observations.clone(),
                     self.connected.clone(),
                 )

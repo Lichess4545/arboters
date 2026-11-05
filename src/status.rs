@@ -1,3 +1,5 @@
+mod config;
+
 use std::convert::Infallible;
 use std::fmt;
 use std::time::{Duration, SystemTime};
@@ -5,26 +7,19 @@ use std::time::{Duration, SystemTime};
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use serde::Deserialize;
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_stream::wrappers::WatchStream;
 use uuid::Uuid;
 
-use crate::chat::{
-    ChannelName, Conversation, Messenger, OutgoingMessage, TopicName, TopicNameError,
-};
+use crate::chat::{Conversation, Messenger, OutgoingMessage, TopicName, TopicNameError};
 use crate::game_monitor::StreamConnected;
 use crate::health::{Availability, Health, Recovery, Unavailable};
 
+pub use config::Config;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StatusSettings {
-    pub channel: ChannelName,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct InstanceId(Uuid);
@@ -78,12 +73,12 @@ pub struct Status<M> {
 }
 
 impl<M: Messenger> Status<M> {
-    pub fn new(messenger: M, settings: Option<StatusSettings>) -> Result<Self, TopicNameError> {
+    pub fn new(messenger: M, config: Option<Config>) -> Result<Self, TopicNameError> {
         let instance = InstanceId::generate();
-        let conversation = settings
-            .map(|settings| {
+        let conversation = config
+            .map(|config| {
                 Ok(Conversation::Topic {
-                    channel: settings.channel,
+                    channel: config.channel,
                     topic: topic_for(instance, SystemTime::now())?,
                 })
             })

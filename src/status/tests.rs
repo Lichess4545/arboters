@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use kameo::actor::Spawn;
 
 use super::*;
-use crate::chat::DeliveryError;
+use crate::chat::{ChannelName, DeliveryError};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -76,11 +76,7 @@ fn channel() -> ChannelName {
 }
 
 fn configured(messenger: &RecordingMessenger) -> Status<RecordingMessenger> {
-    Status::new(
-        messenger.clone(),
-        Some(StatusSettings { channel: channel() }),
-    )
-    .unwrap()
+    Status::new(messenger.clone(), Some(Config { channel: channel() })).unwrap()
 }
 
 fn topic(status: &Status<RecordingMessenger>) -> String {

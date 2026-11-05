@@ -12,8 +12,8 @@ use tokio::net::TcpListener;
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{LichessSettings, http_client};
-use crate::heltour::{HeltourSettings, Pairing, league};
+use crate::game_monitor::http_client;
+use crate::heltour::{self, Pairing, league};
 use crate::lichess::{self, Clock, Game, GameId, Player, Speed, Variant};
 
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
@@ -81,14 +81,14 @@ async fn report(heltour: &FakeHeltour, active: ActiveLeagues, events: Vec<GameEv
         }),
     );
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = HeltourSettings {
+    let config = heltour::Config {
         base_url: Url::parse(&format!("http://{address}/api/")).unwrap(),
         token: SecretString::from("heltour_secret"),
     };
     let reporter = Reporter::spawn((
         Reporter::new(
-            Heltour::new(http_client().unwrap(), &settings),
-            LichessSettings::default().base_url,
+            Heltour::new(http_client().unwrap(), &config),
+            lichess::Config::default().base_url,
         ),
         Monitor::spawn(Monitor).recipient(),
     ));
@@ -180,7 +180,7 @@ fn report_to(league: &str, result: Option<&str>) -> Fields {
         (
             "game_link",
             GameId::new("abcd1234")
-                .link(&LichessSettings::default().base_url)
+                .link(&lichess::Config::default().base_url)
                 .to_string(),
         ),
         ("strict", "true".to_owned()),

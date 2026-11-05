@@ -8,7 +8,7 @@ use super::*;
 use crate::chat::{
     ChannelName, ChatUserId, Conversation, DeliveryError, OutgoingMessage, TopicName,
 };
-use crate::game_monitor::{GameEventKind, LichessSettings};
+use crate::game_monitor::GameEventKind;
 use crate::heltour::{Pairing, league};
 use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions};
@@ -146,7 +146,7 @@ async fn deliveries(
         Notifier::new(
             stored,
             messenger.clone(),
-            LichessSettings::default().base_url,
+            lichess::Config::default().base_url,
         ),
         monitor.recipient(),
     ));
@@ -159,7 +159,7 @@ async fn deliveries(
 async fn subscribers_of_both_players_to_the_event_receive_it_rendered(pool: PgPool) {
     let notification = render(
         &GameEvent::Started(game()),
-        &LichessSettings::default().base_url,
+        &lichess::Config::default().base_url,
     );
     assert_eq!(
         deliveries(
@@ -222,7 +222,7 @@ async fn a_game_is_announced_only_in_the_league_that_pairs_its_players(pool: PgP
             direct_message(8),
             render(
                 &GameEvent::Started(game()),
-                &LichessSettings::default().base_url
+                &lichess::Config::default().base_url
             )
         )]
     );
@@ -258,7 +258,7 @@ async fn a_failed_delivery_does_not_stop_delivery_to_the_remaining_targets(pool:
             direct_message(8),
             render(
                 &GameEvent::Started(game()),
-                &LichessSettings::default().base_url
+                &lichess::Config::default().base_url
             )
         )]
     );
@@ -282,7 +282,7 @@ fn league_wide(tag: &str, target: Conversation) -> NewSubscription {
 async fn league_subscribers_hear_once_about_every_game_their_league_pairs(pool: PgPool) {
     let notification = render(
         &GameEvent::Started(game()),
-        &LichessSettings::default().base_url,
+        &lichess::Config::default().base_url,
     );
     assert_eq!(
         deliveries(

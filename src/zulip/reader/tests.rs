@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tokio::net::TcpListener;
 
 use super::*;
-use crate::zulip::{BotEmail, InboxSettings};
+use crate::zulip::{BotEmail, InboxConfig};
 
 const VISIBLE: u64 = 1234;
 
@@ -43,13 +43,13 @@ async fn reader() -> ZulipMessageReader {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let settings = ZulipSettings {
+    let config = Config {
         site: format!("http://{address}").parse().unwrap(),
         email: BotEmail::try_new("bot@chess.zulipchat.com").unwrap(),
         api_key: SecretString::from("key"),
-        inbox: InboxSettings::default(),
+        inbox: InboxConfig::default(),
     };
-    ZulipMessageReader::new(reqwest::Client::new(), &settings)
+    ZulipMessageReader::new(reqwest::Client::new(), &config)
 }
 
 #[tokio::test]

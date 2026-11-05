@@ -3,20 +3,20 @@ use kameo::error::SendError;
 use crate::chat::{Listen, MessageId, MessageText, Overhear};
 
 mod commands;
+mod config;
 mod cooldown;
 mod link;
 mod model;
 mod phrase;
 mod postgres;
 mod responder;
-mod settings;
 
 pub use commands::ResponseCommands;
+pub use config::Config;
 pub use model::{NewResponse, Response, ResponseId};
 pub use phrase::{Matching, Phrase, PhraseError};
 pub use postgres::PostgresResponses;
 pub use responder::Responder;
-pub use settings::ResponsesSettings;
 
 #[derive(Debug, thiserror::Error)]
 #[error("responses query failed")]

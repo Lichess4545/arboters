@@ -10,10 +10,10 @@ use url::Url;
 
 use crate::chat::{Handling, IncomingMessage, Listen, MessageId, OutgoingMessage};
 
+use super::Config;
 use super::link::LinkMistake;
 use super::model::{NewResponse, Response, ResponseId};
 use super::phrase::{Matching, Phrase};
-use super::settings::ResponsesSettings;
 use super::{InboxUnavailable, MessageReader, ReadError, Responses, ResponsesError};
 use parsing::{Command, Mistake, Request, parse};
 
@@ -32,12 +32,12 @@ pub struct ResponseCommands<R, L> {
 
 impl<R: Responses, L: MessageReader> ResponseCommands<R, L> {
     #[must_use]
-    pub fn new(responses: R, reader: L, site: Url, settings: &ResponsesSettings) -> Self {
+    pub fn new(responses: R, reader: L, site: Url, config: &Config) -> Self {
         Self {
             responses,
             reader,
             site,
-            cooldown: settings.cooldown,
+            cooldown: config.cooldown,
             added_by: HashMap::new(),
         }
     }

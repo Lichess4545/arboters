@@ -10,10 +10,9 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 use url::Url;
 
-use crate::lichess::{Game, UserId};
+use crate::lichess::{self, Game, UserId};
 
 use super::event::{Ending, GameEvent, GameOutcome};
-use super::settings::LichessSettings;
 
 mod json;
 
@@ -97,12 +96,12 @@ pub struct LichessStream {
 
 impl LichessStream {
     #[must_use]
-    pub fn new(http: reqwest::Client, settings: &LichessSettings) -> Self {
+    pub fn new(http: reqwest::Client, config: &lichess::Config) -> Self {
         Self {
             http,
-            site: settings.base_url.clone(),
-            token: settings.token.clone(),
-            inactivity_timeout: settings.stream.inactivity_timeout,
+            site: config.base_url.clone(),
+            token: config.token.clone(),
+            inactivity_timeout: config.stream.inactivity_timeout,
         }
     }
 

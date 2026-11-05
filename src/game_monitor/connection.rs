@@ -5,7 +5,6 @@ use tokio::task::JoinHandle;
 use crate::lichess;
 
 use super::StreamConnected;
-use super::settings::StreamSettings;
 use super::stream::{FeedError, FeedEvent, GameObservation, LichessFeed, LichessStream};
 
 #[derive(Debug)]
@@ -17,18 +16,12 @@ impl Connection {
     pub fn open(
         stream: LichessStream,
         user_ids: Vec<lichess::UserId>,
-        settings: StreamSettings,
+        config: lichess::StreamConfig,
         observations: WeakRecipient<GameObservation>,
         connected: Recipient<StreamConnected>,
     ) -> Self {
         Self {
-            task: tokio::spawn(supervise(
-                stream,
-                user_ids,
-                settings,
-                observations,
-                connected,
-            )),
+            task: tokio::spawn(supervise(stream, user_ids, config, observations, connected)),
         }
     }
 }
@@ -48,13 +41,13 @@ enum Relay {
 async fn supervise(
     stream: LichessStream,
     user_ids: Vec<lichess::UserId>,
-    settings: StreamSettings,
+    config: lichess::StreamConfig,
     observations: WeakRecipient<GameObservation>,
     connected: Recipient<StreamConnected>,
 ) {
     let reconnect_delays = ExponentialBuilder::new()
-        .with_min_delay(settings.initial_backoff)
-        .with_max_delay(settings.max_backoff)
+        .with_min_delay(config.initial_backoff)
+        .with_max_delay(config.max_backoff)
         .without_max_times();
     let mut upcoming_delays = reconnect_delays.build();
     loop {
@@ -78,9 +71,9 @@ async fn supervise(
             }
             Err(error) => Some(error),
         };
-        let delay = upcoming_delays.next().unwrap_or(settings.max_backoff);
+        let delay = upcoming_delays.next().unwrap_or(config.max_backoff);
         let delay = match failure {
-            Some(FeedError::RateLimited) => delay.max(settings.rate_limit_backoff),
+            Some(FeedError::RateLimited) => delay.max(config.rate_limit_backoff),
             _ => delay,
         };
         if let Some(error) = &failure {
