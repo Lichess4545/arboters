@@ -76,7 +76,11 @@ impl FakeServices {
 
     fn lichess(&self, token: &str) -> lichess::Api {
         let site = Url::parse(&self.0.uri()).unwrap();
-        lichess::Api::new(http_client().unwrap(), &site, SecretString::from(token))
+        lichess::Api::new(
+            http_client().unwrap(),
+            &site,
+            Some(SecretString::from(token)),
+        )
     }
 
     fn zulip(&self) -> zulip::Api {

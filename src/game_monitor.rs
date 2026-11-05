@@ -1,7 +1,7 @@
-mod connection;
 mod event;
+mod live;
 mod monitor;
-mod stream;
+mod phase;
 pub mod watchlist;
 
 use std::collections::BTreeSet;
@@ -13,7 +13,6 @@ use crate::lichess;
 
 pub use event::{Ending, GameEvent, GameEventKind, GameOutcome};
 pub use monitor::GameMonitor;
-pub use stream::LichessStream;
 
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),

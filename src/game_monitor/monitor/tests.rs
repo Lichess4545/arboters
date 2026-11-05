@@ -19,8 +19,8 @@ use crate::game_monitor::{Ending, GameOutcome, StreamConnected, http_client};
 use crate::health::{Recovery, Unavailable};
 use crate::lichess::{Game, GameId, Player, Speed, Variant};
 
-const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
-const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"statusName":"started","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
+const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"statusName":"mate","winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 
 enum Answer {
     Status(StatusCode),
@@ -212,8 +212,12 @@ async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) 
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
     let monitor = GameMonitor::spawn(GameMonitor::new(
-        LichessStream::new(http_client().unwrap(), &config),
-        config.stream,
+        lichess::Api::new(
+            http_client().unwrap(),
+            &config.base_url,
+            config.token.clone(),
+        ),
+        config,
         Collector::spawn(Collector(connection_sender)).recipient(),
         health,
     ));

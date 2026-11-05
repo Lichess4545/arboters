@@ -73,6 +73,25 @@ pub enum Variant {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GameStatus {
+    Created,
+    Started,
+    Aborted,
+    Mate,
+    Resign,
+    Stalemate,
+    Timeout,
+    Draw,
+    Outoftime,
+    Cheat,
+    NoStart,
+    UnknownFinish,
+    InsufficientMaterialClaim,
+    VariantEnd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 pub struct Clock {
     #[serde(rename = "initial")]
     pub initial_seconds: u32,
@@ -96,4 +115,11 @@ impl Game {
     pub const fn user_ids(&self) -> [&UserId; 2] {
         [&self.white.user_id, &self.black.user_id]
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameState {
+    pub game: Game,
+    pub status: GameStatus,
+    pub winner: Option<Color>,
 }

@@ -2,10 +2,9 @@ use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use kameo::actor::{Recipient, WeakRecipient};
 use tokio::task::JoinHandle;
 
-use crate::lichess;
+use crate::lichess::{self, FeedError, FeedEvent, GameFeed, GameState};
 
 use super::StreamConnected;
-use super::stream::{FeedError, FeedEvent, GameObservation, LichessFeed, LichessStream};
 
 #[derive(Debug)]
 pub struct Connection {
@@ -14,14 +13,14 @@ pub struct Connection {
 
 impl Connection {
     pub fn open(
-        stream: LichessStream,
+        lichess: lichess::Api,
         user_ids: Vec<lichess::UserId>,
         config: lichess::StreamConfig,
-        observations: WeakRecipient<GameObservation>,
+        games: WeakRecipient<GameState>,
         connected: Recipient<StreamConnected>,
     ) -> Self {
         Self {
-            task: tokio::spawn(supervise(stream, user_ids, config, observations, connected)),
+            task: tokio::spawn(supervise(lichess, user_ids, config, games, connected)),
         }
     }
 }
@@ -39,10 +38,10 @@ enum Relay {
 }
 
 async fn supervise(
-    stream: LichessStream,
+    lichess: lichess::Api,
     user_ids: Vec<lichess::UserId>,
     config: lichess::StreamConfig,
-    observations: WeakRecipient<GameObservation>,
+    games: WeakRecipient<GameState>,
     connected: Recipient<StreamConnected>,
 ) {
     let reconnect_delays = ExponentialBuilder::new()
@@ -51,7 +50,10 @@ async fn supervise(
         .without_max_times();
     let mut upcoming_delays = reconnect_delays.build();
     loop {
-        let failure = match stream.connect(&user_ids).await {
+        let failure = match lichess
+            .stream_games_by_users(&user_ids, config.inactivity_timeout, config.max_line_bytes)
+            .await
+        {
             Ok(feed) => {
                 tracing::info!(users = user_ids.len(), "game feed connected");
                 let report = StreamConnected {
@@ -63,7 +65,7 @@ async fn supervise(
                         "stream connection listener is not running"
                     );
                 }
-                match relay(feed, &observations, reconnect_delays, &mut upcoming_delays).await {
+                match relay(feed, &games, reconnect_delays, &mut upcoming_delays).await {
                     Relay::ObserverGone => return,
                     Relay::Ended => None,
                     Relay::Failed(error) => Some(error),
@@ -76,18 +78,24 @@ async fn supervise(
             Some(FeedError::RateLimited) => delay.max(config.rate_limit_backoff),
             _ => delay,
         };
-        if let Some(error) = &failure {
-            tracing::warn!(error = ?error, retry_in = ?delay, users = user_ids.len(), "game feed failed");
-        } else {
-            tracing::info!(retry_in = ?delay, users = user_ids.len(), "game feed ended");
+        match &failure {
+            Some(error @ (FeedError::Undecodable { .. } | FeedError::LineTooLong { .. })) => {
+                tracing::error!(error = ?error, retry_in = ?delay, users = user_ids.len(), "could not read the game feed");
+            }
+            Some(error) => {
+                tracing::warn!(error = ?error, retry_in = ?delay, users = user_ids.len(), "game feed failed");
+            }
+            None => {
+                tracing::info!(retry_in = ?delay, users = user_ids.len(), "game feed ended");
+            }
         }
         tokio::time::sleep(delay).await;
     }
 }
 
 async fn relay(
-    mut feed: LichessFeed,
-    observations: &WeakRecipient<GameObservation>,
+    mut feed: GameFeed,
+    games: &WeakRecipient<GameState>,
     reconnect_delays: ExponentialBuilder,
     upcoming_delays: &mut ExponentialBackoff,
 ) -> Relay {
@@ -96,12 +104,12 @@ async fn relay(
             None => return Relay::Ended,
             Some(Err(error)) => return Relay::Failed(error),
             Some(Ok(FeedEvent::Heartbeat)) => *upcoming_delays = reconnect_delays.build(),
-            Some(Ok(FeedEvent::Observed(observation))) => {
+            Some(Ok(FeedEvent::Game(state))) => {
                 *upcoming_delays = reconnect_delays.build();
-                let Some(observer) = observations.upgrade() else {
+                let Some(observer) = games.upgrade() else {
                     return Relay::ObserverGone;
                 };
-                if observer.tell(observation).await.is_err() {
+                if observer.tell(state).await.is_err() {
                     return Relay::ObserverGone;
                 }
             }
