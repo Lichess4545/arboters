@@ -48,10 +48,13 @@ pub async fn test_heltour_token(heltour: &Heltour) -> Result<(), Failure> {
 
 pub async fn lichess_token_owner(lichess: &lichess::Api) -> Result<TokenOwner, Failure> {
     lichess
-        .token_owner()
+        .token_test()
         .await
         .map_err(failed_request)?
-        .map(TokenOwner)
+        .into_iter()
+        .flatten()
+        .next()
+        .map(|info| TokenOwner(info.user_id))
         .ok_or_else(|| {
             Failure::new(
                 Outcome::Report,

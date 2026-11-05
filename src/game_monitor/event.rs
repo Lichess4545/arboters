@@ -1,4 +1,6 @@
-use crate::lichess::Game;
+use crate::lichess::{Game, GameState};
+
+use super::phase::GamePhase;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum GameOutcome {
@@ -42,6 +44,19 @@ pub enum GameEvent {
 }
 
 impl GameEvent {
+    #[must_use]
+    pub fn of(state: GameState) -> Option<Self> {
+        match GamePhase::of(state.status, state.winner) {
+            GamePhase::Created => None,
+            GamePhase::Started => Some(Self::Started(state.game)),
+            GamePhase::Finished { outcome, ending } => Some(Self::Finished {
+                game: state.game,
+                outcome,
+                ending,
+            }),
+        }
+    }
+
     #[must_use]
     pub const fn game(&self) -> &Game {
         match self {

@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::game_monitor::watchlist;
-use crate::game_monitor::{Follow, GameEvent, GameMonitor, LichessStream, http_client};
+use crate::game_monitor::{Follow, GameEvent, GameMonitor, http_client};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
@@ -30,19 +30,23 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let inbox = Inbox::new(http.clone(), &config.zulip, messenger.clone());
     let listener = http::bind(&config.http).await?;
     let subscriptions = PostgresSubscriptions::new(pool.clone());
-    let stream = LichessStream::new(http.clone(), &config.lichess);
+    let lichess_api = lichess::Api::new(
+        http.clone(),
+        &config.lichess.base_url,
+        config.lichess.token.clone(),
+    );
     let heltour = Heltour::new(http.clone(), &config.heltour);
     let status = Status::new(messenger.clone(), config.status.clone())?;
     let lichess = &config.lichess.base_url;
     let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
 
-    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone());
+    let (health_check, health) = start_health(&config, &http, &pool, heltour.clone(), &lichess_api);
     let status = Status::spawn((status, health.clone()));
     let conversations = Conversations::spawn(inbox, commands).await;
     let responding = Responding::start(&conversations, &config, &http, &pool, &messenger);
     let monitor = GameMonitor::spawn(GameMonitor::new(
-        stream,
-        config.lichess.stream.clone(),
+        lichess_api,
+        config.lichess.clone(),
         status.clone().recipient(),
         health.clone(),
     ));
@@ -127,16 +131,13 @@ fn start_health(
     http: &reqwest::Client,
     pool: &PgPool,
     heltour: Heltour,
+    lichess: &lichess::Api,
 ) -> (ActorRef<HealthCheck>, watch::Receiver<Option<Health>>) {
     let health_check = HealthCheck::new(
         config.health,
         pool.clone(),
         heltour,
-        config
-            .lichess
-            .token
-            .clone()
-            .map(|token| lichess::Api::new(http.clone(), &config.lichess.base_url, token)),
+        config.lichess.token.is_some().then(|| lichess.clone()),
         zulip::Api::new(http.clone(), &config.zulip),
     );
     let health = health_check.health();

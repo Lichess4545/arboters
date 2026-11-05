@@ -9,15 +9,14 @@ use tokio::sync::watch;
 use crate::health::{Availability, Health, TokenOwner};
 use crate::lichess;
 
-use super::connection::Connection;
 use super::event::GameEvent;
-use super::stream::{GameObservation, LichessStream};
+use super::live::Connection;
 use super::{Follow, StreamConnected, Watch};
 
 #[derive(Debug)]
 pub struct GameMonitor {
-    stream: LichessStream,
-    config: lichess::StreamConfig,
+    lichess: lichess::Api,
+    config: lichess::Config,
     followers: Vec<Recipient<GameEvent>>,
     connected: Recipient<StreamConnected>,
     health: watch::Receiver<Option<Health>>,
@@ -30,13 +29,13 @@ pub struct GameMonitor {
 impl GameMonitor {
     #[must_use]
     pub const fn new(
-        stream: LichessStream,
-        config: lichess::StreamConfig,
+        lichess: lichess::Api,
+        config: lichess::Config,
         connected: Recipient<StreamConnected>,
         health: watch::Receiver<Option<Health>>,
     ) -> Self {
         Self {
-            stream,
+            lichess,
             config,
             followers: Vec::new(),
             connected,
@@ -50,16 +49,19 @@ impl GameMonitor {
 
     fn reconnect(&mut self, monitor: &ActorRef<Self>) {
         self.connections.clear();
-        let observations = monitor.clone().recipient::<GameObservation>().downgrade();
+        let games = monitor
+            .clone()
+            .recipient::<lichess::GameState>()
+            .downgrade();
         let user_ids: Vec<_> = self.watched.iter().cloned().collect();
         self.connections = user_ids
             .chunks(self.users_per_connection)
             .map(|chunk| {
                 Connection::open(
-                    self.stream.clone(),
+                    self.lichess.clone(),
                     chunk.to_vec(),
-                    self.config.clone(),
-                    observations.clone(),
+                    self.config.stream.clone(),
+                    games.clone(),
                     self.connected.clone(),
                 )
             })
@@ -96,7 +98,7 @@ impl Message<Watch> for GameMonitor {
         {
             self.token_owner = Some(owner.clone());
         }
-        let users_per_connection = self.stream.users_per_connection(self.token_owner.as_ref());
+        let users_per_connection = self.config.users_per_connection(self.token_owner.as_ref());
         if user_ids == self.watched && users_per_connection == self.users_per_connection {
             tracing::debug!(users = user_ids.len(), "watchlist unchanged");
             return;
@@ -119,11 +121,11 @@ impl Message<Follow<GameEvent>> for GameMonitor {
     }
 }
 
-impl Message<GameObservation> for GameMonitor {
+impl Message<lichess::GameState> for GameMonitor {
     type Reply = ();
 
-    async fn handle(&mut self, observation: GameObservation, _: &mut Context<Self, Self::Reply>) {
-        let Some(event) = observation.into_event() else {
+    async fn handle(&mut self, state: lichess::GameState, _: &mut Context<Self, Self::Reply>) {
+        let Some(event) = GameEvent::of(state) else {
             return;
         };
         tracing::info!(game = %event.game().id, kind = ?event.kind(), "game event observed");
