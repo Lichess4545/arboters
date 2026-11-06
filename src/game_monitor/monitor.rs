@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::num::NonZeroUsize;
 
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
@@ -22,7 +23,7 @@ pub struct GameMonitor {
     health: watch::Receiver<Option<Health>>,
     token_owner: Option<lichess::UserId>,
     watched: BTreeSet<lichess::UserId>,
-    users_per_connection: usize,
+    users_per_connection: Option<NonZeroUsize>,
     connections: Vec<Connection>,
 }
 
@@ -42,12 +43,12 @@ impl GameMonitor {
             health,
             token_owner: None,
             watched: BTreeSet::new(),
-            users_per_connection: 0,
+            users_per_connection: None,
             connections: Vec::new(),
         }
     }
 
-    fn reconnect(&mut self, monitor: &ActorRef<Self>) {
+    fn reconnect(&mut self, monitor: &ActorRef<Self>, users_per_connection: NonZeroUsize) {
         self.connections.clear();
         let games = monitor
             .clone()
@@ -55,7 +56,7 @@ impl GameMonitor {
             .downgrade();
         let user_ids: Vec<_> = self.watched.iter().cloned().collect();
         self.connections = user_ids
-            .chunks(self.users_per_connection)
+            .chunks(users_per_connection.get())
             .map(|chunk| {
                 Connection::open(
                     self.lichess.clone(),
@@ -68,7 +69,7 @@ impl GameMonitor {
             .collect();
         tracing::info!(
             users = self.watched.len(),
-            users_per_connection = self.users_per_connection,
+            users_per_connection,
             connections = self.connections.len(),
             "watching lichess users"
         );
@@ -99,13 +100,13 @@ impl Message<Watch> for GameMonitor {
             self.token_owner = Some(owner.clone());
         }
         let users_per_connection = self.config.users_per_connection(self.token_owner.as_ref());
-        if user_ids == self.watched && users_per_connection == self.users_per_connection {
+        if user_ids == self.watched && Some(users_per_connection) == self.users_per_connection {
             tracing::debug!(users = user_ids.len(), "watchlist unchanged");
             return;
         }
         self.watched = user_ids;
-        self.users_per_connection = users_per_connection;
-        self.reconnect(ctx.actor_ref());
+        self.users_per_connection = Some(users_per_connection);
+        self.reconnect(ctx.actor_ref(), users_per_connection);
     }
 }
 
