@@ -1,6 +1,9 @@
 mod event;
+mod fixtures;
+pub mod league;
 mod live;
 mod monitor;
+mod stores;
 pub mod watchlist;
 
 use std::collections::BTreeSet;
@@ -14,7 +17,10 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use crate::lichess;
 
 pub use event::{Decision, Draw, GameEvent, GameEventKind, VoidReason, Win};
+pub use fixtures::{Fixture, Fixtures, FixturesId, NewFixtures, Period};
+pub use league::League;
 pub use monitor::GameMonitor;
+pub use stores::{FixturesStore, PostgresFixturesStore, StoreError};
 
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),

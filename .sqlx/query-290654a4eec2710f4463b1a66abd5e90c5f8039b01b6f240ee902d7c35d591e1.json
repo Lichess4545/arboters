@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO fixture_games\n                (fixtures_id, white, black, initial_seconds, increment_seconds, variant, rated)\n            SELECT $1, * FROM UNNEST(\n                $2::TEXT[], $3::TEXT[], $4::BIGINT[], $5::BIGINT[], $6::variant[], $7::BOOLEAN[]\n            )\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "TextArray",
+        "TextArray",
+        "Int8Array",
+        "Int8Array",
+        {
+          "Custom": {
+            "name": "variant[]",
+            "kind": {
+              "Array": {
+                "Custom": {
+                  "name": "variant",
+                  "kind": {
+                    "Enum": [
+                      "standard",
+                      "chess960",
+                      "crazyhouse",
+                      "antichess",
+                      "atomic",
+                      "horde",
+                      "king_of_the_hill",
+                      "racing_kings",
+                      "three_check",
+                      "from_position"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "BoolArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "290654a4eec2710f4463b1a66abd5e90c5f8039b01b6f240ee902d7c35d591e1"
+}

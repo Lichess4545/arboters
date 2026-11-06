@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE fixtures SET completed_at = now() WHERE id = $1 AND completed_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7bd8bd5d7b6273e2a260ef6c3c7c18cda819094f8c7700b15cd026de1d5cdd4"
+}

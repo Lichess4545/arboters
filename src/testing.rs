@@ -3,6 +3,7 @@ use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
 use tokio::sync::mpsc;
 
+use crate::game_monitor::{self, Fixture, League};
 use crate::heltour::league;
 use crate::lichess::{
     Clock, Color, Game, GameId, GameState, GameStatus, Player, Speed, UserId, Variant,
@@ -23,6 +24,13 @@ pub fn user_ids(names: &[&str]) -> Vec<UserId> {
 
 pub fn tag(league: &str) -> league::Tag {
     league::Tag::try_new(league).unwrap()
+}
+
+pub fn league(source: &str, key: &str) -> League {
+    League {
+        source: game_monitor::league::Source::new(source),
+        key: game_monitor::league::Key::new(key),
+    }
 }
 
 pub fn player(name: &str) -> Player {
@@ -59,6 +67,16 @@ pub fn alice_beat_bob() -> GameState {
         status: GameStatus::Mate {
             winner: Color::White,
         },
+    }
+}
+
+pub fn fixture(white: &str, black: &str) -> Fixture {
+    Fixture {
+        white: user_id(white),
+        black: user_id(black),
+        time_control: Some(CLASSICAL_CLOCK),
+        variant: Variant::Standard,
+        rated: true,
     }
 }
 

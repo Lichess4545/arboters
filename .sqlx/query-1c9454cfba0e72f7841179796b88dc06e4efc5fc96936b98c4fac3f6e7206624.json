@@ -1,0 +1,118 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT fixtures_id, white, black, initial_seconds, increment_seconds,\n                variant AS \"variant: StoredVariant\", rated\n            FROM fixture_games\n            WHERE fixtures_id = ANY($1)\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "fixtures_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "fixtures_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "white",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "white"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "black",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "black"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "initial_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "initial_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "increment_seconds",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "increment_seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "variant: StoredVariant",
+        "type_info": {
+          "Custom": {
+            "name": "variant",
+            "kind": {
+              "Enum": [
+                "standard",
+                "chess960",
+                "crazyhouse",
+                "antichess",
+                "atomic",
+                "horde",
+                "king_of_the_hill",
+                "racing_kings",
+                "three_check",
+                "from_position"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "variant"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "rated",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "fixture_games",
+            "name": "rated"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "1c9454cfba0e72f7841179796b88dc06e4efc5fc96936b98c4fac3f6e7206624"
+}

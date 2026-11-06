@@ -57,7 +57,7 @@ pub enum Speed {
     Correspondence,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Variant {
     Standard,
@@ -141,7 +141,7 @@ impl GameStatus {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 pub struct Clock {
     #[serde(rename = "initial")]
     pub initial_seconds: u32,

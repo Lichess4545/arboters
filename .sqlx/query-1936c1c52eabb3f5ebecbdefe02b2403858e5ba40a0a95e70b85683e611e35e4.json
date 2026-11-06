@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE fixtures SET replaced_at = now() WHERE league_id = $1 AND replaced_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1936c1c52eabb3f5ebecbdefe02b2403858e5ba40a0a95e70b85683e611e35e4"
+}
