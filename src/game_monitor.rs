@@ -19,7 +19,10 @@ pub use event::{
 pub use fixtures::{Difference, Fixture, Fixtures, FixturesId, NewFixtures, Period};
 pub use league::League;
 pub use monitor::GameMonitor;
-pub use stores::{FixturesStore, PostgresFixturesStore, StoreError};
+pub use stores::{
+    FixturesStore, PostgresFixturesStore, PostgresPublishedEventsStore, PublishedEventsStore,
+    Recorded, StoreError,
+};
 
 const USER_AGENT: &str = concat!(
     env!("CARGO_PKG_NAME"),
