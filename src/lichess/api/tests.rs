@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
 use time::macros::datetime;
-use wiremock::matchers::{body_string, header, method, path, query_param, query_param_is_missing};
+use wiremock::matchers::{body_string, header, method, path, query_param};
 use wiremock::{Mock, MockBuilder, MockServer, ResponseTemplate};
 
 use super::*;
@@ -150,17 +150,14 @@ fn games_of_alice() -> MockBuilder {
 
 async fn games_of_alice_against_bob(lichess: &Api) -> Result<Vec<GameState>, GamesUserError> {
     let query = GamesUserQuery {
-        vs: Some(user_id("bob")),
-        since: Some(datetime!(2026-11-02 18:00:00.123 UTC)),
-        finished: Some(true),
-        ongoing: Some(false),
+        vs: user_id("bob"),
+        since: datetime!(2026-11-02 18:00:00.123 UTC),
     };
     lichess.games_user(&user_id("alice"), &query, TIMEOUT).await
 }
 
 #[tokio::test]
-async fn the_games_of_a_user_are_asked_for_with_the_query_without_moves_as_ndjson_with_the_token_and_our_user_agent()
- {
+async fn a_users_finished_games_against_another_are_asked_for() {
     let request = games_of_alice()
         .and(query_param("vs", "bob"))
         .and(query_param("since", "1793642400123"))
@@ -175,24 +172,6 @@ async fn the_games_of_a_user_are_asked_for_with_the_query_without_moves_as_ndjso
     let (_server, lichess) = lichess_answering(request, Some("lip_secret")).await;
 
     assert_eq!(games_of_alice_against_bob(&lichess).await.unwrap(), []);
-}
-
-#[tokio::test]
-async fn query_fields_left_unset_are_not_sent() {
-    let request = games_of_alice()
-        .and(query_param_is_missing("vs"))
-        .and(query_param_is_missing("since"))
-        .and(query_param_is_missing("finished"))
-        .and(query_param_is_missing("ongoing"))
-        .respond_with(ResponseTemplate::new(200))
-        .expect(1);
-    let (_server, lichess) = lichess_answering(request, None).await;
-
-    let games = lichess
-        .games_user(&user_id("alice"), &GamesUserQuery::default(), TIMEOUT)
-        .await;
-
-    assert_eq!(games.unwrap(), []);
 }
 
 #[tokio::test]
