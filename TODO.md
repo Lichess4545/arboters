@@ -2,19 +2,19 @@
 
 ## League attribution for notifications
 
-Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose current pairings pair the game's two players, but not team sources. For notifications, any game between two paired players counts, including a casual one. Reporting to heltour does not work that way: the reporter reports only a game that fits the time control, rated setting, and variant of a league that pairs its players.
+Subscriptions are league-scoped and their source is a player, a team, or the whole league. The notifier looks up the two players and the league as sources in every league whose active fixtures include the game's two players, but not team sources. For notifications, any game between two players of a fixture counts, including a casual one. Reporting to heltour does not work that way: the reporter reports only a game whose time control, rated setting, and variant match a fixture it matched.
 
 - Look up the players' teams as sources too.
 
 ## Pairings split across stream connections
 
-`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The watchlist is both players of every current heltour pairing, so that holds, but the game monitor splits the watchlist into connections of up to 900 users with a token of lichess4545, 500 with a token of any other account, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither. The watchlist covers every active league, so it often needs more than one connection.
+`/api/stream/games-by-users` includes a game only when both players are on the list, as the Lichess API spec says. The game monitor watches both players of every active fixture, so that holds, but it splits the watched players into connections of up to 900 users with a token of lichess4545, 500 with a token of any other account, or 300 without one (the limits lila allows), and a pairing whose players land in different connections reaches neither. The fixtures cover every active league, so the watched players often need more than one connection.
 
-- Chunk by pairing, so both players of a pairing share a connection, or stream the pairings' game ids through `/api/stream/games/{streamId}` (1000 ids authenticated, more can be added while open).
+- Chunk by fixture, so both players of a fixture share a connection, or stream the pairings' game ids through `/api/stream/games/{streamId}` (1000 ids authenticated, more can be added while open).
 
 ## Heltour pairing and roster adapter
 
-- The watchlist reads heltour's `get_leagues` and `find_pairing`, and the reporter writes `update_pairing`. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
+- The heltour sync reads heltour's active leagues, their active rounds, and those rounds' pairings from `v2/leagues`, and the reporter writes `update_pairing`. Still missing: which team a player is on, and who is on a team. That unblocks team sources for notifications.
 
 ## Reporting games to heltour
 
