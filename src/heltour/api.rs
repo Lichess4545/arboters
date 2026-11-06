@@ -12,6 +12,7 @@ use crate::lichess;
 use super::Config;
 use super::active_leagues::ActiveLeagues;
 use super::league::{self, League};
+use super::pairing::{Pairing, Round, RoundId};
 
 const LEAGUES_PATH: &str = "v2/leagues/";
 const ONLY_ACTIVE: [(&str, &str); 1] = [("active", "true")];
@@ -20,8 +21,8 @@ const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, thiserror::Error)]
-#[error("could not read the active leagues from Heltour")]
-pub struct ActiveLeaguesError(#[from] reqwest::Error);
+#[error("could not read from Heltour")]
+pub struct ReadError(#[from] reqwest::Error);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum PairingResult {
@@ -77,6 +78,46 @@ struct LeaguesAnswer {
 }
 
 #[derive(Deserialize)]
+struct RoundsAnswer {
+    rounds: Vec<Round>,
+}
+
+#[derive(Deserialize)]
+struct RoundPairingsAnswer {
+    pairings: Vec<PairingAnswer>,
+}
+
+#[derive(Deserialize)]
+struct PairingAnswer {
+    players: PlayersAnswer,
+}
+
+#[derive(Deserialize)]
+struct PlayersAnswer {
+    white: SideAnswer,
+    black: SideAnswer,
+}
+
+#[derive(Deserialize)]
+struct SideAnswer {
+    user: Option<UserAnswer>,
+}
+
+#[derive(Deserialize)]
+struct UserAnswer {
+    id: lichess::UserId,
+}
+
+impl PairingAnswer {
+    fn into_pairing(self) -> Option<Pairing> {
+        Some(Pairing {
+            white: self.players.white.user?.id,
+            black: self.players.black.user?.id,
+        })
+    }
+}
+
+#[derive(Deserialize)]
 struct UpdatePairingAnswer {
     error: Option<Refusal>,
 }
@@ -101,7 +142,10 @@ impl Heltour {
     #[expect(clippy::expect_used)]
     fn request(&self, method: Method, path: &str) -> RequestBuilder {
         self.http
-            .request(method, self.base_url.join(path).expect("constant path"))
+            .request(
+                method,
+                self.base_url.join(path).expect("relative path of slugs"),
+            )
             .header(
                 AUTHORIZATION,
                 format!("Token {}", self.token.expose_secret()),
@@ -114,18 +158,42 @@ impl Heltour {
             .map(drop)
     }
 
-    pub async fn active_leagues(
-        &self,
-        timeout: Duration,
-    ) -> Result<ActiveLeagues, ActiveLeaguesError> {
-        let request = self
-            .request(Method::GET, LEAGUES_PATH)
-            .timeout(timeout)
-            .query(&ONLY_ACTIVE);
+    fn read(&self, path: &str, timeout: Duration) -> RequestBuilder {
+        self.request(Method::GET, path).timeout(timeout)
+    }
+
+    pub async fn active_leagues(&self, timeout: Duration) -> Result<ActiveLeagues, ReadError> {
+        let request = self.read(LEAGUES_PATH, timeout).query(&ONLY_ACTIVE);
         let answer: LeaguesAnswer = answer(request).await?;
         Ok(ActiveLeagues {
             leagues: answer.leagues,
         })
+    }
+
+    pub(super) async fn active_rounds(
+        &self,
+        league: &league::Tag,
+        timeout: Duration,
+    ) -> Result<Vec<Round>, ReadError> {
+        let path = format!("{LEAGUES_PATH}{league}/rounds/");
+        let request = self.read(&path, timeout).query(&ONLY_ACTIVE);
+        let answer: RoundsAnswer = answer(request).await?;
+        Ok(answer.rounds)
+    }
+
+    pub(super) async fn pairings(
+        &self,
+        league: &league::Tag,
+        round: RoundId,
+        timeout: Duration,
+    ) -> Result<Vec<Pairing>, ReadError> {
+        let path = format!("{LEAGUES_PATH}{league}/rounds/{round}/");
+        let answer: RoundPairingsAnswer = answer(self.read(&path, timeout)).await?;
+        Ok(answer
+            .pairings
+            .into_iter()
+            .filter_map(PairingAnswer::into_pairing)
+            .collect())
     }
 
     pub async fn update_pairing(&self, update: &PairingUpdate) -> Result<(), UpdatePairingError> {

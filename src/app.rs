@@ -9,11 +9,12 @@ use rand::rngs::StdRng;
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::game_monitor::{GameMonitor, PostgresFixturesStore, http_client};
 use crate::health::{Health, HealthCheck};
-use crate::heltour::{ActiveLeagues, Heltour};
+use crate::heltour::{self, ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
 use crate::lichess;
 use crate::responses::{PostgresResponses, Responder, ResponseCommands};
@@ -55,7 +56,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         status.clone().recipient(),
     );
     let notifier = Notifier::new(subscriptions.clone(), messenger, lichess.clone());
-    let games = Games::start(&config, heltour, (monitor, health.clone()), notifier).await;
+    let mut games = Games::start(
+        &config,
+        heltour,
+        (monitor, health.clone()),
+        notifier,
+        active_leagues,
+    )
+    .await;
 
     let http_stopped = CancellationToken::new();
     let mut http_server = tokio::spawn(http::serve(
@@ -129,6 +137,7 @@ struct Games {
     monitor: ActorRef<GameMonitor<PostgresFixturesStore>>,
     notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
     reporter: Option<ActorRef<Reporter>>,
+    sync: JoinHandle<()>,
 }
 
 impl Games {
@@ -140,6 +149,7 @@ impl Games {
             watch::Receiver<Option<Health>>,
         ),
         notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
+        active_leagues: watch::Sender<ActiveLeagues>,
     ) -> Self {
         let notifier = Notifier::spawn((notifier, monitor.events()));
         notifier.wait_for_startup().await;
@@ -155,22 +165,34 @@ impl Games {
             None
         };
         let monitor = GameMonitor::spawn((monitor, health));
+        let sync = tokio::spawn(heltour::sync::keep_in_sync(
+            heltour,
+            monitor.clone().recipient(),
+            active_leagues,
+            config.heltour_sync.refresh_interval,
+        ));
         Self {
             monitor,
             notifier,
             reporter,
+            sync,
         }
     }
 
-    async fn stopped(&self) -> anyhow::Error {
+    async fn stopped(&mut self) -> anyhow::Error {
         tokio::select! {
             () = self.monitor.wait_for_shutdown() => anyhow::anyhow!("game monitor stopped unexpectedly"),
             () = self.notifier.wait_for_shutdown() => anyhow::anyhow!("notifier stopped unexpectedly"),
             error = reporter_stopped(self.reporter.as_ref()) => error,
+            exit = &mut self.sync => match exit {
+                Ok(()) => anyhow::anyhow!("heltour sync stopped unexpectedly"),
+                Err(error) => error.into(),
+            },
         }
     }
 
     async fn stop(&self) {
+        self.sync.abort();
         stop(&self.monitor).await;
         stop(&self.notifier).await;
         if let Some(reporter) = &self.reporter {

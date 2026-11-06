@@ -4,7 +4,6 @@ pub mod league;
 mod live;
 mod monitor;
 mod stores;
-pub mod watchlist;
 
 use std::collections::{BTreeMap, BTreeSet};
 

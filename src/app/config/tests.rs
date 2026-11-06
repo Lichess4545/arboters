@@ -37,7 +37,7 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
         assert!(config.http.host.is_loopback());
         assert_eq!(config.http.port, 8080);
         assert_eq!(config.lichess.base_url.as_str(), "https://lichess.org/");
-        assert_eq!(config.watchlist.refresh_interval, Duration::from_mins(5));
+        assert_eq!(config.heltour_sync.refresh_interval, Duration::from_mins(5));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
         assert!(!config.league_games.report);
     });
@@ -82,7 +82,7 @@ fn a_misspelled_variable_in_any_section_is_rejected() {
         "ARBOTERS_LICHESS__TOKN",
         "ARBOTERS_LICHESS__STREAM__MAX_BACKOF",
         "ARBOTERS_HELTOUR__TOKN",
-        "ARBOTERS_WATCHLIST__REFRESH",
+        "ARBOTERS_HELTOUR_SYNC__REFRESH",
         "ARBOTERS_TELEMETRY__FORMAT",
         "ARBOTERS_STATUS__CHANEL",
     ] {
