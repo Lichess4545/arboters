@@ -9,10 +9,11 @@ use url::Url;
 
 use crate::lichess;
 
-use super::Config;
 use super::active_leagues::ActiveLeagues;
 use super::league::{self, League};
 use super::pairing::{Pairing, Round, RoundId};
+use super::retry::{self, Failure};
+use super::{Config, RetryConfig};
 
 const LEAGUES_PATH: &str = "v2/leagues/";
 const ONLY_ACTIVE: [(&str, &str); 1] = [("active", "true")];
@@ -59,6 +60,15 @@ pub enum UpdatePairingError {
     Refused(Refusal),
     #[error("could not ask Heltour to update the pairing")]
     Request(#[from] reqwest::Error),
+}
+
+impl Failure for UpdatePairingError {
+    fn may_pass_on_its_own(&self) -> bool {
+        match self {
+            Self::Refused(_) => false,
+            Self::Request(error) => error.may_pass_on_its_own(),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -127,6 +137,7 @@ pub struct Heltour {
     http: reqwest::Client,
     base_url: Url,
     token: SecretString,
+    retry: RetryConfig,
 }
 
 impl Heltour {
@@ -136,6 +147,7 @@ impl Heltour {
             http,
             base_url: config.base_url.clone(),
             token: config.token.clone(),
+            retry: config.retry,
         }
     }
 
@@ -197,6 +209,10 @@ impl Heltour {
     }
 
     pub async fn update_pairing(&self, update: &PairingUpdate) -> Result<(), UpdatePairingError> {
+        retry::retrying(self.retry, || self.update_pairing_once(update)).await
+    }
+
+    async fn update_pairing_once(&self, update: &PairingUpdate) -> Result<(), UpdatePairingError> {
         let form = UpdatePairingForm {
             league: update.league.as_str(),
             white: update.white.as_str(),
@@ -223,3 +239,6 @@ async fn send(request: RequestBuilder) -> reqwest::Result<Response> {
 async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> reqwest::Result<T> {
     send(request).await?.json().await
 }
+
+#[cfg(test)]
+mod tests;

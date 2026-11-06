@@ -27,6 +27,7 @@ async fn reports_of(events: Vec<GameEvent>) -> Vec<Fields> {
     let config = heltour::Config {
         base_url: Url::parse(&format!("{}/api/", heltour.uri())).unwrap(),
         token: SecretString::from("heltour_secret"),
+        retry: heltour::RetryConfig::default(),
     };
     let reporter = Reporter::spawn((
         Reporter::new(
