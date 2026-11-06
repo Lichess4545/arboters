@@ -8,11 +8,11 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::game_monitor::watchlist;
-use crate::game_monitor::{Follow, GameEvent, GameMonitor, http_client};
+use crate::game_monitor::{GameEvent, GameMonitor, http_client};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
@@ -44,17 +44,18 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let status = Status::spawn((status, health.clone()));
     let conversations = Conversations::spawn(inbox, commands).await;
     let responding = Responding::start(&conversations, &config, &http, &pool, &messenger);
-    let monitor = GameMonitor::spawn(GameMonitor::new(
+    let monitor = GameMonitor::new(
         lichess_api,
         config.lichess.clone(),
         status.clone().recipient(),
         health.clone(),
-    ));
+    );
     let notifier = Notifier::spawn((
         Notifier::new(subscriptions.clone(), messenger, lichess.clone()),
-        monitor.clone().recipient(),
+        monitor.events(),
     ));
-    let reporter = start_reporter(&config, &heltour, monitor.clone().recipient()).await;
+    let reporter = start_reporter(&config, &heltour, monitor.events()).await;
+    let monitor = GameMonitor::spawn(monitor);
     notifier.wait_for_startup().await;
     let mut followers = vec![notifier.clone().recipient(), conversations.follower()];
     followers.extend(reporter.iter().map(|reporter| reporter.clone().recipient()));
@@ -147,7 +148,7 @@ fn start_health(
 async fn start_reporter(
     config: &Config,
     heltour: &Heltour,
-    monitor: Recipient<Follow<GameEvent>>,
+    events: broadcast::Receiver<GameEvent>,
 ) -> Option<ActorRef<Reporter>> {
     if !config.league_games.report {
         tracing::info!("reports to Heltour are off");
@@ -155,7 +156,7 @@ async fn start_reporter(
     }
     let reporter = Reporter::spawn((
         Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
-        monitor,
+        events,
     ));
     reporter.wait_for_startup().await;
     Some(reporter)

@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use kameo::actor::Spawn;
@@ -103,27 +102,6 @@ fn announced(
         .collect()
 }
 
-#[derive(Debug)]
-struct Monitor;
-
-impl Actor for Monitor {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        monitor: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(monitor))
-    }
-}
-
-impl Message<Follow<GameEvent>> for Monitor {
-    type Reply = ();
-
-    async fn handle(&mut self, _: Follow<GameEvent>, _: &mut Context<Self, Self::Reply>) {}
-}
-
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
@@ -134,18 +112,20 @@ async fn deliveries(
     for subscription in subscriptions {
         stored.subscribe(subscription).await.unwrap();
     }
-    let monitor = Monitor::spawn(Monitor);
+    let (_, events) = broadcast::channel(1);
     let notifier = Notifier::spawn((
         Notifier::new(
             stored,
             messenger.clone(),
             lichess::Config::default().base_url,
         ),
-        monitor.recipient(),
+        events,
     ));
     notifier.ask(active).await.unwrap();
     notifier
-        .ask(GameEvent::Started(alice_vs_bob("abcd1234")))
+        .ask(StreamMessage::Next(GameEvent::Started(alice_vs_bob(
+            "abcd1234",
+        ))))
         .await
         .unwrap();
     messenger.deliveries()

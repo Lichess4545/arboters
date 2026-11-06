@@ -6,8 +6,11 @@ pub mod watchlist;
 
 use std::collections::BTreeSet;
 
-use kameo::actor::Recipient;
-use kameo::error::SendError;
+use futures::Stream;
+use tokio::sync::broadcast;
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::lichess;
 
@@ -30,14 +33,22 @@ pub fn http_client() -> reqwest::Result<reqwest::Client> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Watch(pub BTreeSet<lichess::UserId>);
 
-#[derive(Debug)]
-pub struct Follow<M: Send + 'static>(pub Recipient<M>);
-
-#[derive(Debug, thiserror::Error)]
-#[error("could not follow the game monitor")]
-pub struct MonitorUnavailable(#[from] SendError<Follow<GameEvent>>);
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConnected {
     pub players: usize,
 }
+
+pub fn event_stream(
+    events: broadcast::Receiver<GameEvent>,
+) -> impl Stream<Item = GameEvent> + Send + Unpin + 'static {
+    BroadcastStream::new(events).filter_map(|received| match received {
+        Ok(event) => Some(event),
+        Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+            tracing::warn!(skipped, "fell behind the game events; skipped some");
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests;

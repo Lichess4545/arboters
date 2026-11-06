@@ -11,7 +11,7 @@ use futures::channel::mpsc::{UnboundedSender, unbounded};
 use kameo::actor::Spawn;
 use secrecy::SecretString;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use url::Url;
 
 use super::*;
@@ -113,7 +113,7 @@ impl FakeLichess {
 struct Harness {
     lichess: FakeLichess,
     monitor: ActorRef<GameMonitor>,
-    events: mpsc::UnboundedReceiver<GameEvent>,
+    events: broadcast::Receiver<GameEvent>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
     health: watch::Sender<Option<Health>>,
 }
@@ -129,21 +129,6 @@ impl Harness {
         next(&mut self.events).await
     }
 
-    async fn follower(
-        &self,
-    ) -> (
-        ActorRef<Collector<GameEvent>>,
-        mpsc::UnboundedReceiver<GameEvent>,
-    ) {
-        let (sender, events) = mpsc::unbounded_channel();
-        let follower = Collector::spawn(Collector(sender));
-        self.monitor
-            .tell(Follow(follower.clone().recipient()))
-            .await
-            .unwrap();
-        (follower, events)
-    }
-
     async fn watching_alice_and_bob(&self) {
         self.watch(&["alice", "bob"]).await;
         eventually("the game is watched", || self.lichess.request_count() == 1).await;
@@ -157,7 +142,7 @@ impl Harness {
     }
 }
 
-async fn next(events: &mut mpsc::UnboundedReceiver<GameEvent>) -> GameEvent {
+async fn next(events: &mut broadcast::Receiver<GameEvent>) -> GameEvent {
     tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .unwrap()
@@ -183,10 +168,9 @@ async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) 
         token: token.map(SecretString::from),
         stream,
     };
-    let (event_sender, events) = mpsc::unbounded_channel();
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
-    let monitor = GameMonitor::spawn(GameMonitor::new(
+    let monitor = GameMonitor::new(
         lichess::Api::new(
             http_client().unwrap(),
             &config.base_url,
@@ -195,16 +179,11 @@ async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) 
         config,
         Collector::spawn(Collector(connection_sender)).recipient(),
         health,
-    ));
-    monitor
-        .tell(Follow(
-            Collector::spawn(Collector(event_sender)).recipient(),
-        ))
-        .await
-        .unwrap();
+    );
+    let events = monitor.events();
     Harness {
         lichess,
-        monitor,
+        monitor: GameMonitor::spawn(monitor),
         events,
         connections,
         health: health_sender,
@@ -309,9 +288,8 @@ async fn a_changed_watchlist_closes_the_old_connection_and_opens_a_new_one() {
 }
 
 #[tokio::test]
-async fn every_follower_receives_every_game_event() {
+async fn streamed_games_are_published_as_game_events() {
     let mut harness = harness(config()).await;
-    let (_second, mut second_events) = harness.follower().await;
     harness.watching_alice_and_bob().await;
     harness.lichess.stream_line(0, STARTED);
     harness.lichess.stream_line(0, WHITE_WON);
@@ -322,34 +300,6 @@ async fn every_follower_receives_every_game_event() {
     };
     assert_eq!(
         [harness.next_event().await, harness.next_event().await],
-        [GameEvent::Started(alice_vs_bob("g1")), finished.clone()]
-    );
-    assert_eq!(
-        [
-            next(&mut second_events).await,
-            next(&mut second_events).await
-        ],
-        [GameEvent::Started(alice_vs_bob("g1")), finished]
-    );
-}
-
-#[tokio::test]
-async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
-    let harness = harness(config()).await;
-    let (stopped, _) = harness.follower().await;
-    let (_still_following, mut events) = harness.follower().await;
-    stopped.stop_gracefully().await.unwrap();
-    stopped.wait_for_shutdown().await;
-    harness.watching_alice_and_bob().await;
-    harness.lichess.stream_line(0, STARTED);
-    harness.lichess.stream_line(0, WHITE_WON);
-    let finished = GameEvent::Finished {
-        game: alice_vs_bob("g1"),
-        outcome: GameOutcome::WhiteWon,
-        ending: Ending::Checkmate,
-    };
-    assert_eq!(
-        [next(&mut events).await, next(&mut events).await],
         [GameEvent::Started(alice_vs_bob("g1")), finished]
     );
 }

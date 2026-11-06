@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::convert::Infallible;
 
 use kameo::actor::Spawn;
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
@@ -17,27 +16,6 @@ use crate::testing::{self, CLASSICAL_CLOCK, tag, user_id};
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
 
 type Fields = BTreeMap<String, String>;
-
-#[derive(Debug)]
-struct Monitor;
-
-impl Actor for Monitor {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        monitor: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(monitor))
-    }
-}
-
-impl Message<Follow<GameEvent>> for Monitor {
-    type Reply = ();
-
-    async fn handle(&mut self, _: Follow<GameEvent>, _: &mut Context<Self, Self::Reply>) {}
-}
 
 async fn report(
     answers: &[(u16, &str)],
@@ -66,11 +44,11 @@ async fn report(
             Heltour::new(http_client().unwrap(), &config),
             lichess::Config::default().base_url,
         ),
-        Monitor::spawn(Monitor).recipient(),
+        broadcast::channel(1).1,
     ));
     reporter.ask(active).await.unwrap();
     for event in events {
-        reporter.ask(event).await.unwrap();
+        reporter.ask(StreamMessage::Next(event)).await.unwrap();
     }
     assert!(reporter.is_alive());
     heltour.received_requests().await.unwrap()

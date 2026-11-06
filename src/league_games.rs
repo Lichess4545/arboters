@@ -1,11 +1,14 @@
 mod config;
 
+use std::convert::Infallible;
+
 use kameo::Actor;
-use kameo::actor::{ActorRef, Recipient};
-use kameo::message::{Context, Message};
+use kameo::actor::ActorRef;
+use kameo::message::{Context, Message, StreamMessage};
+use tokio::sync::broadcast;
 use url::Url;
 
-use crate::game_monitor::{Ending, Follow, GameEvent, GameOutcome, MonitorUnavailable};
+use crate::game_monitor::{self, Ending, GameEvent, GameOutcome};
 use crate::heltour::{
     ActiveLeagues, Heltour, League, PairingResult, PairingUpdate, UpdatePairingError,
 };
@@ -117,17 +120,15 @@ const fn result_of(outcome: GameOutcome, ending: Ending) -> Result<PairingResult
 }
 
 impl Actor for Reporter {
-    type Args = (Self, Recipient<Follow<GameEvent>>);
-    type Error = MonitorUnavailable;
+    type Args = (Self, broadcast::Receiver<GameEvent>);
+    type Error = Infallible;
 
-    async fn on_start(
-        (reporter, monitor): Self::Args,
+    fn on_start(
+        (reporter, events): Self::Args,
         actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
-        monitor
-            .tell(Follow(actor_ref.recipient::<GameEvent>()))
-            .await?;
-        Ok(reporter)
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        actor_ref.attach_stream(game_monitor::event_stream(events), (), ());
+        std::future::ready(Ok(reporter))
     }
 }
 
@@ -139,11 +140,17 @@ impl Message<ActiveLeagues> for Reporter {
     }
 }
 
-impl Message<GameEvent> for Reporter {
+impl Message<StreamMessage<GameEvent, (), ()>> for Reporter {
     type Reply = ();
 
-    async fn handle(&mut self, event: GameEvent, _: &mut Context<Self, Self::Reply>) {
-        self.report(&event).await;
+    async fn handle(
+        &mut self,
+        message: StreamMessage<GameEvent, (), ()>,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        if let StreamMessage::Next(event) = message {
+            self.report(&event).await;
+        }
     }
 }
 

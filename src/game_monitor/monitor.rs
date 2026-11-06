@@ -5,20 +5,22 @@ use std::num::NonZeroUsize;
 use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 use crate::health::{Availability, Health, TokenOwner};
 use crate::lichess;
 
 use super::event::GameEvent;
 use super::live::Connection;
-use super::{Follow, StreamConnected, Watch};
+use super::{StreamConnected, Watch};
+
+const GAME_EVENTS_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
 pub struct GameMonitor {
     lichess: lichess::Api,
     config: lichess::Config,
-    followers: Vec<Recipient<GameEvent>>,
+    events: broadcast::Sender<GameEvent>,
     connected: Recipient<StreamConnected>,
     health: watch::Receiver<Option<Health>>,
     token_owner: Option<lichess::UserId>,
@@ -29,7 +31,7 @@ pub struct GameMonitor {
 
 impl GameMonitor {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         lichess: lichess::Api,
         config: lichess::Config,
         connected: Recipient<StreamConnected>,
@@ -38,13 +40,24 @@ impl GameMonitor {
         Self {
             lichess,
             config,
-            followers: Vec::new(),
+            events: broadcast::Sender::new(GAME_EVENTS_CAPACITY),
             connected,
             health,
             token_owner: None,
             watched: BTreeSet::new(),
             users_per_connection: None,
             connections: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn events(&self) -> broadcast::Receiver<GameEvent> {
+        self.events.subscribe()
+    }
+
+    fn publish(&self, event: GameEvent) {
+        if self.events.send(event).is_err() {
+            tracing::debug!("no one is subscribed to game events");
         }
     }
 
@@ -110,18 +123,6 @@ impl Message<Watch> for GameMonitor {
     }
 }
 
-impl Message<Follow<GameEvent>> for GameMonitor {
-    type Reply = ();
-
-    async fn handle(
-        &mut self,
-        Follow(follower): Follow<GameEvent>,
-        _: &mut Context<Self, Self::Reply>,
-    ) {
-        self.followers.push(follower);
-    }
-}
-
 impl Message<lichess::GameState> for GameMonitor {
     type Reply = ();
 
@@ -130,15 +131,7 @@ impl Message<lichess::GameState> for GameMonitor {
             return;
         };
         tracing::info!(game = %event.game().id, kind = ?event.kind(), "game event observed");
-        let mut following = Vec::with_capacity(self.followers.len());
-        for follower in std::mem::take(&mut self.followers) {
-            if follower.tell(event.clone()).await.is_ok() {
-                following.push(follower);
-            } else {
-                tracing::warn!(game = %event.game().id, "a game event follower has stopped; no longer following it");
-            }
-        }
-        self.followers = following;
+        self.publish(event);
     }
 }
 
