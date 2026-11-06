@@ -38,6 +38,7 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
         assert_eq!(config.http.port, 8080);
         assert_eq!(config.lichess.base_url.as_str(), "https://lichess.org/");
         assert_eq!(config.heltour_sync.refresh_interval, Duration::from_mins(5));
+        assert_eq!(config.game_recheck.interval, Duration::from_mins(15));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
         assert!(!config.league_games.report);
     });

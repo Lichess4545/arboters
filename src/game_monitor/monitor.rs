@@ -29,6 +29,7 @@ pub struct GameMonitor<F, P> {
     fixtures_store: F,
     published_events: P,
     active: BTreeMap<League, Fixtures>,
+    active_fixtures: watch::Sender<Vec<Fixtures>>,
     events: broadcast::Sender<GameEvent>,
     connected: Recipient<StreamConnected>,
     token_owner: Option<lichess::UserId>,
@@ -55,6 +56,7 @@ impl<F: FixturesStore, P: PublishedEventsStore> GameMonitor<F, P> {
             fixtures_store,
             published_events,
             active: BTreeMap::new(),
+            active_fixtures: watch::Sender::new(Vec::new()),
             events: broadcast::Sender::new(GAME_EVENTS_CAPACITY),
             connected,
             token_owner: None,
@@ -67,6 +69,11 @@ impl<F: FixturesStore, P: PublishedEventsStore> GameMonitor<F, P> {
     #[must_use]
     pub fn events(&self) -> broadcast::Receiver<GameEvent> {
         self.events.subscribe()
+    }
+
+    #[must_use]
+    pub fn active_fixtures(&self) -> watch::Receiver<Vec<Fixtures>> {
+        self.active_fixtures.subscribe()
     }
 
     async fn resume_stored_fixtures(&mut self, monitor: &ActorRef<Self>) -> Result<(), StoreError> {
@@ -99,6 +106,12 @@ impl<F: FixturesStore, P: PublishedEventsStore> GameMonitor<F, P> {
     fn activate(&mut self, fixtures: Fixtures, monitor: &ActorRef<Self>) {
         complete_when_ended(&fixtures, monitor.downgrade());
         self.active.insert(fixtures.league.clone(), fixtures);
+        self.publish_active_fixtures();
+    }
+
+    fn publish_active_fixtures(&self) {
+        self.active_fixtures
+            .send_replace(self.active.values().cloned().collect());
     }
 
     async fn complete(&mut self, id: FixturesId, monitor: &ActorRef<Self>) {
@@ -109,6 +122,7 @@ impl<F: FixturesStore, P: PublishedEventsStore> GameMonitor<F, P> {
             tracing::error!(error = %error, cause = ?std::error::Error::source(&error), fixtures = %id, "could not mark the fixtures complete");
         }
         self.active.remove(&league);
+        self.publish_active_fixtures();
         tracing::info!(fixtures = %id, league = %league, "fixtures complete");
         self.watch_active_players(monitor);
     }

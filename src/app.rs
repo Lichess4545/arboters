@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::game_monitor::{
-    GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
+    self, GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
 };
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{self, ActiveLeagues, Heltour};
@@ -52,7 +52,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let conversations = Conversations::spawn(inbox, commands).await;
     let responding = Responding::start(&conversations, &config, &http, &pool, &messenger);
     let monitor = GameMonitor::new(
-        lichess_api,
+        lichess_api.clone(),
         config.lichess.clone(),
         PostgresFixturesStore::new(pool.clone()),
         PostgresPublishedEventsStore::new(pool.clone()),
@@ -62,6 +62,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let mut games = Games::start(
         &config,
         heltour,
+        lichess_api,
         (monitor, health.clone()),
         notifier,
         active_leagues,
@@ -141,12 +142,14 @@ struct Games {
     notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
     reporter: Option<ActorRef<Reporter>>,
     sync: JoinHandle<()>,
+    recheck: JoinHandle<()>,
 }
 
 impl Games {
     async fn start(
         config: &Config,
         heltour: Heltour,
+        lichess: lichess::Api,
         (monitor, health): (
             GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>,
             watch::Receiver<Option<Health>>,
@@ -167,18 +170,27 @@ impl Games {
             tracing::info!("reports to Heltour are off");
             None
         };
+        let active_fixtures = monitor.active_fixtures();
         let monitor = GameMonitor::spawn((monitor, health));
+        monitor.wait_for_startup().await;
         let sync = tokio::spawn(heltour::sync::keep_in_sync(
             heltour,
             monitor.clone().recipient(),
             active_leagues,
             config.heltour_sync.refresh_interval,
         ));
+        let recheck = tokio::spawn(game_monitor::recheck::keep_rechecking(
+            lichess,
+            active_fixtures,
+            monitor.clone().recipient(),
+            config.game_recheck,
+        ));
         Self {
             monitor,
             notifier,
             reporter,
             sync,
+            recheck,
         }
     }
 
@@ -191,11 +203,16 @@ impl Games {
                 Ok(()) => anyhow::anyhow!("heltour sync stopped unexpectedly"),
                 Err(error) => error.into(),
             },
+            exit = &mut self.recheck => match exit {
+                Ok(()) => anyhow::anyhow!("finished games recheck stopped unexpectedly"),
+                Err(error) => error.into(),
+            },
         }
     }
 
     async fn stop(&self) {
         self.sync.abort();
+        self.recheck.abort();
         stop(&self.monitor).await;
         stop(&self.notifier).await;
         if let Some(reporter) = &self.reporter {

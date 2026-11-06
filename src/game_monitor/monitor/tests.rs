@@ -119,6 +119,7 @@ struct Harness {
     fixtures_store: PostgresFixturesStore,
     monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
     events: broadcast::Receiver<GameEvent>,
+    active_fixtures: watch::Receiver<Vec<Fixtures>>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
     health: watch::Sender<Option<Health>>,
 }
@@ -237,11 +238,13 @@ async fn harness_with_token(
         Collector::spawn(Collector(connection_sender)).recipient(),
     );
     let events = monitor.events();
+    let active_fixtures = monitor.active_fixtures();
     Harness {
         lichess,
         fixtures_store,
         monitor: GameMonitor::spawn((monitor, health)),
         events,
+        active_fixtures,
         connections,
         health: health_sender,
     }
@@ -435,6 +438,28 @@ async fn ended_fixtures_are_completed_and_no_longer_watched(pool: PgPool) {
     })
     .await;
     assert_eq!(harness.active_ids().await, [other]);
+}
+
+#[sqlx::test]
+async fn ended_fixtures_are_no_longer_published_as_active(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
+    harness
+        .submit(ending_in(
+            fixtures_of("team4545", &[("alice", "bob")]),
+            time::Duration::milliseconds(300),
+        ))
+        .await;
+    let other = harness
+        .submit(fixtures_of("lonewolf", &[("bob", "carol")]))
+        .await;
+
+    let only_the_other = harness
+        .active_fixtures
+        .wait_for(|active| active.iter().map(|fixtures| fixtures.id).eq([other]));
+    tokio::time::timeout(Duration::from_secs(5), only_the_other)
+        .await
+        .expect("only the other fixtures are published as active")
+        .unwrap();
 }
 
 #[sqlx::test]

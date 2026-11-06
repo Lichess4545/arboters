@@ -3,6 +3,7 @@ mod fixtures;
 pub mod league;
 mod live;
 mod monitor;
+pub mod recheck;
 mod stores;
 
 use std::collections::{BTreeMap, BTreeSet};

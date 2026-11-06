@@ -122,6 +122,11 @@ impl Fixtures {
         }
     }
 
+    #[must_use]
+    pub fn played_since(&self) -> OffsetDateTime {
+        self.period.starts.unwrap_or(self.stored_at)
+    }
+
     pub(super) fn has_the_games_and_period_of(&self, new: &NewFixtures) -> bool {
         self.league == new.league && self.period == new.period && self.games == new.games
     }

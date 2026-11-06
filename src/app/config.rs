@@ -3,7 +3,7 @@ use figment::providers::Env;
 use serde::Deserialize;
 
 use super::{database, http, telemetry};
-use crate::{health, heltour, league_games, lichess, responses, status, zulip};
+use crate::{game_monitor, health, heltour, league_games, lichess, responses, status, zulip};
 
 pub const ENV_PREFIX: &str = "ARBOTERS_";
 pub const ENV_NESTING_SEPARATOR: &str = "__";
@@ -27,6 +27,8 @@ pub struct Config {
     pub responses: responses::Config,
     #[serde(default)]
     pub heltour_sync: heltour::sync::Config,
+    #[serde(default)]
+    pub game_recheck: game_monitor::recheck::Config,
     #[serde(default)]
     pub telemetry: telemetry::Config,
 }
