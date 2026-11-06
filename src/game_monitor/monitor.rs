@@ -16,17 +16,18 @@ use super::event::{GameChange, GameEvent, MatchedFixture};
 use super::fixtures::{Fixtures, FixturesId, NewFixtures};
 use super::live::Connection;
 use super::{
-    CurrentFixtures, FindCurrentFixtures, FixturesStore, League, StoreError, StreamConnected,
-    SubmitFixtures,
+    CurrentFixtures, FindCurrentFixtures, FixturesStore, League, PublishedEventsStore, Recorded,
+    StoreError, StreamConnected, SubmitFixtures,
 };
 
 const GAME_EVENTS_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
-pub struct GameMonitor<F> {
+pub struct GameMonitor<F, P> {
     lichess: lichess::Api,
     config: lichess::Config,
     fixtures_store: F,
+    published_events: P,
     active: BTreeMap<League, Fixtures>,
     events: broadcast::Sender<GameEvent>,
     connected: Recipient<StreamConnected>,
@@ -39,18 +40,20 @@ pub struct GameMonitor<F> {
 #[derive(Clone, Copy, Debug)]
 struct FixturesEnded(FixturesId);
 
-impl<F: FixturesStore> GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> GameMonitor<F, P> {
     #[must_use]
     pub fn new(
         lichess: lichess::Api,
         config: lichess::Config,
         fixtures_store: F,
+        published_events: P,
         connected: Recipient<StreamConnected>,
     ) -> Self {
         Self {
             lichess,
             config,
             fixtures_store,
+            published_events,
             active: BTreeMap::new(),
             events: broadcast::Sender::new(GAME_EVENTS_CAPACITY),
             connected,
@@ -188,6 +191,18 @@ impl<F: FixturesStore> GameMonitor<F> {
         );
     }
 
+    async fn publish_once(&self, event: GameEvent) {
+        match self.published_events.record(&event).await {
+            Ok(Recorded::First) => self.publish(event),
+            Ok(Recorded::Again) => {
+                tracing::debug!(game = %event.game().id, kind = ?event.kind(), "game event already published");
+            }
+            Err(error) => {
+                tracing::error!(error = %error, cause = ?std::error::Error::source(&error), game = %event.game().id, kind = ?event.kind(), "could not record the game event, so it is not published");
+            }
+        }
+    }
+
     fn publish(&self, event: GameEvent) {
         let fixtures: Vec<_> = event
             .matched
@@ -199,7 +214,7 @@ impl<F: FixturesStore> GameMonitor<F> {
             kind = ?event.kind(),
             ?fixtures,
             leagues = ?event.leagues(),
-            "game event observed"
+            "game event published"
         );
         if self.events.send(event).is_err() {
             tracing::debug!("no one is subscribed to game events");
@@ -207,9 +222,9 @@ impl<F: FixturesStore> GameMonitor<F> {
     }
 }
 
-fn complete_when_ended<F: FixturesStore>(
+fn complete_when_ended<F: FixturesStore, P: PublishedEventsStore>(
     fixtures: &Fixtures,
-    monitor: WeakActorRef<GameMonitor<F>>,
+    monitor: WeakActorRef<GameMonitor<F, P>>,
 ) {
     let Some(ends) = fixtures.period.ends else {
         return;
@@ -226,7 +241,7 @@ fn complete_when_ended<F: FixturesStore>(
     });
 }
 
-impl<F: FixturesStore> Actor for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Actor for GameMonitor<F, P> {
     type Args = (Self, watch::Receiver<Option<Health>>);
     type Error = StoreError;
 
@@ -241,7 +256,7 @@ impl<F: FixturesStore> Actor for GameMonitor<F> {
     }
 }
 
-impl<F: FixturesStore> Message<SubmitFixtures> for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Message<SubmitFixtures> for GameMonitor<F, P> {
     type Reply = ();
 
     async fn handle(
@@ -266,7 +281,7 @@ impl<F: FixturesStore> Message<SubmitFixtures> for GameMonitor<F> {
     }
 }
 
-impl<F: FixturesStore> Message<FindCurrentFixtures> for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Message<FindCurrentFixtures> for GameMonitor<F, P> {
     type Reply = ();
 
     fn handle(
@@ -281,7 +296,7 @@ impl<F: FixturesStore> Message<FindCurrentFixtures> for GameMonitor<F> {
     }
 }
 
-impl<F: FixturesStore> Message<FixturesEnded> for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Message<FixturesEnded> for GameMonitor<F, P> {
     type Reply = ();
 
     async fn handle(
@@ -293,7 +308,9 @@ impl<F: FixturesStore> Message<FixturesEnded> for GameMonitor<F> {
     }
 }
 
-impl<F: FixturesStore> Message<StreamMessage<Option<Health>, (), ()>> for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Message<StreamMessage<Option<Health>, (), ()>>
+    for GameMonitor<F, P>
+{
     type Reply = ();
 
     fn handle(
@@ -309,19 +326,15 @@ impl<F: FixturesStore> Message<StreamMessage<Option<Health>, (), ()>> for GameMo
     }
 }
 
-impl<F: FixturesStore> Message<lichess::GameState> for GameMonitor<F> {
+impl<F: FixturesStore, P: PublishedEventsStore> Message<lichess::GameState> for GameMonitor<F, P> {
     type Reply = ();
 
-    fn handle(
-        &mut self,
-        state: lichess::GameState,
-        _: &mut Context<Self, Self::Reply>,
-    ) -> impl Future<Output = Self::Reply> + Send {
-        if let Some(change) = GameChange::of(state) {
-            let matched = self.fixtures_played_in(change.game());
-            self.publish(GameEvent { change, matched });
-        }
-        std::future::ready(())
+    async fn handle(&mut self, state: lichess::GameState, _: &mut Context<Self, Self::Reply>) {
+        let Some(change) = GameChange::of(state) else {
+            return;
+        };
+        let matched = self.fixtures_played_in(change.game());
+        self.publish_once(GameEvent { change, matched }).await;
     }
 }
 

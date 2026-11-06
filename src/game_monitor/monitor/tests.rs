@@ -17,7 +17,8 @@ use url::Url;
 
 use super::*;
 use crate::game_monitor::{
-    GameChange, Period, PostgresFixturesStore, StreamConnected, http_client,
+    Decision, GameChange, Period, PostgresFixturesStore, PostgresPublishedEventsStore,
+    StreamConnected, Win, http_client,
 };
 use crate::health::{Recovery, Unavailable};
 use crate::lichess::{Game, GameId, GameStatus};
@@ -116,7 +117,7 @@ impl FakeLichess {
 struct Harness {
     lichess: FakeLichess,
     fixtures_store: PostgresFixturesStore,
-    monitor: ActorRef<GameMonitor<PostgresFixturesStore>>,
+    monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
     events: broadcast::Receiver<GameEvent>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
     health: watch::Sender<Option<Health>>,
@@ -223,7 +224,7 @@ async fn harness_with_token(
     };
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
-    let fixtures_store = PostgresFixturesStore::new(pool);
+    let fixtures_store = PostgresFixturesStore::new(pool.clone());
     let monitor = GameMonitor::new(
         lichess::Api::new(
             http_client().unwrap(),
@@ -232,6 +233,7 @@ async fn harness_with_token(
         ),
         config,
         fixtures_store.clone(),
+        PostgresPublishedEventsStore::new(pool),
         Collector::spawn(Collector(connection_sender)).recipient(),
     );
     let events = monitor.events();
@@ -315,6 +317,22 @@ fn started(game: Game) -> lichess::GameState {
     lichess::GameState {
         game,
         status: GameStatus::Started,
+    }
+}
+
+fn white_won(game: Game) -> lichess::GameState {
+    lichess::GameState {
+        game,
+        status: GameStatus::Mate {
+            winner: lichess::Color::White,
+        },
+    }
+}
+
+fn finished() -> GameChange {
+    GameChange::Decided {
+        game: alice_vs_bob("g1"),
+        decision: Decision::WhiteWon(Win::Checkmate),
     }
 }
 
@@ -572,4 +590,19 @@ async fn a_failed_connect_is_not_reported_as_connected(pool: PgPool) {
     assert_eq!(harness.lichess.request_count(), 2);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(harness.connections.try_recv().is_err());
+}
+
+#[sqlx::test]
+async fn a_repeated_game_event_is_published_once(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
+
+    harness.hand_over(started(alice_vs_bob("g1"))).await;
+    harness.hand_over(started(alice_vs_bob("g1"))).await;
+    harness.hand_over(white_won(alice_vs_bob("g1"))).await;
+
+    assert_eq!(
+        harness.next_event().await.change,
+        GameChange::Started(alice_vs_bob("g1"))
+    );
+    assert_eq!(harness.next_event().await.change, finished());
 }

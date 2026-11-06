@@ -12,7 +12,9 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::game_monitor::{GameMonitor, PostgresFixturesStore, http_client};
+use crate::game_monitor::{
+    GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
+};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{self, ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
@@ -53,6 +55,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         lichess_api,
         config.lichess.clone(),
         PostgresFixturesStore::new(pool.clone()),
+        PostgresPublishedEventsStore::new(pool.clone()),
         status.clone().recipient(),
     );
     let notifier = Notifier::new(subscriptions.clone(), messenger, lichess.clone());
@@ -134,7 +137,7 @@ fn start_health(
 }
 
 struct Games {
-    monitor: ActorRef<GameMonitor<PostgresFixturesStore>>,
+    monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
     notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
     reporter: Option<ActorRef<Reporter>>,
     sync: JoinHandle<()>,
@@ -145,7 +148,7 @@ impl Games {
         config: &Config,
         heltour: Heltour,
         (monitor, health): (
-            GameMonitor<PostgresFixturesStore>,
+            GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>,
             watch::Receiver<Option<Health>>,
         ),
         notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
