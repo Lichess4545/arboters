@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 
 use kameo::actor::Spawn;
@@ -8,10 +7,10 @@ use super::*;
 use crate::chat::{
     ChannelName, ChatUserId, Conversation, DeliveryError, OutgoingMessage, TopicName,
 };
-use crate::game_monitor::GameEventKind;
-use crate::heltour::{Pairing, league};
-use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
+use crate::game_monitor::{FixturesId, GameChange, GameEventKind, MatchedFixture};
+use crate::lichess;
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions, SubscriptionSource};
+use crate::testing::{alice_vs_bob, fixture, tag, user_id};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -51,42 +50,12 @@ impl Messenger for RecordingMessenger {
     }
 }
 
-fn league(tag: &str) -> league::Tag {
-    league::Tag::try_new(tag).unwrap()
-}
-
-fn user_id(name: &str) -> lichess::UserId {
-    lichess::UserId::try_new(name).unwrap()
-}
-
-fn player(name: &str) -> Player {
-    Player {
-        user_id: user_id(name),
-        rating: None,
-    }
-}
-
-fn game() -> Game {
-    Game {
-        id: GameId::new("abcd1234"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Rapid,
-        rated: true,
-        variant: Variant::Standard,
-        clock: None,
-    }
-}
-
-fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
-    ActiveLeagues {
-        leagues: Vec::new(),
-        pairings: vec![Pairing {
-            league: league(tag),
-            white: user_id(white),
-            black: user_id(black),
-        }],
-    }
+fn paired_in(league: &str, white: &str, black: &str) -> Vec<MatchedFixture> {
+    vec![MatchedFixture {
+        fixtures_id: FixturesId::new(1),
+        league: tag(league).monitored(),
+        fixture: fixture(white, black),
+    }]
 }
 
 fn direct_message(user_id: u64) -> Conversation {
@@ -102,10 +71,10 @@ fn games_topic() -> Conversation {
     }
 }
 
-fn starts(tag: &str, source: SubscriptionSource, target: Conversation) -> NewSubscription {
+fn starts(league: &str, source: SubscriptionSource, target: Conversation) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
-        league: league(tag),
+        league: tag(league),
         source,
         event: GameEventKind::GameStarted,
         target,
@@ -120,7 +89,7 @@ fn announced(
     targets: impl IntoIterator<Item = Conversation>,
 ) -> Vec<(Conversation, OutgoingMessage)> {
     let notification = render(
-        &GameEvent::Started(game()),
+        &GameChange::Started(alice_vs_bob("abcd1234")),
         &lichess::Config::default().base_url,
     );
     targets
@@ -129,48 +98,32 @@ fn announced(
         .collect()
 }
 
-#[derive(Debug)]
-struct Monitor;
-
-impl Actor for Monitor {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        monitor: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(monitor))
-    }
-}
-
-impl Message<Follow<GameEvent>> for Monitor {
-    type Reply = ();
-
-    async fn handle(&mut self, _: Follow<GameEvent>, _: &mut Context<Self, Self::Reply>) {}
-}
-
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
-    active: ActiveLeagues,
+    matched: Vec<MatchedFixture>,
     messenger: RecordingMessenger,
 ) -> Vec<(Conversation, OutgoingMessage)> {
     let stored = PostgresSubscriptions::new(pool);
     for subscription in subscriptions {
         stored.subscribe(subscription).await.unwrap();
     }
-    let monitor = Monitor::spawn(Monitor);
+    let (_, events) = broadcast::channel(1);
     let notifier = Notifier::spawn((
         Notifier::new(
             stored,
             messenger.clone(),
             lichess::Config::default().base_url,
         ),
-        monitor.recipient(),
+        events,
     ));
-    notifier.ask(active).await.unwrap();
-    notifier.ask(GameEvent::Started(game())).await.unwrap();
+    notifier
+        .ask(StreamMessage::Next(GameEvent {
+            change: GameChange::Started(alice_vs_bob("abcd1234")),
+            matched,
+        }))
+        .await
+        .unwrap();
     messenger.deliveries()
 }
 

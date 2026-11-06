@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use secrecy::SecretString;
@@ -6,9 +7,9 @@ use url::Url;
 
 use super::UserId;
 
-const ANONYMOUS_USERS_PER_CONNECTION: usize = 300;
-const TOKEN_USERS_PER_CONNECTION: usize = 500;
-const LICHESS4545_USERS_PER_CONNECTION: usize = 900;
+const ANONYMOUS_USERS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(300).unwrap();
+const TOKEN_USERS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(500).unwrap();
+const LICHESS4545_USERS_PER_CONNECTION: NonZeroUsize = NonZeroUsize::new(900).unwrap();
 const LICHESS4545: &str = "lichess4545";
 
 #[derive(Clone, Debug, Deserialize)]
@@ -21,7 +22,7 @@ pub struct Config {
 
 impl Config {
     #[must_use]
-    pub fn users_per_connection(&self, token_owner: Option<&UserId>) -> usize {
+    pub fn users_per_connection(&self, token_owner: Option<&UserId>) -> NonZeroUsize {
         match (&self.token, token_owner) {
             (None, _) => ANONYMOUS_USERS_PER_CONNECTION,
             (Some(_), Some(owner)) if owner.as_str() == LICHESS4545 => {

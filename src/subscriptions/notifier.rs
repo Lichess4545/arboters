@@ -1,20 +1,22 @@
 mod rendering;
 
+use std::convert::Infallible;
+
 use kameo::Actor;
-use kameo::actor::{ActorRef, Recipient};
-use kameo::message::{Context, Message};
+use kameo::actor::ActorRef;
+use kameo::message::{Context, Message, StreamMessage};
+use tokio::sync::broadcast;
 use url::Url;
 
 use crate::chat::Messenger;
-use crate::game_monitor::{Follow, GameEvent, MonitorUnavailable};
-use crate::heltour::ActiveLeagues;
+use crate::game_monitor::{self, GameEvent};
+use crate::heltour::league;
 
 use super::Subscriptions;
 use rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
-    active: ActiveLeagues,
     subscriptions: R,
     messenger: M,
     lichess: Url,
@@ -22,9 +24,8 @@ pub struct Notifier<R, M> {
 
 impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
-    pub fn new(subscriptions: R, messenger: M, lichess: Url) -> Self {
+    pub const fn new(subscriptions: R, messenger: M, lichess: Url) -> Self {
         Self {
-            active: ActiveLeagues::default(),
             subscriptions,
             messenger,
             lichess,
@@ -33,10 +34,15 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let leagues: Vec<_> = self.active.leagues_of(game).into_iter().collect();
-        if leagues.is_empty() {
+        let tags: Vec<_> = event
+            .leagues()
+            .into_iter()
+            .filter_map(league::Tag::of_monitored)
+            .collect();
+        if tags.is_empty() {
             return;
         }
+        let leagues: Vec<_> = tags.iter().collect();
         let targets = match self
             .subscriptions
             .targets_for(&leagues, event.kind(), game.user_ids())
@@ -48,7 +54,7 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
                 return;
             }
         };
-        let notification = render(event, &self.lichess);
+        let notification = render(&event.change, &self.lichess);
         for target in &targets {
             match self.messenger.send(target, &notification).await {
                 Ok(()) => tracing::debug!(game_id = %game.id, ?target, "notification delivered"),
@@ -65,33 +71,29 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 }
 
 impl<R: Subscriptions, M: Messenger> Actor for Notifier<R, M> {
-    type Args = (Self, Recipient<Follow<GameEvent>>);
-    type Error = MonitorUnavailable;
+    type Args = (Self, broadcast::Receiver<GameEvent>);
+    type Error = Infallible;
 
-    async fn on_start(
-        (notifier, monitor): Self::Args,
+    fn on_start(
+        (notifier, events): Self::Args,
         actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
-        monitor
-            .tell(Follow(actor_ref.recipient::<GameEvent>()))
-            .await?;
-        Ok(notifier)
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        actor_ref.attach_stream(game_monitor::event_stream(events), (), ());
+        std::future::ready(Ok(notifier))
     }
 }
 
-impl<R: Subscriptions, M: Messenger> Message<GameEvent> for Notifier<R, M> {
+impl<R: Subscriptions, M: Messenger> Message<StreamMessage<GameEvent, (), ()>> for Notifier<R, M> {
     type Reply = ();
 
-    async fn handle(&mut self, event: GameEvent, _: &mut Context<Self, Self::Reply>) {
-        self.notify(&event).await;
-    }
-}
-
-impl<R: Subscriptions, M: Messenger> Message<ActiveLeagues> for Notifier<R, M> {
-    type Reply = ();
-
-    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
-        self.active = active;
+    async fn handle(
+        &mut self,
+        message: StreamMessage<GameEvent, (), ()>,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        if let StreamMessage::Next(event) = message {
+            self.notify(&event).await;
+        }
     }
 }
 

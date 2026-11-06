@@ -1,19 +1,41 @@
+use nutype::nutype;
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 use crate::lichess;
 
-use super::league;
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pairing {
-    pub league: league::Tag,
     pub white: lichess::UserId,
     pub black: lichess::UserId,
 }
 
-impl Pairing {
-    pub(super) fn pairs_the_players_of(&self, game: &lichess::Game) -> bool {
-        let players = game.user_ids();
-        players == [&self.white, &self.black] || players == [&self.black, &self.white]
+#[nutype(derive(Debug, Clone, Copy, PartialEq, Eq, Display, Deserialize))]
+pub struct RoundId(i64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+pub struct Round {
+    pub id: RoundId,
+    #[serde(
+        rename = "startsAt",
+        default,
+        with = "time::serde::timestamp::milliseconds::option"
+    )]
+    pub starts: Option<OffsetDateTime>,
+    #[serde(
+        rename = "endsAt",
+        default,
+        with = "time::serde::timestamp::milliseconds::option"
+    )]
+    pub ends: Option<OffsetDateTime>,
+}
+
+impl Round {
+    #[must_use]
+    pub fn has_ended_by(&self, now: OffsetDateTime) -> bool {
+        self.ends.is_some_and(|ends| ends <= now)
     }
 }
+
+#[cfg(test)]
+mod tests;

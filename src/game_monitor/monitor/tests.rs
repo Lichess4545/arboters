@@ -10,17 +10,21 @@ use axum::routing::post;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
 use kameo::actor::Spawn;
 use secrecy::SecretString;
+use sqlx::PgPool;
 use tokio::net::TcpListener;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc, oneshot};
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{Ending, GameOutcome, StreamConnected, http_client};
+use crate::game_monitor::{
+    Decision, GameChange, Period, PostgresFixturesStore, PostgresPublishedEventsStore,
+    StreamConnected, Win, http_client,
+};
 use crate::health::{Recovery, Unavailable};
-use crate::lichess::{Game, GameId, Player, Speed, Variant};
+use crate::lichess::{Game, GameId, GameStatus};
+use crate::testing::{Collector, alice_vs_bob, fixture, league, player, user_id, user_ids};
 
 const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"statusName":"started","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
-const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"statusName":"mate","winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 
 enum Answer {
     Status(StatusCode),
@@ -30,7 +34,7 @@ enum Answer {
 struct Request {
     user_ids: Vec<lichess::UserId>,
     at: Instant,
-    lines: Option<UnboundedSender<Result<String, Infallible>>>,
+    lines: Option<UnboundedSender<Result<String, std::convert::Infallible>>>,
 }
 
 #[derive(Clone, Default)]
@@ -45,10 +49,7 @@ impl FakeLichess {
     }
 
     fn answer(&self, body: &str) -> Response {
-        let user_ids = body
-            .split(',')
-            .map(|name| lichess::UserId::try_new(name).unwrap())
-            .collect();
+        let user_ids = body.split(',').map(user_id).collect();
         let at = Instant::now();
         let answer = self.answers.lock().unwrap().pop_front();
         let (lines, response) = match answer {
@@ -113,65 +114,66 @@ impl FakeLichess {
     }
 }
 
-struct Collector<T>(mpsc::UnboundedSender<T>);
-
-impl<T: Send + 'static> Actor for Collector<T> {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        collector: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(collector))
-    }
-}
-
-impl<T: Send + 'static> Message<T> for Collector<T> {
-    type Reply = ();
-
-    async fn handle(&mut self, collected: T, _: &mut Context<Self, Self::Reply>) {
-        self.0.send(collected).unwrap();
-    }
-}
-
 struct Harness {
     lichess: FakeLichess,
-    monitor: ActorRef<GameMonitor>,
-    events: mpsc::UnboundedReceiver<GameEvent>,
+    fixtures_store: PostgresFixturesStore,
+    monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
+    events: broadcast::Receiver<GameEvent>,
+    active_fixtures: watch::Receiver<Vec<Fixtures>>,
     connections: mpsc::UnboundedReceiver<StreamConnected>,
     health: watch::Sender<Option<Health>>,
 }
 
 impl Harness {
-    async fn watch(&self, names: &[impl AsRef<str> + Sync]) {
+    async fn submit(&self, fixtures: NewFixtures) -> FixturesId {
+        let (stored, id) = oneshot::channel();
+        self.monitor
+            .tell(SubmitFixtures { fixtures, stored })
+            .await
+            .unwrap();
+        id.await.unwrap()
+    }
+
+    async fn watch(&self, names: &[impl AsRef<str> + Sync]) -> FixturesId {
         let names: Vec<&str> = names.iter().map(AsRef::as_ref).collect();
-        let watch = Watch(user_ids(&names).into_iter().collect());
-        self.monitor.tell(watch).await.unwrap();
+        self.submit(fixtures_among("team4545", &names)).await
+    }
+
+    async fn current(&self, keys: &[&str]) -> CurrentFixtures {
+        let (found, current) = oneshot::channel();
+        self.monitor
+            .tell(FindCurrentFixtures {
+                leagues: keys.iter().map(|key| league("heltour", key)).collect(),
+                found,
+            })
+            .await
+            .unwrap();
+        current.await.unwrap()
+    }
+
+    async fn hand_over(&self, state: lichess::GameState) {
+        self.monitor.tell(state).await.unwrap();
+    }
+
+    async fn active_ids(&self) -> Vec<FixturesId> {
+        self.fixtures_store
+            .active()
+            .await
+            .unwrap()
+            .iter()
+            .map(|fixtures| fixtures.id)
+            .collect()
+    }
+
+    async fn await_requests(&self, count: usize) {
+        eventually(&format!("lichess has {count} requests"), || {
+            self.lichess.request_count() == count
+        })
+        .await;
     }
 
     async fn next_event(&mut self) -> GameEvent {
         next(&mut self.events).await
-    }
-
-    async fn follower(
-        &self,
-    ) -> (
-        ActorRef<Collector<GameEvent>>,
-        mpsc::UnboundedReceiver<GameEvent>,
-    ) {
-        let (sender, events) = mpsc::unbounded_channel();
-        let follower = Collector::spawn(Collector(sender));
-        self.monitor
-            .tell(Follow(follower.clone().recipient()))
-            .await
-            .unwrap();
-        (follower, events)
-    }
-
-    async fn watching_alice_and_bob(&self) {
-        self.watch(&["alice", "bob"]).await;
-        eventually("the game is watched", || self.lichess.request_count() == 1).await;
     }
 
     async fn next_connection(&mut self) -> StreamConnected {
@@ -180,20 +182,33 @@ impl Harness {
             .unwrap()
             .unwrap()
     }
+
+    fn owned_by(&self, lichess: Option<Availability<TokenOwner>>) {
+        self.health.send_replace(Some(Health {
+            postgres: Availability::Available(()),
+            heltour: Availability::Available(()),
+            lichess,
+            zulip: Availability::Available(()),
+        }));
+    }
 }
 
-async fn next(events: &mut mpsc::UnboundedReceiver<GameEvent>) -> GameEvent {
+async fn next(events: &mut broadcast::Receiver<GameEvent>) -> GameEvent {
     tokio::time::timeout(Duration::from_secs(5), events.recv())
         .await
         .unwrap()
         .unwrap()
 }
 
-async fn harness(stream: lichess::StreamConfig) -> Harness {
-    harness_with_token(None, stream).await
+async fn harness(pool: PgPool, stream: lichess::StreamConfig) -> Harness {
+    harness_with_token(pool, None, stream).await
 }
 
-async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) -> Harness {
+async fn harness_with_token(
+    pool: PgPool,
+    token: Option<&str>,
+    stream: lichess::StreamConfig,
+) -> Harness {
     let lichess = FakeLichess::default();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -208,29 +223,28 @@ async fn harness_with_token(token: Option<&str>, stream: lichess::StreamConfig) 
         token: token.map(SecretString::from),
         stream,
     };
-    let (event_sender, events) = mpsc::unbounded_channel();
     let (connection_sender, connections) = mpsc::unbounded_channel();
     let (health_sender, health) = watch::channel(None);
-    let monitor = GameMonitor::spawn(GameMonitor::new(
+    let fixtures_store = PostgresFixturesStore::new(pool.clone());
+    let monitor = GameMonitor::new(
         lichess::Api::new(
             http_client().unwrap(),
             &config.base_url,
             config.token.clone(),
         ),
         config,
+        fixtures_store.clone(),
+        PostgresPublishedEventsStore::new(pool),
         Collector::spawn(Collector(connection_sender)).recipient(),
-        health,
-    ));
-    monitor
-        .tell(Follow(
-            Collector::spawn(Collector(event_sender)).recipient(),
-        ))
-        .await
-        .unwrap();
+    );
+    let events = monitor.events();
+    let active_fixtures = monitor.active_fixtures();
     Harness {
         lichess,
-        monitor,
+        fixtures_store,
+        monitor: GameMonitor::spawn((monitor, health)),
         events,
+        active_fixtures,
         connections,
         health: health_sender,
     }
@@ -259,199 +273,314 @@ fn player_names(count: usize) -> Vec<String> {
         .collect()
 }
 
-fn user_ids(names: &[&str]) -> Vec<lichess::UserId> {
-    names
-        .iter()
-        .map(|name| lichess::UserId::try_new(*name).unwrap())
-        .collect()
-}
-
-fn game() -> Game {
-    let player = |name: &str| Player {
-        user_id: lichess::UserId::try_new(name).unwrap(),
-        rating: None,
-    };
-    Game {
-        id: GameId::new("g1"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Classical,
-        rated: true,
-        variant: Variant::Standard,
-        clock: None,
+fn fixtures_of(key: &str, games: &[(&str, &str)]) -> NewFixtures {
+    NewFixtures {
+        league: league("heltour", key),
+        period: Period::default(),
+        games: games
+            .iter()
+            .map(|(white, black)| fixture(white, black))
+            .collect(),
     }
 }
 
-#[tokio::test]
-async fn without_a_token_each_connection_watches_up_to_300_users() {
-    let harness = harness(config()).await;
-    let names = player_names(301);
-    harness.watch(&names).await;
-    eventually("both connections open", || {
-        harness.lichess.request_count() == 2
-    })
-    .await;
-    assert_eq!(harness.lichess.connection_sizes(), [1, 300]);
+fn fixtures_among(key: &str, names: &[&str]) -> NewFixtures {
+    let games: Vec<(&str, &str)> = names.windows(2).map(|pair| (pair[0], pair[1])).collect();
+    fixtures_of(key, &games)
 }
 
-#[tokio::test]
-async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_again() {
-    let harness = harness_with_token(Some("lip_secret"), config()).await;
-    let names = player_names(901);
-    harness.watch(&names).await;
-    eventually("two connections open", || {
-        harness.lichess.request_count() == 2
-    })
-    .await;
-    harness.health.send_replace(Some(Health {
-        postgres: Availability::Available(()),
-        heltour: Availability::Available(()),
-        lichess: Some(Availability::Available(TokenOwner(
-            lichess::UserId::try_new("lichess4545").unwrap(),
-        ))),
-        zulip: Availability::Available(()),
-    }));
-    harness.watch(&names).await;
-    eventually("the watchlist is split again", || {
-        harness.lichess.request_count() == 4
-    })
-    .await;
-    assert_eq!(harness.lichess.connection_sizes(), [1, 401, 500, 900]);
-    harness.health.send_replace(Some(Health {
-        postgres: Availability::Available(()),
-        heltour: Availability::Available(()),
-        lichess: Some(Availability::Unavailable(Unavailable {
-            recovery: Recovery::Recoverable,
-            error: "answered 503 Service Unavailable".to_owned(),
-        })),
-        zulip: Availability::Available(()),
-    }));
-    harness.watch(&names).await;
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(harness.lichess.request_count(), 4);
+fn ending_in(new: NewFixtures, remaining: time::Duration) -> NewFixtures {
+    NewFixtures {
+        period: Period {
+            starts: None,
+            ends: Some(OffsetDateTime::now_utc() + remaining),
+        },
+        ..new
+    }
 }
 
-#[tokio::test]
-async fn an_unchanged_watchlist_does_not_reconnect() {
-    let harness = harness(config()).await;
-    harness.watch(&["alice"]).await;
-    eventually("alice is watched", || harness.lichess.request_count() == 1).await;
-    harness.watch(&["alice"]).await;
+fn matched(id: FixturesId, key: &str, white: &str, black: &str) -> MatchedFixture {
+    MatchedFixture {
+        fixtures_id: id,
+        league: league("heltour", key),
+        fixture: fixture(white, black),
+    }
+}
+
+fn game_between(white: &str, black: &str) -> Game {
+    Game {
+        id: GameId::new(format!("{white}-{black}")),
+        white: player(white),
+        black: player(black),
+        ..alice_vs_bob("g1")
+    }
+}
+
+fn started(game: Game) -> lichess::GameState {
+    lichess::GameState {
+        game,
+        status: GameStatus::Started,
+    }
+}
+
+fn white_won(game: Game) -> lichess::GameState {
+    lichess::GameState {
+        game,
+        status: GameStatus::Mate {
+            winner: lichess::Color::White,
+        },
+    }
+}
+
+fn finished() -> GameChange {
+    GameChange::Decided {
+        game: alice_vs_bob("g1"),
+        decision: Decision::WhiteWon(Win::Checkmate),
+    }
+}
+
+#[sqlx::test]
+async fn unchanged_fixtures_keep_their_id_and_connection(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    let first = harness.watch(&["alice", "bob"]).await;
+    harness.await_requests(1).await;
+
+    assert_eq!(harness.watch(&["alice", "bob"]).await, first);
+
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(harness.lichess.request_count(), 1);
+    assert_eq!(harness.active_ids().await, [first]);
 }
 
-#[tokio::test]
-async fn a_changed_watchlist_closes_the_old_connection_and_opens_a_new_one() {
-    let harness = harness(config()).await;
-    harness.watch(&["alice"]).await;
-    eventually("alice is watched", || harness.lichess.request_count() == 1).await;
-    harness.watch(&["alice", "bob"]).await;
-    eventually("bob is watched", || harness.lichess.request_count() == 2).await;
+#[sqlx::test]
+async fn a_new_period_replaces_the_active_fixtures(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    let games = fixtures_of("team4545", &[("alice", "bob")]);
+    let first = harness.submit(games.clone()).await;
+
+    let rescheduled = harness
+        .submit(ending_in(games, time::Duration::days(7)))
+        .await;
+
+    assert_ne!(rescheduled, first);
+    assert_eq!(harness.active_ids().await, [rescheduled]);
+}
+
+#[sqlx::test]
+async fn new_games_replace_the_active_fixtures_and_reconnect(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    let replaced = harness.watch(&["alice", "bob"]).await;
+    harness.await_requests(1).await;
+
+    let replacement = harness.watch(&["alice", "carol"]).await;
+
+    assert_ne!(replacement, replaced);
+    assert_eq!(harness.active_ids().await, [replacement]);
+    harness.await_requests(2).await;
     eventually("the old connection closes", || {
         !harness.lichess.stream_line(0, "")
     })
     .await;
     assert_eq!(
         harness.lichess.connected_user_ids(),
-        [user_ids(&["alice"]), user_ids(&["alice", "bob"])]
+        [user_ids(&["alice", "bob"]), user_ids(&["alice", "carol"])]
     );
 }
 
-#[tokio::test]
-async fn every_follower_receives_every_game_event() {
-    let mut harness = harness(config()).await;
-    let (_second, mut second_events) = harness.follower().await;
-    harness.watching_alice_and_bob().await;
-    harness.lichess.stream_line(0, STARTED);
-    harness.lichess.stream_line(0, WHITE_WON);
-    let finished = GameEvent::Finished {
-        game: game(),
-        outcome: GameOutcome::WhiteWon,
-        ending: Ending::Checkmate,
-    };
-    assert_eq!(
-        [harness.next_event().await, harness.next_event().await],
-        [GameEvent::Started(game()), finished.clone()]
-    );
-    assert_eq!(
-        [
-            next(&mut second_events).await,
-            next(&mut second_events).await
-        ],
-        [GameEvent::Started(game()), finished]
-    );
-}
+#[sqlx::test]
+async fn every_leagues_fixtures_are_stored_and_watched(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    let team = harness
+        .submit(fixtures_of("team4545", &[("alice", "bob")]))
+        .await;
+    let lone_wolf = harness
+        .submit(fixtures_of("lonewolf", &[("bob", "carol")]))
+        .await;
 
-#[tokio::test]
-async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
-    let harness = harness(config()).await;
-    let (stopped, _) = harness.follower().await;
-    let (_still_following, mut events) = harness.follower().await;
-    stopped.stop_gracefully().await.unwrap();
-    stopped.wait_for_shutdown().await;
-    harness.watching_alice_and_bob().await;
-    harness.lichess.stream_line(0, STARTED);
-    harness.lichess.stream_line(0, WHITE_WON);
-    let finished = GameEvent::Finished {
-        game: game(),
-        outcome: GameOutcome::WhiteWon,
-        ending: Ending::Checkmate,
-    };
-    assert_eq!(
-        [next(&mut events).await, next(&mut events).await],
-        [GameEvent::Started(game()), finished]
-    );
-}
-
-#[tokio::test]
-async fn a_rate_limited_connect_is_retried_only_after_the_rate_limit_backoff() {
-    let rate_limit_backoff = Duration::from_millis(300);
-    let harness = harness(lichess::StreamConfig {
-        rate_limit_backoff,
-        ..config()
+    assert_eq!(harness.active_ids().await, [team, lone_wolf]);
+    eventually("both leagues are watched", || {
+        harness.lichess.connected_user_ids().last() == Some(&user_ids(&["alice", "bob", "carol"]))
     })
+    .await;
+}
+
+#[sqlx::test]
+async fn stored_active_fixtures_are_watched_on_startup(pool: PgPool) {
+    PostgresFixturesStore::new(pool.clone())
+        .store(fixtures_of("team4545", &[("alice", "bob")]))
+        .await
+        .unwrap();
+
+    let harness = harness(pool, config()).await;
+
+    harness.await_requests(1).await;
+    assert_eq!(
+        harness.lichess.connected_user_ids(),
+        [user_ids(&["alice", "bob"])]
+    );
+}
+
+#[sqlx::test]
+async fn ended_fixtures_are_completed_and_no_longer_watched(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    harness
+        .submit(ending_in(
+            fixtures_of("team4545", &[("alice", "bob")]),
+            time::Duration::milliseconds(300),
+        ))
+        .await;
+    let other = harness
+        .submit(fixtures_of("lonewolf", &[("bob", "carol")]))
+        .await;
+
+    eventually("only bob and carol are watched", || {
+        harness.lichess.connected_user_ids().last() == Some(&user_ids(&["bob", "carol"]))
+    })
+    .await;
+    assert_eq!(harness.active_ids().await, [other]);
+}
+
+#[sqlx::test]
+async fn ended_fixtures_are_no_longer_published_as_active(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
+    harness
+        .submit(ending_in(
+            fixtures_of("team4545", &[("alice", "bob")]),
+            time::Duration::milliseconds(300),
+        ))
+        .await;
+    let other = harness
+        .submit(fixtures_of("lonewolf", &[("bob", "carol")]))
+        .await;
+
+    let only_the_other = harness
+        .active_fixtures
+        .wait_for(|active| active.iter().map(|fixtures| fixtures.id).eq([other]));
+    tokio::time::timeout(Duration::from_secs(5), only_the_other)
+        .await
+        .expect("only the other fixtures are published as active")
+        .unwrap();
+}
+
+#[sqlx::test]
+async fn only_asked_leagues_with_active_fixtures_are_found(pool: PgPool) {
+    let harness = harness(pool, config()).await;
+    let team = harness
+        .submit(fixtures_of("team4545", &[("alice", "bob")]))
+        .await;
+    harness
+        .submit(fixtures_of("lonewolf", &[("carol", "dave")]))
+        .await;
+    harness
+        .submit(ending_in(
+            fixtures_of("chess960", &[("erin", "frank")]),
+            -time::Duration::minutes(1),
+        ))
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while harness.current(&["chess960"]).await != CurrentFixtures::default() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the ended chess960 fixtures complete");
+
+    assert_eq!(
+        harness.current(&["team4545", "chess960", "blitz"]).await,
+        CurrentFixtures(BTreeMap::from([(league("heltour", "team4545"), team)]))
+    );
+}
+
+#[sqlx::test]
+async fn an_event_matches_its_players_fixtures_in_either_colour(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
+    let team = harness
+        .submit(fixtures_of("team4545", &[("alice", "bob")]))
+        .await;
+    let lone_wolf = harness
+        .submit(fixtures_of(
+            "lonewolf",
+            &[("bob", "alice"), ("alice", "carol")],
+        ))
+        .await;
+    harness.await_requests(2).await;
+
+    harness.lichess.stream_line(1, STARTED);
+    assert_eq!(
+        harness.next_event().await,
+        GameEvent {
+            change: GameChange::Started(alice_vs_bob("g1")),
+            matched: vec![
+                matched(lone_wolf, "lonewolf", "bob", "alice"),
+                matched(team, "team4545", "alice", "bob"),
+            ],
+        }
+    );
+
+    harness
+        .hand_over(started(game_between("bob", "carol")))
+        .await;
+    assert_eq!(harness.next_event().await.matched, []);
+}
+
+#[sqlx::test]
+async fn the_token_owner_decides_how_players_are_split(pool: PgPool) {
+    let harness = harness_with_token(pool, Some("lip_secret"), config()).await;
+    let names = player_names(901);
+    harness.watch(&names).await;
+    harness.await_requests(2).await;
+
+    harness.owned_by(Some(Availability::Available(TokenOwner(user_id(
+        "lichess4545",
+    )))));
+    harness.await_requests(4).await;
+    assert_eq!(harness.lichess.connection_sizes(), [1, 401, 500, 900]);
+
+    harness.owned_by(Some(Availability::Unavailable(Unavailable {
+        recovery: Recovery::Recoverable,
+        error: "answered 503 Service Unavailable".to_owned(),
+    })));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(harness.lichess.request_count(), 4);
+}
+
+#[sqlx::test]
+async fn a_rate_limited_connect_is_retried_only_after_the_rate_limit_backoff(pool: PgPool) {
+    let rate_limit_backoff = Duration::from_millis(300);
+    let harness = harness(
+        pool,
+        lichess::StreamConfig {
+            rate_limit_backoff,
+            ..config()
+        },
+    )
     .await;
     harness
         .lichess
         .answer_next_with(Answer::Status(StatusCode::TOO_MANY_REQUESTS));
-    harness.watch(&["alice"]).await;
-    eventually("the connect is retried", || {
-        harness.lichess.request_count() == 2
-    })
-    .await;
+    harness.watch(&["alice", "bob"]).await;
+    harness.await_requests(2).await;
     assert!(harness.lichess.gap_before(1) >= rate_limit_backoff);
 }
 
-#[tokio::test]
-async fn an_ended_stream_is_reconnected() {
-    let harness = harness(config()).await;
-    harness.lichess.answer_next_with(Answer::Lines(&[]));
-    harness.watch(&["alice"]).await;
-    eventually("the stream reconnects", || {
-        harness.lichess.request_count() == 2
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn a_heartbeat_resets_the_reconnect_backoff() {
+#[sqlx::test]
+async fn a_heartbeat_resets_the_reconnect_backoff(pool: PgPool) {
     let initial_backoff = Duration::from_millis(500);
-    let harness = harness(lichess::StreamConfig {
-        initial_backoff,
-        max_backoff: Duration::from_secs(10),
-        ..config()
-    })
+    let harness = harness(
+        pool,
+        lichess::StreamConfig {
+            initial_backoff,
+            max_backoff: Duration::from_secs(10),
+            ..config()
+        },
+    )
     .await;
     harness
         .lichess
         .answer_next_with(Answer::Status(StatusCode::BAD_GATEWAY));
     harness.lichess.answer_next_with(Answer::Lines(&[""]));
-    harness.watch(&["alice"]).await;
-    eventually("the stream reconnects twice", || {
-        harness.lichess.request_count() == 3
-    })
-    .await;
+    harness.watch(&["alice", "bob"]).await;
+    harness.await_requests(3).await;
     let after_the_heartbeat = harness.lichess.gap_before(2);
     assert!(
         after_the_heartbeat < initial_backoff * 3 / 2,
@@ -459,9 +588,9 @@ async fn a_heartbeat_resets_the_reconnect_backoff() {
     );
 }
 
-#[tokio::test]
-async fn each_connection_reports_its_player_count_once_connected() {
-    let mut harness = harness(config()).await;
+#[sqlx::test]
+async fn connections_report_up_to_300_players_without_a_token(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
     let names = player_names(301);
     harness.watch(&names).await;
     let mut reported = [
@@ -472,18 +601,33 @@ async fn each_connection_reports_its_player_count_once_connected() {
     assert_eq!(reported, [1, 300]);
 }
 
-#[tokio::test]
-async fn a_failed_connect_is_not_reported_as_connected() {
-    let mut harness = harness(config()).await;
+#[sqlx::test]
+async fn a_failed_connect_is_not_reported_as_connected(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
     harness
         .lichess
         .answer_next_with(Answer::Status(StatusCode::BAD_GATEWAY));
-    harness.watch(&["alice"]).await;
+    harness.watch(&["alice", "bob"]).await;
     assert_eq!(
         harness.next_connection().await,
-        StreamConnected { players: 1 }
+        StreamConnected { players: 2 }
     );
     assert_eq!(harness.lichess.request_count(), 2);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(harness.connections.try_recv().is_err());
+}
+
+#[sqlx::test]
+async fn a_repeated_game_event_is_published_once(pool: PgPool) {
+    let mut harness = harness(pool, config()).await;
+
+    harness.hand_over(started(alice_vs_bob("g1"))).await;
+    harness.hand_over(started(alice_vs_bob("g1"))).await;
+    harness.hand_over(white_won(alice_vs_bob("g1"))).await;
+
+    assert_eq!(
+        harness.next_event().await.change,
+        GameChange::Started(alice_vs_bob("g1"))
+    );
+    assert_eq!(harness.next_event().await.change, finished());
 }

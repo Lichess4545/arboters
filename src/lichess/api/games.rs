@@ -5,6 +5,7 @@ use reqwest::header::{ACCEPT, HeaderValue};
 use serde::Deserialize;
 use time::OffsetDateTime;
 
+use crate::lichess::game::{ImpossibleStatus, StatusName};
 use crate::lichess::{
     Clock, Color, Game, GameId, GameState, GameStatus, Player, Speed, UserId, Variant,
 };
@@ -14,30 +15,21 @@ use super::Api;
 const GAMES_USER_PATH: &str = "api/games/user/";
 const NDJSON: HeaderValue = HeaderValue::from_static("application/x-ndjson");
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GamesUserQuery {
-    pub vs: Option<UserId>,
-    pub since: Option<OffsetDateTime>,
-    pub finished: Option<bool>,
-    pub ongoing: Option<bool>,
+    pub vs: UserId,
+    pub since: OffsetDateTime,
 }
 
 impl GamesUserQuery {
-    fn params(&self) -> Vec<(&'static str, String)> {
-        let mut params = vec![("moves", false.to_string())];
-        if let Some(vs) = &self.vs {
-            params.push(("vs", vs.to_string()));
-        }
-        if let Some(since) = self.since {
-            params.push(("since", epoch_millis(since).to_string()));
-        }
-        if let Some(finished) = self.finished {
-            params.push(("finished", finished.to_string()));
-        }
-        if let Some(ongoing) = self.ongoing {
-            params.push(("ongoing", ongoing.to_string()));
-        }
-        params
+    fn params(&self) -> [(&'static str, String); 5] {
+        [
+            ("vs", self.vs.to_string()),
+            ("since", epoch_millis(self.since).to_string()),
+            ("finished", true.to_string()),
+            ("ongoing", false.to_string()),
+            ("moves", false.to_string()),
+        ]
     }
 }
 
@@ -103,7 +95,7 @@ struct ExportedGame {
     variant: Variant,
     speed: Speed,
     clock: Option<Clock>,
-    status: GameStatus,
+    status: StatusName,
     players: ExportedPlayers,
     winner: Option<Color>,
 }
@@ -134,11 +126,12 @@ impl From<ExportedPlayer> for Player {
     }
 }
 
-impl From<ExportedGame> for GameState {
-    fn from(game: ExportedGame) -> Self {
-        Self {
-            status: game.status,
-            winner: game.winner,
+impl TryFrom<ExportedGame> for GameState {
+    type Error = ImpossibleStatus;
+
+    fn try_from(game: ExportedGame) -> Result<Self, Self::Error> {
+        Ok(Self {
+            status: GameStatus::new(game.status, game.winner)?,
             game: Game {
                 id: game.id,
                 white: game.players.white.into(),
@@ -148,7 +141,7 @@ impl From<ExportedGame> for GameState {
                 variant: game.variant,
                 clock: game.clock,
             },
-        }
+        })
     }
 }
 
@@ -161,7 +154,7 @@ fn decode_lines(body: &str) -> Result<Vec<GameState>, GamesUserError> {
 
 fn decode(line: &str) -> Result<GameState, GamesUserError> {
     serde_json::from_str::<ExportedGame>(line)
-        .map(GameState::from)
+        .and_then(|game| GameState::try_from(game).map_err(serde::de::Error::custom))
         .map_err(|source| GamesUserError::Undecodable {
             line: line.to_owned(),
             source,

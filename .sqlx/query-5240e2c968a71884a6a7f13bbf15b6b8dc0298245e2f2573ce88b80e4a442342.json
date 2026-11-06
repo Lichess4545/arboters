@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO game_events (game_id, kind) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        {
+          "Custom": {
+            "name": "game_event_kind",
+            "kind": {
+              "Enum": [
+                "game_started",
+                "game_finished"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5240e2c968a71884a6a7f13bbf15b6b8dc0298245e2f2573ce88b80e4a442342"
+}

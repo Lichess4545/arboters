@@ -3,18 +3,20 @@ mod database;
 mod http;
 pub mod telemetry;
 
-use kameo::actor::{ActorRef, Recipient, Spawn};
+use kameo::actor::{ActorRef, Spawn};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::game_monitor::watchlist;
-use crate::game_monitor::{Follow, GameEvent, GameMonitor, http_client};
+use crate::game_monitor::{
+    self, GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
+};
 use crate::health::{Health, HealthCheck};
-use crate::heltour::{ActiveLeagues, Heltour};
+use crate::heltour::{self, ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
 use crate::lichess;
 use crate::responses::{PostgresResponses, Responder, ResponseCommands};
@@ -38,32 +40,34 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let heltour = Heltour::new(http.clone(), &config.heltour);
     let status = Status::new(messenger.clone(), config.status.clone())?;
     let lichess = &config.lichess.base_url;
-    let commands = SubscriptionCommands::new(subscriptions.clone(), lichess.clone());
+    let active_leagues = watch::Sender::new(ActiveLeagues::default());
+    let commands = SubscriptionCommands::new(
+        subscriptions.clone(),
+        lichess.clone(),
+        active_leagues.subscribe(),
+    );
 
     let (health_check, health) = start_health(&config, &http, &pool, heltour.clone(), &lichess_api);
     let status = Status::spawn((status, health.clone()));
     let conversations = Conversations::spawn(inbox, commands).await;
     let responding = Responding::start(&conversations, &config, &http, &pool, &messenger);
-    let monitor = GameMonitor::spawn(GameMonitor::new(
-        lichess_api,
+    let monitor = GameMonitor::new(
+        lichess_api.clone(),
         config.lichess.clone(),
+        PostgresFixturesStore::new(pool.clone()),
+        PostgresPublishedEventsStore::new(pool.clone()),
         status.clone().recipient(),
-        health.clone(),
-    ));
-    let notifier = Notifier::spawn((
-        Notifier::new(subscriptions.clone(), messenger, lichess.clone()),
-        monitor.clone().recipient(),
-    ));
-    let reporter = start_reporter(&config, &heltour, monitor.clone().recipient()).await;
-    notifier.wait_for_startup().await;
-    let mut followers = vec![notifier.clone().recipient(), conversations.follower()];
-    followers.extend(reporter.iter().map(|reporter| reporter.clone().recipient()));
-    let mut watchlist_sync = tokio::spawn(watchlist::keep_in_sync(
+    );
+    let notifier = Notifier::new(subscriptions.clone(), messenger, lichess.clone());
+    let mut games = Games::start(
+        &config,
         heltour,
-        monitor.clone().recipient(),
-        followers,
-        config.watchlist.refresh_interval,
-    ));
+        lichess_api,
+        (monitor, health.clone()),
+        notifier,
+        active_leagues,
+    )
+    .await;
 
     let http_stopped = CancellationToken::new();
     let mut http_server = tokio::spawn(http::serve(
@@ -85,25 +89,14 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         }
         () = status.wait_for_shutdown() => Err(anyhow::anyhow!("status stopped unexpectedly")),
         error = HealthCheck::stopped(&health_check) => Err(error),
-        () = monitor.wait_for_shutdown() => Err(anyhow::anyhow!("game monitor stopped unexpectedly")),
-        () = notifier.wait_for_shutdown() => Err(anyhow::anyhow!("notifier stopped unexpectedly")),
-        error = reporter_stopped(reporter.as_ref()) => Err(error),
+        error = games.stopped() => Err(error),
         error = conversations.stopped() => Err(error),
         error = responding.stopped() => Err(error),
-        exit = &mut watchlist_sync => match exit {
-            Ok(()) => Err(anyhow::anyhow!("watchlist sync stopped unexpectedly")),
-            Err(error) => Err(error.into()),
-        },
     };
 
-    watchlist_sync.abort();
+    games.stop().await;
     conversations.stop().await;
     responding.stop().await;
-    stop(&monitor).await;
-    stop(&notifier).await;
-    if let Some(reporter) = &reporter {
-        stop(reporter).await;
-    }
     stop(&health_check).await;
     let shutdown = match &down {
         Ok(signal) => Shutdown::Requested(*signal),
@@ -144,21 +137,88 @@ fn start_health(
     (HealthCheck::spawn(health_check), health)
 }
 
-async fn start_reporter(
-    config: &Config,
-    heltour: &Heltour,
-    monitor: Recipient<Follow<GameEvent>>,
-) -> Option<ActorRef<Reporter>> {
-    if !config.league_games.report {
-        tracing::info!("reports to Heltour are off");
-        return None;
+struct Games {
+    monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
+    notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
+    reporter: Option<ActorRef<Reporter>>,
+    sync: JoinHandle<()>,
+    recheck: JoinHandle<()>,
+}
+
+impl Games {
+    async fn start(
+        config: &Config,
+        heltour: Heltour,
+        lichess: lichess::Api,
+        (monitor, health): (
+            GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>,
+            watch::Receiver<Option<Health>>,
+        ),
+        notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
+        active_leagues: watch::Sender<ActiveLeagues>,
+    ) -> Self {
+        let notifier = Notifier::spawn((notifier, monitor.events()));
+        notifier.wait_for_startup().await;
+        let reporter = if config.league_games.report {
+            let reporter = Reporter::spawn((
+                Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
+                monitor.events(),
+            ));
+            reporter.wait_for_startup().await;
+            Some(reporter)
+        } else {
+            tracing::info!("reports to Heltour are off");
+            None
+        };
+        let active_fixtures = monitor.active_fixtures();
+        let monitor = GameMonitor::spawn((monitor, health));
+        monitor.wait_for_startup().await;
+        let sync = tokio::spawn(heltour::sync::keep_in_sync(
+            heltour,
+            monitor.clone().recipient(),
+            active_leagues,
+            config.heltour_sync.refresh_interval,
+        ));
+        let recheck = tokio::spawn(game_monitor::recheck::keep_rechecking(
+            lichess,
+            active_fixtures,
+            monitor.clone().recipient(),
+            config.game_recheck,
+        ));
+        Self {
+            monitor,
+            notifier,
+            reporter,
+            sync,
+            recheck,
+        }
     }
-    let reporter = Reporter::spawn((
-        Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
-        monitor,
-    ));
-    reporter.wait_for_startup().await;
-    Some(reporter)
+
+    async fn stopped(&mut self) -> anyhow::Error {
+        tokio::select! {
+            () = self.monitor.wait_for_shutdown() => anyhow::anyhow!("game monitor stopped unexpectedly"),
+            () = self.notifier.wait_for_shutdown() => anyhow::anyhow!("notifier stopped unexpectedly"),
+            error = reporter_stopped(self.reporter.as_ref()) => error,
+            exit = &mut self.sync => match exit {
+                Ok(()) => anyhow::anyhow!("heltour sync stopped unexpectedly"),
+                Err(error) => error.into(),
+            },
+            exit = &mut self.recheck => match exit {
+                Ok(()) => anyhow::anyhow!("finished games recheck stopped unexpectedly"),
+                Err(error) => error.into(),
+            },
+        }
+    }
+
+    async fn stop(&self) {
+        self.sync.abort();
+        self.recheck.abort();
+        stop(&self.monitor).await;
+        stop(&self.notifier).await;
+        if let Some(reporter) = &self.reporter {
+            stop(reporter).await;
+        }
+    }
 }
 
 async fn reporter_stopped(reporter: Option<&ActorRef<Reporter>>) -> anyhow::Error {
@@ -196,10 +256,6 @@ impl Conversations {
         let commands = SubscriptionCommands::spawn((commands, inbox.clone().recipient()));
         commands.wait_for_startup().await;
         Self { inbox, commands }
-    }
-
-    fn follower(&self) -> Recipient<ActiveLeagues> {
-        self.commands.clone().recipient()
     }
 
     async fn stopped(&self) -> anyhow::Error {

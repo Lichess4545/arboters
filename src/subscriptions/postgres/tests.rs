@@ -1,13 +1,9 @@
 use super::*;
 use crate::heltour::team;
-use crate::lichess;
-
-fn league(tag: &str) -> league::Tag {
-    league::Tag::try_new(tag).unwrap()
-}
+use crate::testing::{tag, user_id};
 
 fn player(name: &str) -> SubscriptionSource {
-    SubscriptionSource::Player(lichess::UserId::try_new(name).unwrap())
+    SubscriptionSource::Player(user_id(name))
 }
 
 fn team(name: &str) -> SubscriptionSource {
@@ -34,7 +30,7 @@ fn subscription(
 ) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(requester),
-        league: league("team4545"),
+        league: tag("team4545"),
         source,
         event: GameEventKind::GameStarted,
         target,
@@ -53,10 +49,10 @@ async fn subscribed(
 }
 
 async fn targets_of_alice_vs_bob(subscriptions: &PostgresSubscriptions) -> BTreeSet<Conversation> {
-    let [alice, bob] = ["alice", "bob"].map(|name| lichess::UserId::try_new(name).unwrap());
+    let [alice, bob] = ["alice", "bob"].map(user_id);
     subscriptions
         .targets_for(
-            &[&league("team4545")],
+            &[&tag("team4545")],
             GameEventKind::GameStarted,
             [&alice, &bob],
         )
@@ -125,7 +121,7 @@ async fn a_player_and_a_team_with_the_same_name_are_different_sources(pool: PgPo
 #[sqlx::test]
 async fn subscriptions_in_another_league_are_not_targets(pool: PgPool) {
     let elsewhere = |source| NewSubscription {
-        league: league("lonewolf"),
+        league: tag("lonewolf"),
         ..subscription(1, source, direct_message(1))
     };
     let subscriptions = subscribed(
@@ -154,7 +150,7 @@ async fn subscriptions_to_another_event_are_not_targets(pool: PgPool) {
 #[sqlx::test]
 async fn league_tags_match_regardless_of_case(pool: PgPool) {
     let shouted = NewSubscription {
-        league: league("Team4545"),
+        league: tag("Team4545"),
         ..subscription(1, player("alice"), direct_message(1))
     };
     let subscriptions = subscribed(pool, vec![shouted]).await;
@@ -186,7 +182,7 @@ async fn a_listed_subscription_reads_back_as_it_was_made(pool: PgPool) {
         [Subscription {
             id,
             requester: ChatUserId(1),
-            league: league("team4545"),
+            league: tag("team4545"),
             source: team("knights"),
             event: GameEventKind::GameFinished,
             target: topic("games"),

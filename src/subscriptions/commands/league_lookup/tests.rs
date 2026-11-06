@@ -23,7 +23,6 @@ fn active() -> ActiveLeagues {
             league("chess960", "Chess960 League", Some((45, 45))),
             league("blindfold", "Blindfold League", None),
         ],
-        pairings: Vec::new(),
     }
 }
 
@@ -65,7 +64,6 @@ fn a_typo_as_close_to_two_tags_finds_both() {
             league("team4545", "Team 4545 League", None),
             league("team4546", "Team 4546 League", None),
         ],
-        pairings: Vec::new(),
     };
 
     let found = find(&active, &WrittenLeague::try_new("team454").unwrap());

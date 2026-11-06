@@ -57,7 +57,7 @@ pub enum Speed {
     Correspondence,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Variant {
     Standard,
@@ -74,7 +74,7 @@ pub enum Variant {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum GameStatus {
+pub(super) enum StatusName {
     Created,
     Started,
     Aborted,
@@ -91,7 +91,57 @@ pub enum GameStatus {
     VariantEnd,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GameStatus {
+    Created,
+    Started,
+    Aborted,
+    Mate { winner: Color },
+    Resign { winner: Color },
+    Stalemate,
+    Timeout { winner: Option<Color> },
+    Draw,
+    Outoftime { winner: Option<Color> },
+    Cheat { winner: Color },
+    NoStart { winner: Color },
+    UnknownFinish { winner: Option<Color> },
+    InsufficientMaterialClaim,
+    VariantEnd { winner: Color },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("lichess never ends a game as {status:?} with winner {winner:?}")]
+pub(super) struct ImpossibleStatus {
+    status: StatusName,
+    winner: Option<Color>,
+}
+
+impl GameStatus {
+    pub(super) const fn new(
+        status: StatusName,
+        winner: Option<Color>,
+    ) -> Result<Self, ImpossibleStatus> {
+        match (status, winner) {
+            (StatusName::Created, None) => Ok(Self::Created),
+            (StatusName::Started, None) => Ok(Self::Started),
+            (StatusName::Aborted, None) => Ok(Self::Aborted),
+            (StatusName::Stalemate, None) => Ok(Self::Stalemate),
+            (StatusName::Draw, None) => Ok(Self::Draw),
+            (StatusName::InsufficientMaterialClaim, None) => Ok(Self::InsufficientMaterialClaim),
+            (StatusName::Mate, Some(winner)) => Ok(Self::Mate { winner }),
+            (StatusName::Resign, Some(winner)) => Ok(Self::Resign { winner }),
+            (StatusName::Cheat, Some(winner)) => Ok(Self::Cheat { winner }),
+            (StatusName::NoStart, Some(winner)) => Ok(Self::NoStart { winner }),
+            (StatusName::VariantEnd, Some(winner)) => Ok(Self::VariantEnd { winner }),
+            (StatusName::Timeout, winner) => Ok(Self::Timeout { winner }),
+            (StatusName::Outoftime, winner) => Ok(Self::Outoftime { winner }),
+            (StatusName::UnknownFinish, winner) => Ok(Self::UnknownFinish { winner }),
+            (status, winner) => Err(ImpossibleStatus { status, winner }),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize)]
 pub struct Clock {
     #[serde(rename = "initial")]
     pub initial_seconds: u32,
@@ -121,5 +171,7 @@ impl Game {
 pub struct GameState {
     pub game: Game,
     pub status: GameStatus,
-    pub winner: Option<Color>,
 }
+
+#[cfg(test)]
+mod tests;

@@ -8,6 +8,7 @@ use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::error::SendError;
 use kameo::message::{Context, Message};
+use tokio::sync::watch;
 use url::Url;
 
 use crate::chat::{
@@ -24,6 +25,7 @@ use spelling::Found;
 
 #[derive(Debug)]
 pub struct SubscriptionCommands<R> {
+    active_leagues: watch::Receiver<ActiveLeagues>,
     active: ActiveLeagues,
     subscriptions: R,
     subscribed_by: HashMap<MessageId, (SubscriptionId, NewSubscription)>,
@@ -36,8 +38,13 @@ pub struct InboxUnavailable(#[from] SendError<Listen>);
 
 impl<R: Subscriptions> SubscriptionCommands<R> {
     #[must_use]
-    pub fn new(subscriptions: R, lichess: Url) -> Self {
+    pub fn new(
+        subscriptions: R,
+        lichess: Url,
+        active_leagues: watch::Receiver<ActiveLeagues>,
+    ) -> Self {
         Self {
+            active_leagues,
             active: ActiveLeagues::default(),
             subscriptions,
             subscribed_by: HashMap::new(),
@@ -448,14 +455,6 @@ impl<R: Subscriptions> Actor for SubscriptionCommands<R> {
     }
 }
 
-impl<R: Subscriptions> Message<ActiveLeagues> for SubscriptionCommands<R> {
-    type Reply = ();
-
-    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
-        self.active = active;
-    }
-}
-
 impl<R: Subscriptions> Message<IncomingMessage> for SubscriptionCommands<R> {
     type Reply = Handling;
 
@@ -464,6 +463,7 @@ impl<R: Subscriptions> Message<IncomingMessage> for SubscriptionCommands<R> {
         message: IncomingMessage,
         _: &mut Context<Self, Self::Reply>,
     ) -> Handling {
+        self.active = self.active_leagues.borrow().clone();
         let reply = match parse(&message.text, &self.lichess) {
             Some(command) => self.reply_to(&message, command).await,
             None => match self.earlier_subscription(&message) {
