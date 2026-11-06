@@ -4,7 +4,10 @@ use super::*;
 use crate::testing::alice_vs_bob;
 
 fn started(id: &str) -> GameEvent {
-    GameEvent::Started(alice_vs_bob(id))
+    GameEvent {
+        change: GameChange::Started(alice_vs_bob(id)),
+        matched: Vec::new(),
+    }
 }
 
 #[tokio::test]

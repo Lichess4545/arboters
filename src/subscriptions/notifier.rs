@@ -5,19 +5,18 @@ use std::convert::Infallible;
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use url::Url;
 
 use crate::chat::Messenger;
 use crate::game_monitor::{self, GameEvent};
-use crate::heltour::{ActiveLeagues, league};
+use crate::heltour::league;
 
 use super::Subscriptions;
 use rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
-    active_leagues: watch::Receiver<ActiveLeagues>,
     subscriptions: R,
     messenger: M,
     lichess: Url,
@@ -25,14 +24,8 @@ pub struct Notifier<R, M> {
 
 impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
-    pub const fn new(
-        subscriptions: R,
-        messenger: M,
-        lichess: Url,
-        active_leagues: watch::Receiver<ActiveLeagues>,
-    ) -> Self {
+    pub const fn new(subscriptions: R, messenger: M, lichess: Url) -> Self {
         Self {
-            active_leagues,
             subscriptions,
             messenger,
             lichess,
@@ -41,17 +34,15 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let leagues: Vec<league::Tag> = self
-            .active_leagues
-            .borrow()
-            .leagues_of(game)
+        let tags: Vec<_> = event
+            .leagues()
             .into_iter()
-            .cloned()
+            .filter_map(league::Tag::of_monitored)
             .collect();
-        if leagues.is_empty() {
+        if tags.is_empty() {
             return;
         }
-        let leagues: Vec<_> = leagues.iter().collect();
+        let leagues: Vec<_> = tags.iter().collect();
         let targets = match self
             .subscriptions
             .targets_for(&leagues, event.kind(), game.user_ids())
@@ -63,7 +54,7 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
                 return;
             }
         };
-        let notification = render(event, &self.lichess);
+        let notification = render(&event.change, &self.lichess);
         for target in &targets {
             match self.messenger.send(target, &notification).await {
                 Ok(()) => tracing::debug!(game_id = %game.id, ?target, "notification delivered"),

@@ -9,11 +9,9 @@ use rand::rngs::StdRng;
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
-use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::game_monitor::watchlist;
-use crate::game_monitor::{GameMonitor, http_client};
+use crate::game_monitor::{GameMonitor, PostgresFixturesStore, http_client};
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{ActiveLeagues, Heltour};
 use crate::league_games::Reporter;
@@ -53,16 +51,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let monitor = GameMonitor::new(
         lichess_api,
         config.lichess.clone(),
+        PostgresFixturesStore::new(pool.clone()),
         status.clone().recipient(),
-        health.clone(),
     );
-    let notifier = Notifier::new(
-        subscriptions.clone(),
-        messenger,
-        lichess.clone(),
-        active_leagues.subscribe(),
-    );
-    let mut games = Games::start(&config, heltour, monitor, notifier, active_leagues).await;
+    let notifier = Notifier::new(subscriptions.clone(), messenger, lichess.clone());
+    let games = Games::start(&config, heltour, (monitor, health.clone()), notifier).await;
 
     let http_stopped = CancellationToken::new();
     let mut http_server = tokio::spawn(http::serve(
@@ -133,29 +126,26 @@ fn start_health(
 }
 
 struct Games {
-    monitor: ActorRef<GameMonitor>,
+    monitor: ActorRef<GameMonitor<PostgresFixturesStore>>,
     notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
     reporter: Option<ActorRef<Reporter>>,
-    sync: JoinHandle<()>,
 }
 
 impl Games {
     async fn start(
         config: &Config,
         heltour: Heltour,
-        monitor: GameMonitor,
+        (monitor, health): (
+            GameMonitor<PostgresFixturesStore>,
+            watch::Receiver<Option<Health>>,
+        ),
         notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
-        active_leagues: watch::Sender<ActiveLeagues>,
     ) -> Self {
         let notifier = Notifier::spawn((notifier, monitor.events()));
         notifier.wait_for_startup().await;
         let reporter = if config.league_games.report {
             let reporter = Reporter::spawn((
-                Reporter::new(
-                    heltour.clone(),
-                    config.lichess.base_url.clone(),
-                    active_leagues.subscribe(),
-                ),
+                Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
                 monitor.events(),
             ));
             reporter.wait_for_startup().await;
@@ -164,35 +154,23 @@ impl Games {
             tracing::info!("reports to Heltour are off");
             None
         };
-        let monitor = GameMonitor::spawn(monitor);
-        let sync = tokio::spawn(watchlist::keep_in_sync(
-            heltour,
-            monitor.clone().recipient(),
-            active_leagues,
-            config.watchlist.refresh_interval,
-        ));
+        let monitor = GameMonitor::spawn((monitor, health));
         Self {
             monitor,
             notifier,
             reporter,
-            sync,
         }
     }
 
-    async fn stopped(&mut self) -> anyhow::Error {
+    async fn stopped(&self) -> anyhow::Error {
         tokio::select! {
             () = self.monitor.wait_for_shutdown() => anyhow::anyhow!("game monitor stopped unexpectedly"),
             () = self.notifier.wait_for_shutdown() => anyhow::anyhow!("notifier stopped unexpectedly"),
             error = reporter_stopped(self.reporter.as_ref()) => error,
-            exit = &mut self.sync => match exit {
-                Ok(()) => anyhow::anyhow!("watchlist sync stopped unexpectedly"),
-                Err(error) => error.into(),
-            },
         }
     }
 
     async fn stop(&self) {
-        self.sync.abort();
         stop(&self.monitor).await;
         stop(&self.notifier).await;
         if let Some(reporter) = &self.reporter {

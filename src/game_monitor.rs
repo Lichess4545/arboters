@@ -6,17 +6,17 @@ mod monitor;
 mod stores;
 pub mod watchlist;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use futures::Stream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-use crate::lichess;
-
-pub use event::{Decision, Draw, GameEvent, GameEventKind, VoidReason, Win};
+pub use event::{
+    Decision, Draw, GameChange, GameEvent, GameEventKind, MatchedFixture, VoidReason, Win,
+};
 pub use fixtures::{Difference, Fixture, Fixtures, FixturesId, NewFixtures, Period};
 pub use league::League;
 pub use monitor::GameMonitor;
@@ -35,8 +35,20 @@ pub fn http_client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().user_agent(USER_AGENT).build()
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Watch(pub BTreeSet<lichess::UserId>);
+#[derive(Debug)]
+pub struct SubmitFixtures {
+    pub fixtures: NewFixtures,
+    pub stored: oneshot::Sender<FixturesId>,
+}
+
+#[derive(Debug)]
+pub struct FindCurrentFixtures {
+    pub leagues: BTreeSet<League>,
+    pub found: oneshot::Sender<CurrentFixtures>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CurrentFixtures(pub BTreeMap<League, FixturesId>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamConnected {

@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 use crate::lichess;
 
 use super::League;
+use super::event::MatchedFixture;
 
 #[nutype(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Display))]
 pub struct FixturesId(i64);
@@ -28,6 +29,11 @@ pub enum Difference {
 }
 
 impl Fixture {
+    fn is_played_in(&self, game: &lichess::Game) -> bool {
+        let players = game.user_ids();
+        players == [&self.white, &self.black] || players == [&self.black, &self.white]
+    }
+
     /// ```
     /// use std::collections::BTreeSet;
     ///
@@ -114,5 +120,29 @@ impl Fixtures {
             games: fixtures.games,
             stored_at,
         }
+    }
+
+    pub(super) fn has_the_games_and_period_of(&self, new: &NewFixtures) -> bool {
+        self.league == new.league && self.period == new.period && self.games == new.games
+    }
+
+    pub(super) fn players(&self) -> impl Iterator<Item = &lichess::UserId> {
+        self.games
+            .iter()
+            .flat_map(|game| [&game.white, &game.black])
+    }
+
+    pub(super) fn played_in<'a>(
+        &'a self,
+        game: &'a lichess::Game,
+    ) -> impl Iterator<Item = MatchedFixture> + 'a {
+        self.games
+            .iter()
+            .filter(|fixture| fixture.is_played_in(game))
+            .map(|fixture| MatchedFixture {
+                fixtures_id: self.id,
+                league: self.league.clone(),
+                fixture: fixture.clone(),
+            })
     }
 }

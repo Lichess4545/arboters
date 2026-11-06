@@ -7,11 +7,10 @@ use super::*;
 use crate::chat::{
     ChannelName, ChatUserId, Conversation, DeliveryError, OutgoingMessage, TopicName,
 };
-use crate::game_monitor::GameEventKind;
-use crate::heltour::Pairing;
+use crate::game_monitor::{FixturesId, GameChange, GameEventKind, MatchedFixture};
 use crate::lichess;
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions, SubscriptionSource};
-use crate::testing::{alice_vs_bob, tag, user_id};
+use crate::testing::{alice_vs_bob, fixture, tag, user_id};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -51,15 +50,12 @@ impl Messenger for RecordingMessenger {
     }
 }
 
-fn paired_in(league: &str, white: &str, black: &str) -> ActiveLeagues {
-    ActiveLeagues {
-        leagues: Vec::new(),
-        pairings: vec![Pairing {
-            league: tag(league),
-            white: user_id(white),
-            black: user_id(black),
-        }],
-    }
+fn paired_in(league: &str, white: &str, black: &str) -> Vec<MatchedFixture> {
+    vec![MatchedFixture {
+        fixtures_id: FixturesId::new(1),
+        league: tag(league).monitored(),
+        fixture: fixture(white, black),
+    }]
 }
 
 fn direct_message(user_id: u64) -> Conversation {
@@ -93,7 +89,7 @@ fn announced(
     targets: impl IntoIterator<Item = Conversation>,
 ) -> Vec<(Conversation, OutgoingMessage)> {
     let notification = render(
-        &GameEvent::Started(alice_vs_bob("abcd1234")),
+        &GameChange::Started(alice_vs_bob("abcd1234")),
         &lichess::Config::default().base_url,
     );
     targets
@@ -105,7 +101,7 @@ fn announced(
 async fn deliveries(
     pool: PgPool,
     subscriptions: impl IntoIterator<Item = NewSubscription>,
-    active: ActiveLeagues,
+    matched: Vec<MatchedFixture>,
     messenger: RecordingMessenger,
 ) -> Vec<(Conversation, OutgoingMessage)> {
     let stored = PostgresSubscriptions::new(pool);
@@ -118,14 +114,14 @@ async fn deliveries(
             stored,
             messenger.clone(),
             lichess::Config::default().base_url,
-            watch::channel(active).1,
         ),
         events,
     ));
     notifier
-        .ask(StreamMessage::Next(GameEvent::Started(alice_vs_bob(
-            "abcd1234",
-        ))))
+        .ask(StreamMessage::Next(GameEvent {
+            change: GameChange::Started(alice_vs_bob("abcd1234")),
+            matched,
+        }))
         .await
         .unwrap();
     messenger.deliveries()

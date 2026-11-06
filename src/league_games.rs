@@ -1,17 +1,18 @@
 mod config;
 
+use std::collections::BTreeSet;
 use std::convert::Infallible;
 
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
 use url::Url;
 
-use crate::game_monitor::{self, Decision, Draw, GameEvent, VoidReason, Win};
-use crate::heltour::{
-    ActiveLeagues, Heltour, League, PairingResult, PairingUpdate, UpdatePairingError,
+use crate::game_monitor::{
+    self, Decision, Difference, Draw, Fixture, GameChange, GameEvent, VoidReason, Win,
 };
+use crate::heltour::{Heltour, PairingResult, PairingUpdate, UpdatePairingError, league};
 
 pub use config::Config;
 
@@ -19,55 +20,36 @@ pub use config::Config;
 pub struct Reporter {
     heltour: Heltour,
     lichess: Url,
-    active_leagues: watch::Receiver<ActiveLeagues>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Breach {
-    TimeControl,
-    Rated,
-    Variant,
+    Terms(BTreeSet<Difference>),
     Decision(Decision),
     Void(VoidReason),
 }
 
 impl Reporter {
     #[must_use]
-    pub const fn new(
-        heltour: Heltour,
-        lichess: Url,
-        active_leagues: watch::Receiver<ActiveLeagues>,
-    ) -> Self {
-        Self {
-            heltour,
-            lichess,
-            active_leagues,
-        }
-    }
-
-    fn leagues_pairing_the_players_of(&self, event: &GameEvent) -> Vec<League> {
-        let active = self.active_leagues.borrow();
-        let paired_in = active.leagues_of(event.game());
-        active
-            .leagues
-            .iter()
-            .filter(|league| paired_in.contains(&league.tag))
-            .cloned()
-            .collect()
+    pub const fn new(heltour: Heltour, lichess: Url) -> Self {
+        Self { heltour, lichess }
     }
 
     async fn report(&self, event: &GameEvent) {
         let game = event.game();
-        for league in self.leagues_pairing_the_players_of(event) {
-            let result = match judge(event, &league) {
+        for matched in &event.matched {
+            let Some(league) = league::Tag::of_monitored(&matched.league) else {
+                continue;
+            };
+            let result = match judge(&event.change, &matched.fixture) {
                 Ok(result) => result,
                 Err(breach) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?breach, "game not reported to Heltour");
+                    tracing::info!(game = %game.id, league = %league, ?breach, "game not reported to Heltour");
                     continue;
                 }
             };
             let update = PairingUpdate {
-                league: league.tag.clone(),
+                league: league.clone(),
                 white: game.white.user_id.clone(),
                 black: game.black.user_id.clone(),
                 game_link: game.id.link(&self.lichess),
@@ -75,10 +57,10 @@ impl Reporter {
             };
             match self.heltour.update_pairing(&update).await {
                 Ok(()) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?result, "game reported to Heltour");
+                    tracing::info!(game = %game.id, league = %league, ?result, "game reported to Heltour");
                 }
                 Err(UpdatePairingError::Refused(refusal)) => {
-                    tracing::info!(game = %game.id, league = %league.tag, ?refusal, "Heltour declined the game");
+                    tracing::info!(game = %game.id, league = %league, ?refusal, "Heltour declined the game");
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, cause = ?std::error::Error::source(&error), game = %game.id, "could not report the game to Heltour");
@@ -88,24 +70,24 @@ impl Reporter {
     }
 }
 
-fn judge(event: &GameEvent, league: &League) -> Result<Option<PairingResult>, Breach> {
-    let game = event.game();
-    if league.time_control.is_none() || game.clock != league.time_control {
-        return Err(Breach::TimeControl);
+fn judge(change: &GameChange, fixture: &Fixture) -> Result<Option<PairingResult>, Breach> {
+    let broken = broken_terms(fixture, change);
+    if !broken.is_empty() {
+        return Err(Breach::Terms(broken));
     }
-    if game.rated != league.rated {
-        return Err(Breach::Rated);
-    }
-    if game.variant != league.variant {
-        return Err(Breach::Variant);
-    }
-    match event {
-        GameEvent::Started(_) => Ok(None),
-        GameEvent::Decided { decision, .. } => result_of(*decision)
+    match change {
+        GameChange::Started(_) => Ok(None),
+        GameChange::Decided { decision, .. } => result_of(*decision)
             .map(Some)
             .ok_or(Breach::Decision(*decision)),
-        GameEvent::Void { reason, .. } => Err(Breach::Void(*reason)),
+        GameChange::Void { reason, .. } => Err(Breach::Void(*reason)),
     }
+}
+
+fn broken_terms(fixture: &Fixture, change: &GameChange) -> BTreeSet<Difference> {
+    let mut differences = fixture.differences_from(change.game());
+    differences.remove(&Difference::ColorsFlipped);
+    differences
 }
 
 const fn result_of(decision: Decision) -> Option<PairingResult> {

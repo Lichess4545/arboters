@@ -8,27 +8,27 @@ fn lichess() -> Url {
 }
 
 fn decided(decision: Decision) -> String {
-    rendered(&GameEvent::Decided {
+    rendered(&GameChange::Decided {
         game: alice_vs_bob("abcd1234"),
         decision,
     })
 }
 
 fn void(reason: VoidReason) -> String {
-    rendered(&GameEvent::Void {
+    rendered(&GameChange::Void {
         game: alice_vs_bob("abcd1234"),
         reason,
     })
 }
 
-fn rendered(event: &GameEvent) -> String {
-    render(event, &lichess()).markdown().to_owned()
+fn rendered(change: &GameChange) -> String {
+    render(change, &lichess()).markdown().to_owned()
 }
 
 #[test]
 fn a_started_game_announces_white_vs_black_and_the_game_link() {
     assert_eq!(
-        render(&GameEvent::Started(alice_vs_bob("abcd1234")), &lichess()).markdown(),
+        render(&GameChange::Started(alice_vs_bob("abcd1234")), &lichess()).markdown(),
         "@_**alice** vs @_**bob** has started: https://lichess.org/game/abcd1234"
     );
 }
@@ -61,7 +61,7 @@ fn an_aborted_game_is_announced_as_aborted() {
 fn the_game_link_points_at_the_configured_lichess_site() {
     let local = Url::parse("http://localhost:9663").unwrap();
     assert_eq!(
-        render(&GameEvent::Started(alice_vs_bob("abcd1234")), &local).markdown(),
+        render(&GameChange::Started(alice_vs_bob("abcd1234")), &local).markdown(),
         "@_**alice** vs @_**bob** has started: http://localhost:9663/game/abcd1234"
     );
 }

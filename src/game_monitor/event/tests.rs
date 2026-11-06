@@ -5,34 +5,34 @@ fn game() -> Game {
     alice_vs_bob("g1")
 }
 
-fn change_of(status: GameStatus) -> Option<GameEvent> {
-    GameEvent::of(GameState {
+fn change_of(status: GameStatus) -> Option<GameChange> {
+    GameChange::of(GameState {
         game: game(),
         status,
     })
 }
 
-fn decided(decision: Decision) -> GameEvent {
-    GameEvent::Decided {
+fn decided(decision: Decision) -> GameChange {
+    GameChange::Decided {
         game: game(),
         decision,
     }
 }
 
-fn white_won(win: Win) -> GameEvent {
+fn white_won(win: Win) -> GameChange {
     decided(Decision::WhiteWon(win))
 }
 
-fn black_won(win: Win) -> GameEvent {
+fn black_won(win: Win) -> GameChange {
     decided(Decision::BlackWon(win))
 }
 
-fn drawn(draw: Draw) -> GameEvent {
+fn drawn(draw: Draw) -> GameChange {
     decided(Decision::Drawn(draw))
 }
 
-fn void(reason: VoidReason) -> GameEvent {
-    GameEvent::Void {
+fn void(reason: VoidReason) -> GameChange {
+    GameChange::Void {
         game: game(),
         reason,
     }
@@ -43,7 +43,7 @@ fn statuses_map_to_game_changes() {
     let white = Color::White;
     let black = Color::Black;
     let cases = [
-        (GameStatus::Started, GameEvent::Started(game())),
+        (GameStatus::Started, GameChange::Started(game())),
         (GameStatus::Aborted, void(VoidReason::Aborted)),
         (
             GameStatus::Mate { winner: white },

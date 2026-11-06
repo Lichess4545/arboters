@@ -8,15 +8,16 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::game_monitor::http_client;
-use crate::heltour::{self, Pairing, league};
+use crate::game_monitor::{FixturesId, MatchedFixture};
+use crate::heltour;
 use crate::lichess::{self, Clock, Game, GameId, Variant};
-use crate::testing::{self, CLASSICAL_CLOCK, tag, user_id};
+use crate::testing::{CLASSICAL_CLOCK, alice_vs_bob, fixture, league, tag};
 
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
 
 type Fields = BTreeMap<String, String>;
 
-async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields> {
+async fn reports_of(events: Vec<GameEvent>) -> Vec<Fields> {
     let heltour = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/api/update_pairing/"))
@@ -31,7 +32,6 @@ async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields
         Reporter::new(
             Heltour::new(http_client().unwrap(), &config),
             lichess::Config::default().base_url,
-            watch::channel(active).1,
         ),
         broadcast::channel(1).1,
     ));
@@ -49,45 +49,26 @@ fn form(request: &Request) -> Fields {
         .collect()
 }
 
-fn classical(tag_name: &str) -> League {
-    League {
-        tag: tag(tag_name),
-        name: league::Name::try_new(tag_name).unwrap(),
-        time_control: Some(CLASSICAL_CLOCK),
-        variant: Variant::Standard,
-        rated: true,
+fn fixture_in(league: &str, white: &str, black: &str) -> MatchedFixture {
+    MatchedFixture {
+        fixtures_id: FixturesId::new(1),
+        league: tag(league).monitored(),
+        fixture: fixture(white, black),
     }
 }
 
-fn pairing(league: &str, white: &str, black: &str) -> Pairing {
-    Pairing {
-        league: tag(league),
-        white: user_id(white),
-        black: user_id(black),
+fn started(game: Game) -> GameEvent {
+    GameEvent {
+        change: GameChange::Started(game),
+        matched: vec![fixture_in("classical", "alice", "bob")],
     }
-}
-
-fn alice_vs_bob_in(league: League) -> ActiveLeagues {
-    let pairing = pairing(league.tag.as_str(), "alice", "bob");
-    ActiveLeagues {
-        leagues: vec![league],
-        pairings: vec![pairing],
-    }
-}
-
-fn alice_vs_bob() -> ActiveLeagues {
-    alice_vs_bob_in(classical("classical"))
 }
 
 fn game() -> Game {
     Game {
         clock: Some(CLASSICAL_CLOCK),
-        ..testing::alice_vs_bob("abcd1234")
+        ..alice_vs_bob("abcd1234")
     }
-}
-
-const fn started(game: Game) -> GameEvent {
-    GameEvent::Started(game)
 }
 
 fn game_where(change: impl FnOnce(&mut Game)) -> Game {
@@ -97,16 +78,23 @@ fn game_where(change: impl FnOnce(&mut Game)) -> Game {
 }
 
 fn decided(decision: Decision) -> GameEvent {
-    GameEvent::Decided {
+    finished(GameChange::Decided {
         game: game(),
         decision,
-    }
+    })
 }
 
 fn void(reason: VoidReason) -> GameEvent {
-    GameEvent::Void {
+    finished(GameChange::Void {
         game: game(),
         reason,
+    })
+}
+
+fn finished(change: GameChange) -> GameEvent {
+    GameEvent {
+        change,
+        matched: vec![fixture_in("classical", "alice", "bob")],
     }
 }
 
@@ -128,7 +116,7 @@ fn report_to(league: &str, result: Option<&str>) -> Fields {
 #[tokio::test]
 async fn a_valid_start_is_reported_without_a_result() {
     assert_eq!(
-        reports_of(alice_vs_bob(), vec![started(game())]).await,
+        reports_of(vec![started(game())]).await,
         [report_to("classical", None)]
     );
 }
@@ -144,14 +132,14 @@ async fn a_valid_finish_reports_its_result() {
     ];
     for (decision, result) in results {
         assert_eq!(
-            reports_of(alice_vs_bob(), vec![decided(decision)]).await,
+            reports_of(vec![decided(decision)]).await,
             [report_to("classical", Some(result))],
             "{decision:?}"
         );
     }
 }
 
-struct Unreported(&'static str, ActiveLeagues, GameEvent);
+struct Unreported(&'static str, GameEvent);
 
 #[tokio::test]
 async fn an_invalid_game_is_not_reported() {
@@ -161,94 +149,75 @@ async fn an_invalid_game_is_not_reported() {
             increment_seconds,
         })
     };
-    let without_time_controls = alice_vs_bob_in(League {
-        time_control: None,
-        ..classical("classical")
-    });
+    let mut without_time_controls = started(game_where(|game| game.clock = None));
+    without_time_controls.matched[0].fixture.time_control = None;
     let breaches = [
         Unreported(
             "initial time",
-            alice_vs_bob(),
             started(game_where(|game| game.clock = clock(1800, 45))),
         ),
         Unreported(
             "increment",
-            alice_vs_bob(),
             started(game_where(|game| game.clock = clock(2700, 30))),
         ),
-        Unreported(
-            "no clock",
-            alice_vs_bob(),
-            started(game_where(|game| game.clock = None)),
-        ),
-        Unreported(
-            "no time controls",
-            without_time_controls,
-            started(game_where(|game| game.clock = None)),
-        ),
-        Unreported(
-            "unrated",
-            alice_vs_bob(),
-            started(game_where(|game| game.rated = false)),
-        ),
+        Unreported("no clock", started(game_where(|game| game.clock = None))),
+        Unreported("no time controls", without_time_controls),
+        Unreported("unrated", started(game_where(|game| game.rated = false))),
         Unreported(
             "variant",
-            alice_vs_bob(),
             started(game_where(|game| game.variant = Variant::Chess960)),
         ),
         Unreported(
             "claimed victory",
-            alice_vs_bob(),
             decided(Decision::WhiteWon(Win::VictoryClaimed)),
         ),
         Unreported(
             "cheat detected",
-            alice_vs_bob(),
             decided(Decision::BlackWon(Win::CheatDetected)),
         ),
-        Unreported("aborted", alice_vs_bob(), void(VoidReason::Aborted)),
-        Unreported(
-            "never started",
-            alice_vs_bob(),
-            void(VoidReason::NeverStarted),
-        ),
-        Unreported(
-            "unknown win",
-            alice_vs_bob(),
-            decided(Decision::WhiteWon(Win::Unknown)),
-        ),
-        Unreported(
-            "unknown draw",
-            alice_vs_bob(),
-            decided(Decision::Drawn(Draw::Unknown)),
-        ),
-        Unreported(
-            "player left",
-            alice_vs_bob(),
-            decided(Decision::Drawn(Draw::PlayerLeft)),
-        ),
+        Unreported("aborted", void(VoidReason::Aborted)),
+        Unreported("never started", void(VoidReason::NeverStarted)),
+        Unreported("unknown win", decided(Decision::WhiteWon(Win::Unknown))),
+        Unreported("unknown draw", decided(Decision::Drawn(Draw::Unknown))),
+        Unreported("player left", decided(Decision::Drawn(Draw::PlayerLeft))),
     ];
-    for Unreported(name, active, event) in breaches {
-        assert_eq!(reports_of(active, vec![event]).await, [], "{name}");
+    for Unreported(name, event) in breaches {
+        assert_eq!(reports_of(vec![event]).await, [], "{name}");
     }
 }
 
 #[tokio::test]
-async fn a_game_is_reported_with_its_own_colors_to_each_league_that_pairs_its_players() {
-    let active = ActiveLeagues {
-        leagues: vec![
-            classical("classical"),
-            classical("rapid"),
-            classical("blitz"),
-        ],
-        pairings: vec![
-            pairing("classical", "alice", "carol"),
-            pairing("rapid", "bob", "alice"),
-            pairing("blitz", "alice", "bob"),
+async fn every_fitting_league_gets_the_game_in_its_colors() {
+    let mut unrated = fixture_in("classical", "alice", "bob");
+    unrated.fixture.rated = false;
+    let event = GameEvent {
+        change: GameChange::Started(game()),
+        matched: vec![
+            unrated,
+            fixture_in("rapid", "bob", "alice"),
+            fixture_in("blitz", "alice", "bob"),
         ],
     };
     assert_eq!(
-        reports_of(active, vec![started(game())]).await,
+        reports_of(vec![event]).await,
         [report_to("rapid", None), report_to("blitz", None)]
+    );
+}
+
+#[tokio::test]
+async fn a_league_from_another_source_is_not_reported() {
+    let event = GameEvent {
+        change: GameChange::Started(game()),
+        matched: vec![
+            MatchedFixture {
+                league: league("sheets", "rapid"),
+                ..fixture_in("rapid", "alice", "bob")
+            },
+            fixture_in("classical", "alice", "bob"),
+        ],
+    };
+    assert_eq!(
+        reports_of(vec![event]).await,
+        [report_to("classical", None)]
     );
 }

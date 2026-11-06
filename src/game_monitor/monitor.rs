@@ -1,48 +1,59 @@
-use std::collections::BTreeSet;
-use std::convert::Infallible;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+use std::time::Duration;
 
 use kameo::Actor;
-use kameo::actor::{ActorRef, Recipient};
-use kameo::message::{Context, Message};
+use kameo::actor::{ActorRef, Recipient, WeakActorRef};
+use kameo::message::{Context, Message, StreamMessage};
+use time::OffsetDateTime;
 use tokio::sync::{broadcast, watch};
+use tokio_stream::wrappers::WatchStream;
 
 use crate::health::{Availability, Health, TokenOwner};
 use crate::lichess;
 
-use super::event::GameEvent;
+use super::event::{GameChange, GameEvent, MatchedFixture};
+use super::fixtures::{Fixtures, FixturesId, NewFixtures};
 use super::live::Connection;
-use super::{StreamConnected, Watch};
+use super::{
+    CurrentFixtures, FindCurrentFixtures, FixturesStore, League, StoreError, StreamConnected,
+    SubmitFixtures,
+};
 
 const GAME_EVENTS_CAPACITY: usize = 1024;
 
 #[derive(Debug)]
-pub struct GameMonitor {
+pub struct GameMonitor<F> {
     lichess: lichess::Api,
     config: lichess::Config,
+    fixtures_store: F,
+    active: BTreeMap<League, Fixtures>,
     events: broadcast::Sender<GameEvent>,
     connected: Recipient<StreamConnected>,
-    health: watch::Receiver<Option<Health>>,
     token_owner: Option<lichess::UserId>,
     watched: BTreeSet<lichess::UserId>,
     users_per_connection: Option<NonZeroUsize>,
     connections: Vec<Connection>,
 }
 
-impl GameMonitor {
+#[derive(Clone, Copy, Debug)]
+struct FixturesEnded(FixturesId);
+
+impl<F: FixturesStore> GameMonitor<F> {
     #[must_use]
     pub fn new(
         lichess: lichess::Api,
         config: lichess::Config,
+        fixtures_store: F,
         connected: Recipient<StreamConnected>,
-        health: watch::Receiver<Option<Health>>,
     ) -> Self {
         Self {
             lichess,
             config,
+            fixtures_store,
+            active: BTreeMap::new(),
             events: broadcast::Sender::new(GAME_EVENTS_CAPACITY),
             connected,
-            health,
             token_owner: None,
             watched: BTreeSet::new(),
             users_per_connection: None,
@@ -55,10 +66,99 @@ impl GameMonitor {
         self.events.subscribe()
     }
 
-    fn publish(&self, event: GameEvent) {
-        if self.events.send(event).is_err() {
-            tracing::debug!("no one is subscribed to game events");
+    async fn resume_stored_fixtures(&mut self, monitor: &ActorRef<Self>) -> Result<(), StoreError> {
+        for fixtures in self.fixtures_store.active().await? {
+            self.activate(fixtures, monitor);
         }
+        Ok(())
+    }
+
+    fn unchanged(&self, new: &NewFixtures) -> Option<FixturesId> {
+        self.active
+            .get(&new.league)
+            .filter(|current| current.has_the_games_and_period_of(new))
+            .map(|current| current.id)
+    }
+
+    async fn store(
+        &mut self,
+        new: NewFixtures,
+        monitor: &ActorRef<Self>,
+    ) -> Result<FixturesId, StoreError> {
+        let fixtures = self.fixtures_store.store(new).await?;
+        let id = fixtures.id;
+        tracing::info!(fixtures = %id, league = %fixtures.league, games = fixtures.games.len(), "fixtures stored");
+        self.activate(fixtures, monitor);
+        self.watch_active_players(monitor);
+        Ok(id)
+    }
+
+    fn activate(&mut self, fixtures: Fixtures, monitor: &ActorRef<Self>) {
+        complete_when_ended(&fixtures, monitor.downgrade());
+        self.active.insert(fixtures.league.clone(), fixtures);
+    }
+
+    async fn complete(&mut self, id: FixturesId, monitor: &ActorRef<Self>) {
+        let Some(league) = self.league_of_active(id) else {
+            return;
+        };
+        if let Err(error) = self.fixtures_store.complete(id).await {
+            tracing::error!(error = %error, cause = ?std::error::Error::source(&error), fixtures = %id, "could not mark the fixtures complete");
+        }
+        self.active.remove(&league);
+        tracing::info!(fixtures = %id, league = %league, "fixtures complete");
+        self.watch_active_players(monitor);
+    }
+
+    fn league_of_active(&self, id: FixturesId) -> Option<League> {
+        self.active
+            .values()
+            .find(|fixtures| fixtures.id == id)
+            .map(|fixtures| fixtures.league.clone())
+    }
+
+    fn current_fixtures_of(&self, leagues: &BTreeSet<League>) -> CurrentFixtures {
+        CurrentFixtures(
+            self.active
+                .iter()
+                .filter(|(league, _)| leagues.contains(*league))
+                .map(|(league, fixtures)| (league.clone(), fixtures.id))
+                .collect(),
+        )
+    }
+
+    fn fixtures_played_in(&self, game: &lichess::Game) -> Vec<MatchedFixture> {
+        self.active
+            .values()
+            .flat_map(|fixtures| fixtures.played_in(game))
+            .collect()
+    }
+
+    fn note_token_owner(&mut self, health: Option<&Health>) {
+        if let Some(Health {
+            lichess: Some(Availability::Available(TokenOwner(owner))),
+            ..
+        }) = health
+        {
+            self.token_owner = Some(owner.clone());
+        }
+    }
+
+    fn watch_active_players(&mut self, monitor: &ActorRef<Self>) {
+        let players: BTreeSet<_> = self
+            .active
+            .values()
+            .flat_map(Fixtures::players)
+            .cloned()
+            .collect();
+        let users_per_connection = self.config.users_per_connection(self.token_owner.as_ref());
+        if players == self.watched && Some(users_per_connection) == self.users_per_connection {
+            tracing::debug!(users = players.len(), "watched players unchanged");
+            return;
+        }
+        self.watched = players;
+        self.users_per_connection = Some(users_per_connection);
+        self.reconnect(monitor, users_per_connection);
     }
 
     fn reconnect(&mut self, monitor: &ActorRef<Self>, users_per_connection: NonZeroUsize) {
@@ -87,51 +187,141 @@ impl GameMonitor {
             "watching lichess users"
         );
     }
-}
 
-impl Actor for GameMonitor {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        monitor: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(monitor))
+    fn publish(&self, event: GameEvent) {
+        let fixtures: Vec<_> = event
+            .matched
+            .iter()
+            .map(|matched| matched.fixtures_id)
+            .collect();
+        tracing::info!(
+            game = %event.game().id,
+            kind = ?event.kind(),
+            ?fixtures,
+            leagues = ?event.leagues(),
+            "game event observed"
+        );
+        if self.events.send(event).is_err() {
+            tracing::debug!("no one is subscribed to game events");
+        }
     }
 }
 
-impl Message<Watch> for GameMonitor {
-    type Reply = ();
-
-    async fn handle(&mut self, Watch(user_ids): Watch, ctx: &mut Context<Self, Self::Reply>) {
-        if let Some(Health {
-            lichess: Some(Availability::Available(TokenOwner(owner))),
-            ..
-        }) = &*self.health.borrow()
+fn complete_when_ended<F: FixturesStore>(
+    fixtures: &Fixtures,
+    monitor: WeakActorRef<GameMonitor<F>>,
+) {
+    let Some(ends) = fixtures.period.ends else {
+        return;
+    };
+    let id = fixtures.id;
+    let remaining = Duration::try_from(ends - OffsetDateTime::now_utc()).unwrap_or_default();
+    tokio::spawn(async move {
+        tokio::time::sleep(remaining).await;
+        if let Some(monitor) = monitor.upgrade()
+            && monitor.tell(FixturesEnded(id)).await.is_err()
         {
-            self.token_owner = Some(owner.clone());
+            tracing::debug!(fixtures = %id, "game monitor stopped before the fixtures ended");
         }
-        let users_per_connection = self.config.users_per_connection(self.token_owner.as_ref());
-        if user_ids == self.watched && Some(users_per_connection) == self.users_per_connection {
-            tracing::debug!(users = user_ids.len(), "watchlist unchanged");
-            return;
-        }
-        self.watched = user_ids;
-        self.users_per_connection = Some(users_per_connection);
-        self.reconnect(ctx.actor_ref(), users_per_connection);
+    });
+}
+
+impl<F: FixturesStore> Actor for GameMonitor<F> {
+    type Args = (Self, watch::Receiver<Option<Health>>);
+    type Error = StoreError;
+
+    async fn on_start(
+        (mut monitor, health): Self::Args,
+        monitor_ref: ActorRef<Self>,
+    ) -> Result<Self, Self::Error> {
+        monitor.note_token_owner(health.borrow().as_ref());
+        monitor.resume_stored_fixtures(&monitor_ref).await?;
+        monitor_ref.attach_stream(WatchStream::new(health), (), ());
+        Ok(monitor)
     }
 }
 
-impl Message<lichess::GameState> for GameMonitor {
+impl<F: FixturesStore> Message<SubmitFixtures> for GameMonitor<F> {
     type Reply = ();
 
-    async fn handle(&mut self, state: lichess::GameState, _: &mut Context<Self, Self::Reply>) {
-        let Some(event) = GameEvent::of(state) else {
-            return;
+    async fn handle(
+        &mut self,
+        SubmitFixtures { fixtures, stored }: SubmitFixtures,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        let league = fixtures.league.clone();
+        let id = match self.unchanged(&fixtures) {
+            Some(id) => id,
+            None => match self.store(fixtures, ctx.actor_ref()).await {
+                Ok(id) => id,
+                Err(error) => {
+                    tracing::error!(error = %error, cause = ?std::error::Error::source(&error), league = %league, "could not store the fixtures");
+                    return;
+                }
+            },
         };
-        tracing::info!(game = %event.game().id, kind = ?event.kind(), "game event observed");
-        self.publish(event);
+        if stored.send(id).is_err() {
+            tracing::debug!(fixtures = %id, league = %league, "no one waits for the stored fixtures");
+        }
+    }
+}
+
+impl<F: FixturesStore> Message<FindCurrentFixtures> for GameMonitor<F> {
+    type Reply = ();
+
+    fn handle(
+        &mut self,
+        FindCurrentFixtures { leagues, found }: FindCurrentFixtures,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> impl Future<Output = Self::Reply> + Send {
+        if found.send(self.current_fixtures_of(&leagues)).is_err() {
+            tracing::debug!("no one waits for the current fixtures");
+        }
+        std::future::ready(())
+    }
+}
+
+impl<F: FixturesStore> Message<FixturesEnded> for GameMonitor<F> {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        FixturesEnded(id): FixturesEnded,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) {
+        self.complete(id, ctx.actor_ref()).await;
+    }
+}
+
+impl<F: FixturesStore> Message<StreamMessage<Option<Health>, (), ()>> for GameMonitor<F> {
+    type Reply = ();
+
+    fn handle(
+        &mut self,
+        health: StreamMessage<Option<Health>, (), ()>,
+        ctx: &mut Context<Self, Self::Reply>,
+    ) -> impl Future<Output = Self::Reply> + Send {
+        if let StreamMessage::Next(health) = health {
+            self.note_token_owner(health.as_ref());
+            self.watch_active_players(ctx.actor_ref());
+        }
+        std::future::ready(())
+    }
+}
+
+impl<F: FixturesStore> Message<lichess::GameState> for GameMonitor<F> {
+    type Reply = ();
+
+    fn handle(
+        &mut self,
+        state: lichess::GameState,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> impl Future<Output = Self::Reply> + Send {
+        if let Some(change) = GameChange::of(state) {
+            let matched = self.fixtures_played_in(change.game());
+            self.publish(GameEvent { change, matched });
+        }
+        std::future::ready(())
     }
 }
 

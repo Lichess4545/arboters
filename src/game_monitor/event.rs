@@ -1,4 +1,9 @@
+use std::collections::BTreeSet;
+
 use crate::lichess::{Color, Game, GameState, GameStatus};
+
+use super::League;
+use super::fixtures::{Fixture, FixturesId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Decision {
@@ -83,13 +88,13 @@ pub enum GameEventKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum GameEvent {
+pub enum GameChange {
     Started(Game),
     Decided { game: Game, decision: Decision },
     Void { game: Game, reason: VoidReason },
 }
 
-impl GameEvent {
+impl GameChange {
     #[must_use]
     pub fn of(state: GameState) -> Option<Self> {
         let game = state.game;
@@ -121,6 +126,36 @@ impl GameEvent {
             Self::Started(_) => GameEventKind::GameStarted,
             Self::Decided { .. } | Self::Void { .. } => GameEventKind::GameFinished,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchedFixture {
+    pub fixtures_id: FixturesId,
+    pub league: League,
+    pub fixture: Fixture,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GameEvent {
+    pub change: GameChange,
+    pub matched: Vec<MatchedFixture>,
+}
+
+impl GameEvent {
+    #[must_use]
+    pub const fn game(&self) -> &Game {
+        self.change.game()
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> GameEventKind {
+        self.change.kind()
+    }
+
+    #[must_use]
+    pub fn leagues(&self) -> BTreeSet<&League> {
+        self.matched.iter().map(|matched| &matched.league).collect()
     }
 }
 
