@@ -13,7 +13,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::game_monitor::http_client;
 use crate::heltour::{self, League, Pairing, league};
-use crate::lichess::{self, Clock, Variant};
+use crate::lichess::{Clock, Variant};
+use crate::testing::{tag, user_id};
 
 const PATIENCE: Duration = Duration::from_secs(5);
 const LEAGUES: &str = r#"{"leagues": [{"tag": "classical", "name": "Classical League", "time_control": {"initial": 2700, "increment": 45}, "variant": "standard", "rated": true}, {"tag": "rapid", "name": "Rapid Battle", "time_control": null, "variant": "chess960", "rated": false}]}"#;
@@ -128,14 +129,6 @@ impl Drop for Syncing {
     fn drop(&mut self) {
         self.sync.abort();
     }
-}
-
-fn user_id(name: &str) -> lichess::UserId {
-    lichess::UserId::try_new(name).unwrap()
-}
-
-fn tag(tag: &str) -> league::Tag {
-    league::Tag::try_new(tag).unwrap()
 }
 
 fn watching(names: &[&str]) -> Watch {

@@ -1,6 +1,7 @@
 use super::*;
 use crate::game_monitor::GameEvent;
-use crate::lichess::{Game, GameId, GameState, Player, Speed, UserId, Variant};
+use crate::lichess::GameState;
+use crate::testing::alice_vs_bob;
 
 const fn finished(outcome: GameOutcome, ending: Ending) -> GamePhase {
     GamePhase::Finished { outcome, ending }
@@ -90,20 +91,8 @@ fn statuses_and_winners_map_to_game_phases() {
 
 #[test]
 fn a_created_game_is_not_an_event() {
-    let player = |name: &str| Player {
-        user_id: UserId::try_new(name).unwrap(),
-        rating: None,
-    };
     let created = GameState {
-        game: Game {
-            id: GameId::new("g1"),
-            white: player("alice"),
-            black: player("bob"),
-            speed: Speed::Classical,
-            rated: true,
-            variant: Variant::Standard,
-            clock: None,
-        },
+        game: alice_vs_bob("g1"),
         status: GameStatus::Created,
         winner: None,
     };

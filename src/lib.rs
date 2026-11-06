@@ -8,4 +8,6 @@ pub mod lichess;
 pub mod responses;
 pub mod status;
 pub mod subscriptions;
+#[cfg(test)]
+mod testing;
 pub mod zulip;

@@ -17,7 +17,7 @@ use url::Url;
 use super::*;
 use crate::game_monitor::{Ending, GameOutcome, StreamConnected, http_client};
 use crate::health::{Recovery, Unavailable};
-use crate::lichess::{Game, GameId, Player, Speed, Variant};
+use crate::testing::{Collector, alice_vs_bob, user_id, user_ids};
 
 const STARTED: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":20,"statusName":"started","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
 const WHITE_WON: &str = r#"{"id":"g1","rated":true,"variant":"standard","speed":"classical","status":30,"statusName":"mate","winner":"white","players":{"white":{"userId":"alice"},"black":{"userId":"bob"}}}"#;
@@ -45,10 +45,7 @@ impl FakeLichess {
     }
 
     fn answer(&self, body: &str) -> Response {
-        let user_ids = body
-            .split(',')
-            .map(|name| lichess::UserId::try_new(name).unwrap())
-            .collect();
+        let user_ids = body.split(',').map(user_id).collect();
         let at = Instant::now();
         let answer = self.answers.lock().unwrap().pop_front();
         let (lines, response) = match answer {
@@ -110,28 +107,6 @@ impl FakeLichess {
             .unwrap()
             .unbounded_send(Ok(format!("{line}\n")))
             .is_ok()
-    }
-}
-
-struct Collector<T>(mpsc::UnboundedSender<T>);
-
-impl<T: Send + 'static> Actor for Collector<T> {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        collector: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(collector))
-    }
-}
-
-impl<T: Send + 'static> Message<T> for Collector<T> {
-    type Reply = ();
-
-    async fn handle(&mut self, collected: T, _: &mut Context<Self, Self::Reply>) {
-        self.0.send(collected).unwrap();
     }
 }
 
@@ -259,29 +234,6 @@ fn player_names(count: usize) -> Vec<String> {
         .collect()
 }
 
-fn user_ids(names: &[&str]) -> Vec<lichess::UserId> {
-    names
-        .iter()
-        .map(|name| lichess::UserId::try_new(*name).unwrap())
-        .collect()
-}
-
-fn game() -> Game {
-    let player = |name: &str| Player {
-        user_id: lichess::UserId::try_new(name).unwrap(),
-        rating: None,
-    };
-    Game {
-        id: GameId::new("g1"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Classical,
-        rated: true,
-        variant: Variant::Standard,
-        clock: None,
-    }
-}
-
 #[tokio::test]
 async fn without_a_token_each_connection_watches_up_to_300_users() {
     let harness = harness(config()).await;
@@ -306,9 +258,7 @@ async fn the_next_refresh_after_the_token_owner_is_known_splits_the_watchlist_ag
     harness.health.send_replace(Some(Health {
         postgres: Availability::Available(()),
         heltour: Availability::Available(()),
-        lichess: Some(Availability::Available(TokenOwner(
-            lichess::UserId::try_new("lichess4545").unwrap(),
-        ))),
+        lichess: Some(Availability::Available(TokenOwner(user_id("lichess4545")))),
         zulip: Availability::Available(()),
     }));
     harness.watch(&names).await;
@@ -366,20 +316,20 @@ async fn every_follower_receives_every_game_event() {
     harness.lichess.stream_line(0, STARTED);
     harness.lichess.stream_line(0, WHITE_WON);
     let finished = GameEvent::Finished {
-        game: game(),
+        game: alice_vs_bob("g1"),
         outcome: GameOutcome::WhiteWon,
         ending: Ending::Checkmate,
     };
     assert_eq!(
         [harness.next_event().await, harness.next_event().await],
-        [GameEvent::Started(game()), finished.clone()]
+        [GameEvent::Started(alice_vs_bob("g1")), finished.clone()]
     );
     assert_eq!(
         [
             next(&mut second_events).await,
             next(&mut second_events).await
         ],
-        [GameEvent::Started(game()), finished]
+        [GameEvent::Started(alice_vs_bob("g1")), finished]
     );
 }
 
@@ -394,13 +344,13 @@ async fn a_stopped_follower_is_dropped_and_the_others_still_receive_events() {
     harness.lichess.stream_line(0, STARTED);
     harness.lichess.stream_line(0, WHITE_WON);
     let finished = GameEvent::Finished {
-        game: game(),
+        game: alice_vs_bob("g1"),
         outcome: GameOutcome::WhiteWon,
         ending: Ending::Checkmate,
     };
     assert_eq!(
         [next(&mut events).await, next(&mut events).await],
-        [GameEvent::Started(game()), finished]
+        [GameEvent::Started(alice_vs_bob("g1")), finished]
     );
 }
 

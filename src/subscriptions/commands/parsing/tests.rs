@@ -1,5 +1,6 @@
 use super::*;
 use crate::lichess;
+use crate::testing::user_id;
 
 fn parse(text: &str) -> Option<Result<Command, Mistake>> {
     super::parse(text, &lichess::Config::default().base_url)
@@ -16,16 +17,12 @@ fn written(league: &str) -> WrittenLeague {
     WrittenLeague::try_new(league).unwrap()
 }
 
-fn user(name: &str) -> lichess::UserId {
-    lichess::UserId::try_new(name).unwrap()
-}
-
 fn tell(listener: Listener, event: GameEventKind, league: &str, player: Option<&str>) -> Tell {
     Tell {
         listener,
         event,
         league: written(league),
-        player: player.map(user),
+        player: player.map(user_id),
     }
 }
 
@@ -157,7 +154,7 @@ fn a_player_can_be_a_mention_or_a_lichess_profile_link() {
     ] {
         assert_eq!(
             told(&format!("tell me when ends in classical for {player}")).player,
-            Some(user("alice")),
+            Some(user_id("alice")),
             "{player}"
         );
     }
@@ -173,7 +170,10 @@ fn a_profile_link_is_read_on_the_configured_lichess_site_only() {
         Some(Ok(Command::Tell(tell))) => tell.player,
         _ => None,
     };
-    assert_eq!(player("http://localhost:9663/@/alice"), Some(user("alice")));
+    assert_eq!(
+        player("http://localhost:9663/@/alice"),
+        Some(user_id("alice"))
+    );
     assert_eq!(player("https://lichess.org/@/alice"), None);
 }
 
@@ -222,7 +222,7 @@ fn typos_in_keywords_events_and_here_are_corrected() {
 fn player_names_and_short_words_are_never_corrected() {
     assert_eq!(
         told("tell me when ends in classical for fro").player,
-        Some(user("fro"))
+        Some(user_id("fro"))
     );
     assert_eq!(
         mistake("tell mi when a-game-starts in classical").0,

@@ -11,7 +11,8 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use super::*;
 use crate::game_monitor::http_client;
 use crate::heltour::{self, Pairing, league};
-use crate::lichess::{self, Clock, Game, GameId, Player, Speed, Variant};
+use crate::lichess::{self, Clock, Game, GameId, Variant};
+use crate::testing::{self, CLASSICAL_CLOCK, tag, user_id};
 
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
 
@@ -85,19 +86,6 @@ async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields
     report(&[], active, events).await.iter().map(form).collect()
 }
 
-fn tag(tag: &str) -> league::Tag {
-    league::Tag::try_new(tag).unwrap()
-}
-
-fn user_id(name: &str) -> lichess::UserId {
-    lichess::UserId::try_new(name).unwrap()
-}
-
-const CLASSICAL_CLOCK: Clock = Clock {
-    initial_seconds: 2700,
-    increment_seconds: 45,
-};
-
 fn classical(tag_name: &str) -> League {
     League {
         tag: tag(tag_name),
@@ -129,18 +117,9 @@ fn alice_vs_bob() -> ActiveLeagues {
 }
 
 fn game() -> Game {
-    let player = |name| Player {
-        user_id: user_id(name),
-        rating: None,
-    };
     Game {
-        id: GameId::new("abcd1234"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Classical,
-        rated: true,
-        variant: Variant::Standard,
         clock: Some(CLASSICAL_CLOCK),
+        ..testing::alice_vs_bob("abcd1234")
     }
 }
 

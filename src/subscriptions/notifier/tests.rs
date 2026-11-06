@@ -9,9 +9,10 @@ use crate::chat::{
     ChannelName, ChatUserId, Conversation, DeliveryError, OutgoingMessage, TopicName,
 };
 use crate::game_monitor::GameEventKind;
-use crate::heltour::{Pairing, league};
-use crate::lichess::{self, Game, GameId, Player, Speed, Variant};
+use crate::heltour::Pairing;
+use crate::lichess;
 use crate::subscriptions::{NewSubscription, PostgresSubscriptions, SubscriptionSource};
+use crate::testing::{alice_vs_bob, tag, user_id};
 
 #[derive(Clone, Debug, Default)]
 struct RecordingMessenger {
@@ -51,38 +52,11 @@ impl Messenger for RecordingMessenger {
     }
 }
 
-fn league(tag: &str) -> league::Tag {
-    league::Tag::try_new(tag).unwrap()
-}
-
-fn user_id(name: &str) -> lichess::UserId {
-    lichess::UserId::try_new(name).unwrap()
-}
-
-fn player(name: &str) -> Player {
-    Player {
-        user_id: user_id(name),
-        rating: None,
-    }
-}
-
-fn game() -> Game {
-    Game {
-        id: GameId::new("abcd1234"),
-        white: player("alice"),
-        black: player("bob"),
-        speed: Speed::Rapid,
-        rated: true,
-        variant: Variant::Standard,
-        clock: None,
-    }
-}
-
-fn paired_in(tag: &str, white: &str, black: &str) -> ActiveLeagues {
+fn paired_in(league: &str, white: &str, black: &str) -> ActiveLeagues {
     ActiveLeagues {
         leagues: Vec::new(),
         pairings: vec![Pairing {
-            league: league(tag),
+            league: tag(league),
             white: user_id(white),
             black: user_id(black),
         }],
@@ -102,10 +76,10 @@ fn games_topic() -> Conversation {
     }
 }
 
-fn starts(tag: &str, source: SubscriptionSource, target: Conversation) -> NewSubscription {
+fn starts(league: &str, source: SubscriptionSource, target: Conversation) -> NewSubscription {
     NewSubscription {
         requester: ChatUserId(1),
-        league: league(tag),
+        league: tag(league),
         source,
         event: GameEventKind::GameStarted,
         target,
@@ -120,7 +94,7 @@ fn announced(
     targets: impl IntoIterator<Item = Conversation>,
 ) -> Vec<(Conversation, OutgoingMessage)> {
     let notification = render(
-        &GameEvent::Started(game()),
+        &GameEvent::Started(alice_vs_bob("abcd1234")),
         &lichess::Config::default().base_url,
     );
     targets
@@ -170,7 +144,10 @@ async fn deliveries(
         monitor.recipient(),
     ));
     notifier.ask(active).await.unwrap();
-    notifier.ask(GameEvent::Started(game())).await.unwrap();
+    notifier
+        .ask(GameEvent::Started(alice_vs_bob("abcd1234")))
+        .await
+        .unwrap();
     messenger.deliveries()
 }
 
