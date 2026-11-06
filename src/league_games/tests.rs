@@ -31,10 +31,10 @@ async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields
         Reporter::new(
             Heltour::new(http_client().unwrap(), &config),
             lichess::Config::default().base_url,
+            watch::channel(active).1,
         ),
         broadcast::channel(1).1,
     ));
-    reporter.ask(active).await.unwrap();
     for event in events {
         reporter.ask(StreamMessage::Next(event)).await.unwrap();
     }

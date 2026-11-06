@@ -5,19 +5,19 @@ use std::convert::Infallible;
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use url::Url;
 
 use crate::chat::Messenger;
 use crate::game_monitor::{self, GameEvent};
-use crate::heltour::ActiveLeagues;
+use crate::heltour::{ActiveLeagues, league};
 
 use super::Subscriptions;
 use rendering::render;
 
 #[derive(Debug)]
 pub struct Notifier<R, M> {
-    active: ActiveLeagues,
+    active_leagues: watch::Receiver<ActiveLeagues>,
     subscriptions: R,
     messenger: M,
     lichess: Url,
@@ -25,9 +25,14 @@ pub struct Notifier<R, M> {
 
 impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
     #[must_use]
-    pub fn new(subscriptions: R, messenger: M, lichess: Url) -> Self {
+    pub const fn new(
+        subscriptions: R,
+        messenger: M,
+        lichess: Url,
+        active_leagues: watch::Receiver<ActiveLeagues>,
+    ) -> Self {
         Self {
-            active: ActiveLeagues::default(),
+            active_leagues,
             subscriptions,
             messenger,
             lichess,
@@ -36,10 +41,17 @@ impl<R: Subscriptions, M: Messenger> Notifier<R, M> {
 
     async fn notify(&self, event: &GameEvent) {
         let game = event.game();
-        let leagues: Vec<_> = self.active.leagues_of(game).into_iter().collect();
+        let leagues: Vec<league::Tag> = self
+            .active_leagues
+            .borrow()
+            .leagues_of(game)
+            .into_iter()
+            .cloned()
+            .collect();
         if leagues.is_empty() {
             return;
         }
+        let leagues: Vec<_> = leagues.iter().collect();
         let targets = match self
             .subscriptions
             .targets_for(&leagues, event.kind(), game.user_ids())
@@ -91,14 +103,6 @@ impl<R: Subscriptions, M: Messenger> Message<StreamMessage<GameEvent, (), ()>> f
         if let StreamMessage::Next(event) = message {
             self.notify(&event).await;
         }
-    }
-}
-
-impl<R: Subscriptions, M: Messenger> Message<ActiveLeagues> for Notifier<R, M> {
-    type Reply = ();
-
-    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
-        self.active = active;
     }
 }
 

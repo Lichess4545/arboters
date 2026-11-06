@@ -38,7 +38,7 @@ impl Message<Listen> for Inbox {
 
 type Commands = ActorRef<SubscriptionCommands<PostgresSubscriptions>>;
 
-async fn started(pool: PgPool) -> Commands {
+fn started(pool: PgPool) -> Commands {
     let league = |tag, name, minutes| League {
         tag: league::Tag::try_new(tag).unwrap(),
         name: league::Name::try_new(name).unwrap(),
@@ -49,25 +49,22 @@ async fn started(pool: PgPool) -> Commands {
         variant: Variant::Standard,
         rated: true,
     };
-    let commands = SubscriptionCommands::spawn((
+    let (_, active_leagues) = watch::channel(ActiveLeagues {
+        leagues: vec![
+            league("classical", "Classical League", 45),
+            league("rapid", "Rapid Battle", 15),
+            league("blitz960", "Blitz 960", 15),
+        ],
+        pairings: Vec::new(),
+    });
+    SubscriptionCommands::spawn((
         SubscriptionCommands::new(
             PostgresSubscriptions::new(pool),
             lichess::Config::default().base_url,
+            active_leagues,
         ),
         Inbox::spawn(Inbox).recipient(),
-    ));
-    commands
-        .ask(ActiveLeagues {
-            leagues: vec![
-                league("classical", "Classical League", 45),
-                league("rapid", "Rapid Battle", 15),
-                league("blitz960", "Blitz 960", 15),
-            ],
-            pairings: Vec::new(),
-        })
-        .await
-        .unwrap();
-    commands
+    ))
 }
 
 async fn reply(commands: &Commands, message: IncomingMessage) -> String {
@@ -117,7 +114,7 @@ fn edited(original: &IncomingMessage, text: &str) -> IncomingMessage {
 
 #[sqlx::test]
 async fn tell_me_for_a_player_subscribes_the_sender_to_that_players_games(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -131,7 +128,7 @@ async fn tell_me_for_a_player_subscribes_the_sender_to_that_players_games(pool: 
 
 #[sqlx::test]
 async fn tell_me_without_a_player_subscribes_the_sender_to_the_whole_league(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -145,7 +142,7 @@ async fn tell_me_without_a_player_subscribes_the_sender_to_the_whole_league(pool
 
 #[sqlx::test]
 async fn tell_me_from_a_topic_subscribes_the_sender(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -159,7 +156,7 @@ async fn tell_me_from_a_topic_subscribes_the_sender(pool: PgPool) {
 
 #[sqlx::test]
 async fn tell_here_subscribes_the_topic(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -176,7 +173,7 @@ async fn tell_here_subscribes_the_topic(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_topic_link_subscribes_that_topic_from_a_direct_message(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -193,7 +190,7 @@ async fn a_topic_link_subscribes_that_topic_from_a_direct_message(pool: PgPool) 
 
 #[sqlx::test]
 async fn a_moderator_can_subscribe_someone_else(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -210,7 +207,7 @@ async fn a_moderator_can_subscribe_someone_else(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_member_cannot_subscribe_someone_else(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -224,7 +221,7 @@ async fn a_member_cannot_subscribe_someone_else(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_member_who_mentions_themselves_is_subscribed(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -238,7 +235,7 @@ async fn a_member_who_mentions_themselves_is_subscribed(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_league_named_by_its_name_time_control_or_a_typo_is_subscribed_by_its_tag(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     for (text, subscribed) in [
         ("tell me when a game starts in Rapid Battle", "rapid"),
@@ -256,7 +253,7 @@ async fn a_league_named_by_its_name_time_control_or_a_typo_is_subscribed_by_its_
 
 #[sqlx::test]
 async fn tell_here_in_a_direct_message_is_refused(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(
@@ -270,7 +267,7 @@ async fn tell_here_in_a_direct_message_is_refused(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_league_heltour_does_not_list_as_active_is_refused(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(&commands, dm(MEMBER, "tell me when a-game-starts in blitz")).await,
@@ -280,7 +277,7 @@ async fn a_league_heltour_does_not_list_as_active_is_refused(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_time_control_of_several_leagues_is_answered_with_each_of_them(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(&commands, dm(MEMBER, "tell me when a game ends in 15+15")).await,
@@ -293,7 +290,7 @@ async fn a_time_control_of_several_leagues_is_answered_with_each_of_them(pool: P
 async fn a_mistake_is_answered_with_what_is_wrong_and_the_command_filled_in_from_the_rest(
     pool: PgPool,
 ) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     for (text, answer) in [
         (
@@ -341,7 +338,7 @@ async fn a_mistake_is_answered_with_what_is_wrong_and_the_command_filled_in_from
 
 #[sqlx::test]
 async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
 
     assert_eq!(
@@ -364,7 +361,7 @@ async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool)
 
 #[sqlx::test]
 async fn subscription_list_shows_the_senders_subscriptions_with_their_ids(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(MEMBER, "tell me when a-game-starts in classical for alice"),
@@ -394,7 +391,7 @@ async fn subscription_list_shows_the_senders_subscriptions_with_their_ids(pool: 
 
 #[sqlx::test]
 async fn subscription_list_says_so_when_there_are_none(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(&commands, dm(MEMBER, "subscription list")).await,
@@ -404,7 +401,7 @@ async fn subscription_list_says_so_when_there_are_none(pool: PgPool) {
 
 #[sqlx::test]
 async fn subscription_list_in_a_topic_shows_everyones_subscriptions_that_post_there(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
@@ -440,7 +437,7 @@ async fn subscription_list_in_a_topic_shows_everyones_subscriptions_that_post_th
 
 #[sqlx::test]
 async fn subscription_list_in_a_topic_without_subscriptions_says_so(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(MEMBER, "tell me when a-game-starts in classical"),
@@ -457,7 +454,7 @@ async fn subscription_list_in_a_topic_without_subscriptions_says_so(pool: PgPool
 async fn subscriptions_that_send_someone_direct_messages_are_theirs_to_list_and_remove(
     pool: PgPool,
 ) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(MEMBER, "tell me when a-game-starts in classical for alice"),
@@ -486,7 +483,7 @@ async fn subscriptions_that_send_someone_direct_messages_are_theirs_to_list_and_
 
 #[sqlx::test]
 async fn a_member_can_remove_their_own_subscription(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(MEMBER, "tell me when a-game-starts in classical"),
@@ -505,7 +502,7 @@ async fn a_member_can_remove_their_own_subscription(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_member_cannot_remove_someone_elses_subscription(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(OTHER_MEMBER, "tell me when a-game-starts in classical"),
@@ -520,7 +517,7 @@ async fn a_member_cannot_remove_someone_elses_subscription(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_moderator_can_remove_anyones_subscription(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         dm(MEMBER, "tell me when a-game-starts in classical"),
@@ -535,7 +532,7 @@ async fn a_moderator_can_remove_anyones_subscription(pool: PgPool) {
 
 #[sqlx::test]
 async fn removing_a_subscription_that_does_not_exist_says_so(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     assert_eq!(
         reply(&commands, dm(MODERATOR, "subscription remove 4545")).await,
@@ -545,7 +542,7 @@ async fn removing_a_subscription_that_does_not_exist_says_so(pool: PgPool) {
 
 #[sqlx::test]
 async fn anyone_in_a_topic_can_remove_a_subscription_that_posts_there(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
@@ -560,7 +557,7 @@ async fn anyone_in_a_topic_can_remove_a_subscription_that_posts_there(pool: PgPo
 
 #[sqlx::test]
 async fn a_subscription_that_posts_in_a_topic_cannot_be_removed_by_others_elsewhere(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         in_games(OTHER_MEMBER, "tell here when a-game-starts in classical"),
@@ -583,7 +580,7 @@ async fn a_subscription_that_posts_in_a_topic_cannot_be_removed_by_others_elsewh
 
 #[sqlx::test]
 async fn a_requester_can_remove_a_topic_subscription_from_anywhere(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     reply(
         &commands,
         in_games(MEMBER, "tell here when a-game-starts in classical"),
@@ -602,7 +599,7 @@ async fn a_requester_can_remove_a_topic_subscription_from_anywhere(pool: PgPool)
 
 #[sqlx::test]
 async fn an_edit_into_the_same_subscription_keeps_it(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let original = dm(MEMBER, "tell me when a-game-starts in classical for alice");
     reply(&commands, original.clone()).await;
 
@@ -621,7 +618,7 @@ async fn an_edit_into_the_same_subscription_keeps_it(pool: PgPool) {
 
 #[sqlx::test]
 async fn an_edit_into_another_subscription_replaces_it(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let original = dm(MEMBER, "tell me when a-game-starts in classical for alice");
     reply(&commands, original.clone()).await;
 
@@ -641,7 +638,7 @@ async fn an_edit_into_another_subscription_replaces_it(pool: PgPool) {
 
 #[sqlx::test]
 async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let original = dm(MEMBER, "tell me when a-game-starts in classical");
     reply(&commands, original.clone()).await;
 
@@ -663,7 +660,7 @@ async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription
 
 #[sqlx::test]
 async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let original = dm(MEMBER, "tell me when a game strts in 99+0");
     reply(&commands, original.clone()).await;
 
@@ -679,7 +676,7 @@ async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
 
 #[sqlx::test]
 async fn help_lists_the_commands_and_the_active_leagues(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     let help = reply(&commands, dm(MEMBER, "help")).await;
 
@@ -704,7 +701,7 @@ async fn help_lists_the_commands_and_the_active_leagues(pool: PgPool) {
 
 #[sqlx::test]
 async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
     let moderating = "You are a moderator, so you can remove any subscription from anywhere. You can also subscribe someone else with `tell @**user** when <event> in <league>`.";
 
     for (asked, permissions) in [
@@ -726,7 +723,7 @@ async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
 
 #[sqlx::test]
 async fn messages_that_are_not_subscription_commands_are_left_to_others(pool: PgPool) {
-    let commands = started(pool).await;
+    let commands = started(pool);
 
     let handling = commands.ask(dm(MEMBER, "who plays today?")).await.unwrap();
 

@@ -118,10 +118,10 @@ async fn deliveries(
             stored,
             messenger.clone(),
             lichess::Config::default().base_url,
+            watch::channel(active).1,
         ),
         events,
     ));
-    notifier.ask(active).await.unwrap();
     notifier
         .ask(StreamMessage::Next(GameEvent::Started(alice_vs_bob(
             "abcd1234",

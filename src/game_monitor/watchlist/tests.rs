@@ -5,7 +5,7 @@ use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use secrecy::SecretString;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use url::Url;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -47,13 +47,7 @@ async fn heltour_answering(pairings: &[(u16, &'static str)]) -> (MockServer, Hel
     (heltour, Heltour::new(http_client().unwrap(), &config))
 }
 
-#[derive(Debug)]
-enum Told {
-    Watch(Watch),
-    Active(ActiveLeagues),
-}
-
-struct Recorder(mpsc::UnboundedSender<Told>);
+struct Recorder(mpsc::UnboundedSender<Watch>);
 
 impl Actor for Recorder {
     type Args = Self;
@@ -71,57 +65,46 @@ impl Message<Watch> for Recorder {
     type Reply = ();
 
     async fn handle(&mut self, watch: Watch, _: &mut Context<Self, Self::Reply>) {
-        self.0.send(Told::Watch(watch)).unwrap();
-    }
-}
-
-impl Message<ActiveLeagues> for Recorder {
-    type Reply = ();
-
-    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
-        self.0.send(Told::Active(active)).unwrap();
+        self.0.send(watch).unwrap();
     }
 }
 
 struct Syncing {
     heltour: MockServer,
     sync: tokio::task::JoinHandle<()>,
-    told: mpsc::UnboundedReceiver<Told>,
+    told: mpsc::UnboundedReceiver<Watch>,
+    active_leagues: watch::Receiver<ActiveLeagues>,
 }
 
 impl Syncing {
     async fn start(pairings: &[(u16, &'static str)], refresh_interval: Duration) -> Self {
         let (heltour, client) = heltour_answering(pairings).await;
         let (sender, told) = mpsc::unbounded_channel();
-        let recorder = Recorder::spawn(Recorder(sender));
+        let (published, active_leagues) = watch::channel(ActiveLeagues::default());
         let sync = tokio::spawn(keep_in_sync(
             client,
-            recorder.clone().recipient(),
-            vec![recorder.recipient()],
+            Recorder::spawn(Recorder(sender)).recipient(),
+            published,
             refresh_interval,
         ));
         Self {
             heltour,
             sync,
             told,
+            active_leagues,
         }
     }
 
     async fn next(&mut self) -> (Watch, ActiveLeagues) {
-        let mut next = async || {
-            tokio::time::timeout(PATIENCE, self.told.recv())
-                .await
-                .unwrap()
-                .unwrap()
-        };
-        match (next().await, next().await) {
-            (Told::Watch(watch), Told::Active(active)) => (watch, active),
-            told => panic!("expected a watch and then the active leagues, got {told:?}"),
-        }
+        let watch = self.next_watch().await;
+        (watch, self.active_leagues.borrow().clone())
     }
 
     async fn next_watch(&mut self) -> Watch {
-        self.next().await.0
+        tokio::time::timeout(PATIENCE, self.told.recv())
+            .await
+            .unwrap()
+            .unwrap()
     }
 }
 
@@ -136,7 +119,7 @@ fn watching(names: &[&str]) -> Watch {
 }
 
 #[tokio::test]
-async fn the_monitor_is_told_every_paired_player_and_followers_the_active_leagues() {
+async fn the_monitor_is_told_every_paired_player_and_the_active_leagues_are_published() {
     let mut syncing =
         Syncing::start(&[(200, ALICE_BOB_AND_CAROL_DAVE)], Duration::from_hours(1)).await;
 
@@ -242,18 +225,17 @@ async fn a_refused_request_keeps_the_previous_watchlist_and_sync_carries_on() {
 }
 
 #[tokio::test]
-async fn sync_ends_once_a_follower_has_stopped() {
+async fn sync_ends_once_the_monitor_has_stopped() {
     let (_server, heltour) = heltour_answering(&[(200, ALICE_AND_BOB)]).await;
     let (sender, _told) = mpsc::unbounded_channel();
-    let monitor = Recorder::spawn(Recorder(sender.clone()));
     let stopped = Recorder::spawn(Recorder(sender));
     stopped.stop_gracefully().await.unwrap();
     stopped.wait_for_shutdown().await;
 
     let sync = keep_in_sync(
         heltour,
-        monitor.recipient(),
-        vec![stopped.recipient()],
+        stopped.recipient(),
+        watch::Sender::new(ActiveLeagues::default()),
         Duration::from_hours(1),
     );
 

@@ -5,7 +5,7 @@ use std::convert::Infallible;
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use url::Url;
 
 use crate::game_monitor::{self, Decision, Draw, GameEvent, VoidReason, Win};
@@ -19,7 +19,7 @@ pub use config::Config;
 pub struct Reporter {
     heltour: Heltour,
     lichess: Url,
-    active: ActiveLeagues,
+    active_leagues: watch::Receiver<ActiveLeagues>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,24 +33,33 @@ enum Breach {
 
 impl Reporter {
     #[must_use]
-    pub fn new(heltour: Heltour, lichess: Url) -> Self {
+    pub const fn new(
+        heltour: Heltour,
+        lichess: Url,
+        active_leagues: watch::Receiver<ActiveLeagues>,
+    ) -> Self {
         Self {
             heltour,
             lichess,
-            active: ActiveLeagues::default(),
+            active_leagues,
         }
+    }
+
+    fn leagues_pairing_the_players_of(&self, event: &GameEvent) -> Vec<League> {
+        let active = self.active_leagues.borrow();
+        let paired_in = active.leagues_of(event.game());
+        active
+            .leagues
+            .iter()
+            .filter(|league| paired_in.contains(&league.tag))
+            .cloned()
+            .collect()
     }
 
     async fn report(&self, event: &GameEvent) {
         let game = event.game();
-        let paired_in = self.active.leagues_of(game);
-        let leagues = self
-            .active
-            .leagues
-            .iter()
-            .filter(|league| paired_in.contains(&league.tag));
-        for league in leagues {
-            let result = match judge(event, league) {
+        for league in self.leagues_pairing_the_players_of(event) {
+            let result = match judge(event, &league) {
                 Ok(result) => result,
                 Err(breach) => {
                     tracing::info!(game = %game.id, league = %league.tag, ?breach, "game not reported to Heltour");
@@ -135,14 +144,6 @@ impl Actor for Reporter {
     ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
         actor_ref.attach_stream(game_monitor::event_stream(events), (), ());
         std::future::ready(Ok(reporter))
-    }
-}
-
-impl Message<ActiveLeagues> for Reporter {
-    type Reply = ();
-
-    async fn handle(&mut self, active: ActiveLeagues, _: &mut Context<Self, Self::Reply>) {
-        self.active = active;
     }
 }
 

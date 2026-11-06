@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::time::Duration;
 
 use kameo::actor::Recipient;
+use tokio::sync::watch;
 use tokio::time::MissedTickBehavior;
 
 use crate::heltour::{ActiveLeagues, Heltour};
@@ -15,7 +16,7 @@ pub use config::Config;
 pub async fn keep_in_sync(
     heltour: Heltour,
     monitor: Recipient<Watch>,
-    followers: Vec<Recipient<ActiveLeagues>>,
+    active_leagues: watch::Sender<ActiveLeagues>,
     refresh_interval: Duration,
 ) {
     let mut refreshes = tokio::time::interval(refresh_interval);
@@ -39,17 +40,10 @@ pub async fn keep_in_sync(
             players = user_ids.len(),
             "refreshing game monitor watchlist"
         );
+        active_leagues.send_replace(active);
         if monitor.tell(Watch(user_ids)).await.is_err() {
             tracing::info!("game monitor has stopped; ending watchlist sync");
             return;
-        }
-        for follower in &followers {
-            if follower.tell(active.clone()).await.is_err() {
-                tracing::info!(
-                    "a follower of the active leagues has stopped; ending watchlist sync"
-                );
-                return;
-            }
         }
     }
 }
