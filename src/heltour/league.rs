@@ -56,6 +56,7 @@ fn is_slug(candidate: &str) -> bool {
 pub struct Name(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct League {
     pub tag: Tag,
     pub name: Name,

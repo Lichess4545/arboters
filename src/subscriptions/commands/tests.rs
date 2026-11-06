@@ -55,7 +55,6 @@ fn started(pool: PgPool) -> Commands {
             league("rapid", "Rapid Battle", 15),
             league("blitz960", "Blitz 960", 15),
         ],
-        pairings: Vec::new(),
     });
     SubscriptionCommands::spawn((
         SubscriptionCommands::new(

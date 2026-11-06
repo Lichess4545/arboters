@@ -12,10 +12,9 @@ use crate::lichess;
 use super::Config;
 use super::active_leagues::ActiveLeagues;
 use super::league::{self, League};
-use super::pairing::Pairing;
 
-const FIND_PAIRING_PATH: &str = "find_pairing/";
-const GET_LEAGUES_PATH: &str = "get_leagues/";
+const LEAGUES_PATH: &str = "v2/leagues/";
+const ONLY_ACTIVE: [(&str, &str); 1] = [("active", "true")];
 const TOKEN_TEST_PATH: &str = "v2/token/test/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -73,12 +72,7 @@ struct UpdatePairingForm<'a> {
 }
 
 #[derive(Deserialize)]
-struct FindPairingAnswer {
-    pairings: Option<Vec<Pairing>>,
-}
-
-#[derive(Deserialize)]
-struct GetLeaguesAnswer {
+struct LeaguesAnswer {
     leagues: Vec<League>,
 }
 
@@ -124,14 +118,13 @@ impl Heltour {
         &self,
         timeout: Duration,
     ) -> Result<ActiveLeagues, ActiveLeaguesError> {
-        let get = |path| self.request(Method::GET, path).timeout(timeout);
-        let (leagues, pairings): (GetLeaguesAnswer, FindPairingAnswer) = tokio::try_join!(
-            answer(get(GET_LEAGUES_PATH)),
-            answer(get(FIND_PAIRING_PATH)),
-        )?;
+        let request = self
+            .request(Method::GET, LEAGUES_PATH)
+            .timeout(timeout)
+            .query(&ONLY_ACTIVE);
+        let answer: LeaguesAnswer = answer(request).await?;
         Ok(ActiveLeagues {
-            leagues: leagues.leagues,
-            pairings: pairings.pairings.unwrap_or_default(),
+            leagues: answer.leagues,
         })
     }
 
