@@ -96,11 +96,17 @@ fn game_where(change: impl FnOnce(&mut Game)) -> Game {
     game
 }
 
-fn finished(outcome: GameOutcome, ending: Ending) -> GameEvent {
-    GameEvent::Finished {
+fn decided(decision: Decision) -> GameEvent {
+    GameEvent::Decided {
         game: game(),
-        outcome,
-        ending,
+        decision,
+    }
+}
+
+fn void(reason: VoidReason) -> GameEvent {
+    GameEvent::Void {
+        game: game(),
+        reason,
     }
 }
 
@@ -130,17 +136,17 @@ async fn a_valid_start_is_reported_without_a_result() {
 #[tokio::test]
 async fn a_valid_finish_reports_its_result() {
     let results = [
-        (GameOutcome::WhiteWon, Ending::Checkmate, "1-0"),
-        (GameOutcome::BlackWon, Ending::Resignation, "0-1"),
-        (GameOutcome::BlackWon, Ending::OutOfTime, "0-1"),
-        (GameOutcome::Draw, Ending::Draw, "1/2-1/2"),
-        (GameOutcome::Draw, Ending::Stalemate, "1/2-1/2"),
+        (Decision::WhiteWon(Win::Checkmate), "1-0"),
+        (Decision::BlackWon(Win::Resignation), "0-1"),
+        (Decision::BlackWon(Win::OutOfTime), "0-1"),
+        (Decision::Drawn(Draw::AgreementOrRule), "1/2-1/2"),
+        (Decision::Drawn(Draw::Stalemate), "1/2-1/2"),
     ];
-    for (outcome, ending, result) in results {
+    for (decision, result) in results {
         assert_eq!(
-            reports_of(alice_vs_bob(), vec![finished(outcome, ending)]).await,
+            reports_of(alice_vs_bob(), vec![decided(decision)]).await,
             [report_to("classical", Some(result))],
-            "{ending:?}"
+            "{decision:?}"
         );
     }
 }
@@ -193,27 +199,33 @@ async fn an_invalid_game_is_not_reported() {
         Unreported(
             "claimed victory",
             alice_vs_bob(),
-            finished(GameOutcome::WhiteWon, Ending::VictoryClaimed),
+            decided(Decision::WhiteWon(Win::VictoryClaimed)),
         ),
         Unreported(
             "cheat detected",
             alice_vs_bob(),
-            finished(GameOutcome::BlackWon, Ending::CheatDetected),
+            decided(Decision::BlackWon(Win::CheatDetected)),
         ),
-        Unreported(
-            "aborted",
-            alice_vs_bob(),
-            finished(GameOutcome::Aborted, Ending::Aborted),
-        ),
+        Unreported("aborted", alice_vs_bob(), void(VoidReason::Aborted)),
         Unreported(
             "never started",
             alice_vs_bob(),
-            finished(GameOutcome::Aborted, Ending::NeverStarted),
+            void(VoidReason::NeverStarted),
         ),
         Unreported(
-            "unknown finish",
+            "unknown win",
             alice_vs_bob(),
-            finished(GameOutcome::WhiteWon, Ending::Unknown),
+            decided(Decision::WhiteWon(Win::Unknown)),
+        ),
+        Unreported(
+            "unknown draw",
+            alice_vs_bob(),
+            decided(Decision::Drawn(Draw::Unknown)),
+        ),
+        Unreported(
+            "player left",
+            alice_vs_bob(),
+            decided(Decision::Drawn(Draw::PlayerLeft)),
         ),
     ];
     for Unreported(name, active, event) in breaches {

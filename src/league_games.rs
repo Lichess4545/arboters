@@ -8,7 +8,7 @@ use kameo::message::{Context, Message, StreamMessage};
 use tokio::sync::broadcast;
 use url::Url;
 
-use crate::game_monitor::{self, Ending, GameEvent, GameOutcome};
+use crate::game_monitor::{self, Decision, Draw, GameEvent, VoidReason, Win};
 use crate::heltour::{
     ActiveLeagues, Heltour, League, PairingResult, PairingUpdate, UpdatePairingError,
 };
@@ -27,7 +27,8 @@ enum Breach {
     TimeControl,
     Rated,
     Variant,
-    Ending(Ending),
+    Decision(Decision),
+    Void(VoidReason),
 }
 
 impl Reporter {
@@ -91,31 +92,36 @@ fn judge(event: &GameEvent, league: &League) -> Result<Option<PairingResult>, Br
     }
     match event {
         GameEvent::Started(_) => Ok(None),
-        GameEvent::Finished {
-            outcome, ending, ..
-        } => result_of(*outcome, *ending).map(Some),
+        GameEvent::Decided { decision, .. } => result_of(*decision)
+            .map(Some)
+            .ok_or(Breach::Decision(*decision)),
+        GameEvent::Void { reason, .. } => Err(Breach::Void(*reason)),
     }
 }
 
-const fn result_of(outcome: GameOutcome, ending: Ending) -> Result<PairingResult, Breach> {
-    match ending {
-        Ending::VictoryClaimed
-        | Ending::CheatDetected
-        | Ending::Aborted
-        | Ending::NeverStarted
-        | Ending::Unknown => Err(Breach::Ending(ending)),
-        Ending::Checkmate
-        | Ending::Resignation
-        | Ending::Stalemate
-        | Ending::Draw
-        | Ending::OutOfTime
-        | Ending::InsufficientMaterialClaimed
-        | Ending::VariantEnd => match outcome {
-            GameOutcome::WhiteWon => Ok(PairingResult::WhiteWon),
-            GameOutcome::BlackWon => Ok(PairingResult::BlackWon),
-            GameOutcome::Draw => Ok(PairingResult::Draw),
-            GameOutcome::Aborted | GameOutcome::Undecided => Err(Breach::Ending(ending)),
-        },
+const fn result_of(decision: Decision) -> Option<PairingResult> {
+    match decision {
+        Decision::WhiteWon(win) if counts(win) => Some(PairingResult::WhiteWon),
+        Decision::BlackWon(win) if counts(win) => Some(PairingResult::BlackWon),
+        Decision::Drawn(draw) if counts_as_draw(draw) => Some(PairingResult::Draw),
+        Decision::WhiteWon(_) | Decision::BlackWon(_) | Decision::Drawn(_) => None,
+    }
+}
+
+const fn counts(win: Win) -> bool {
+    match win {
+        Win::Checkmate | Win::Resignation | Win::OutOfTime | Win::VariantEnd => true,
+        Win::VictoryClaimed | Win::CheatDetected | Win::Unknown => false,
+    }
+}
+
+const fn counts_as_draw(draw: Draw) -> bool {
+    match draw {
+        Draw::AgreementOrRule
+        | Draw::Stalemate
+        | Draw::InsufficientMaterialClaimed
+        | Draw::OutOfTime => true,
+        Draw::PlayerLeft | Draw::Unknown => false,
     }
 }
 

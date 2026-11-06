@@ -1,5 +1,5 @@
 use super::*;
-use crate::game_monitor::Ending;
+use crate::game_monitor::{Draw, VoidReason, Win};
 use crate::lichess;
 use crate::testing::alice_vs_bob;
 
@@ -7,17 +7,22 @@ fn lichess() -> Url {
     lichess::Config::default().base_url
 }
 
-fn finished(outcome: GameOutcome, ending: Ending) -> String {
-    render(
-        &GameEvent::Finished {
-            game: alice_vs_bob("abcd1234"),
-            outcome,
-            ending,
-        },
-        &lichess(),
-    )
-    .markdown()
-    .to_owned()
+fn decided(decision: Decision) -> String {
+    rendered(&GameEvent::Decided {
+        game: alice_vs_bob("abcd1234"),
+        decision,
+    })
+}
+
+fn void(reason: VoidReason) -> String {
+    rendered(&GameEvent::Void {
+        game: alice_vs_bob("abcd1234"),
+        reason,
+    })
+}
+
+fn rendered(event: &GameEvent) -> String {
+    render(event, &lichess()).markdown().to_owned()
 }
 
 #[test]
@@ -31,15 +36,15 @@ fn a_started_game_announces_white_vs_black_and_the_game_link() {
 #[test]
 fn a_finished_game_with_a_result_announces_its_chess_score() {
     assert_eq!(
-        finished(GameOutcome::WhiteWon, Ending::Checkmate),
+        decided(Decision::WhiteWon(Win::Checkmate)),
         "@_**alice** vs @_**bob** is over. The result is 1-0: https://lichess.org/game/abcd1234"
     );
     assert_eq!(
-        finished(GameOutcome::BlackWon, Ending::Resignation),
+        decided(Decision::BlackWon(Win::Resignation)),
         "@_**alice** vs @_**bob** is over. The result is 0-1: https://lichess.org/game/abcd1234"
     );
     assert_eq!(
-        finished(GameOutcome::Draw, Ending::Draw),
+        decided(Decision::Drawn(Draw::AgreementOrRule)),
         "@_**alice** vs @_**bob** is over. The result is ½-½: https://lichess.org/game/abcd1234"
     );
 }
@@ -47,16 +52,8 @@ fn a_finished_game_with_a_result_announces_its_chess_score() {
 #[test]
 fn an_aborted_game_is_announced_as_aborted() {
     assert_eq!(
-        finished(GameOutcome::Aborted, Ending::Aborted),
+        void(VoidReason::Aborted),
         "@_**alice** vs @_**bob** was aborted: https://lichess.org/game/abcd1234"
-    );
-}
-
-#[test]
-fn an_undecided_game_is_announced_as_over_without_a_result() {
-    assert_eq!(
-        finished(GameOutcome::Undecided, Ending::Unknown),
-        "@_**alice** vs @_**bob** is over: https://lichess.org/game/abcd1234"
     );
 }
 

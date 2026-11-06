@@ -15,7 +15,7 @@ use tokio::sync::{broadcast, mpsc};
 use url::Url;
 
 use super::*;
-use crate::game_monitor::{Ending, GameOutcome, StreamConnected, http_client};
+use crate::game_monitor::{Decision, StreamConnected, Win, http_client};
 use crate::health::{Recovery, Unavailable};
 use crate::testing::{Collector, alice_vs_bob, user_id, user_ids};
 
@@ -293,10 +293,9 @@ async fn streamed_games_are_published_as_game_events() {
     harness.watching_alice_and_bob().await;
     harness.lichess.stream_line(0, STARTED);
     harness.lichess.stream_line(0, WHITE_WON);
-    let finished = GameEvent::Finished {
+    let finished = GameEvent::Decided {
         game: alice_vs_bob("g1"),
-        outcome: GameOutcome::WhiteWon,
-        ending: Ending::Checkmate,
+        decision: Decision::WhiteWon(Win::Checkmate),
     };
     assert_eq!(
         [harness.next_event().await, harness.next_event().await],

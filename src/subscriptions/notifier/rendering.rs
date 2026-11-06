@@ -1,7 +1,7 @@
 use url::Url;
 
 use crate::chat::OutgoingMessage;
-use crate::game_monitor::{GameEvent, GameOutcome};
+use crate::game_monitor::{Decision, GameEvent};
 
 pub fn render(event: &GameEvent, lichess: &Url) -> OutgoingMessage {
     let game = event.game();
@@ -12,13 +12,12 @@ pub fn render(event: &GameEvent, lichess: &Url) -> OutgoingMessage {
     );
     OutgoingMessage::new(match event {
         GameEvent::Started(_) => format!("{players} has started: {link}"),
-        GameEvent::Finished { outcome, .. } => match outcome {
-            GameOutcome::WhiteWon => format!("{players} is over. The result is 1-0: {link}"),
-            GameOutcome::BlackWon => format!("{players} is over. The result is 0-1: {link}"),
-            GameOutcome::Draw => format!("{players} is over. The result is ½-½: {link}"),
-            GameOutcome::Aborted => format!("{players} was aborted: {link}"),
-            GameOutcome::Undecided => format!("{players} is over: {link}"),
+        GameEvent::Decided { decision, .. } => match decision {
+            Decision::WhiteWon(_) => format!("{players} is over. The result is 1-0: {link}"),
+            Decision::BlackWon(_) => format!("{players} is over. The result is 0-1: {link}"),
+            Decision::Drawn(_) => format!("{players} is over. The result is ½-½: {link}"),
         },
+        GameEvent::Void { .. } => format!("{players} was aborted: {link}"),
     })
 }
 

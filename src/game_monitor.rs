@@ -1,7 +1,6 @@
 mod event;
 mod live;
 mod monitor;
-mod phase;
 pub mod watchlist;
 
 use std::collections::BTreeSet;
@@ -14,7 +13,7 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::lichess;
 
-pub use event::{Ending, GameEvent, GameEventKind, GameOutcome};
+pub use event::{Decision, Draw, GameEvent, GameEventKind, VoidReason, Win};
 pub use monitor::GameMonitor;
 
 const USER_AGENT: &str = concat!(
