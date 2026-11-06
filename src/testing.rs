@@ -56,8 +56,9 @@ pub fn alice_beat_bob() -> GameState {
             clock: Some(CLASSICAL_CLOCK),
             ..alice_vs_bob("g1")
         },
-        status: GameStatus::Mate,
-        winner: Some(Color::White),
+        status: GameStatus::Mate {
+            winner: Color::White,
+        },
     }
 }
 

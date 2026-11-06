@@ -9,6 +9,7 @@ use serde::Deserialize;
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 use tokio_util::io::StreamReader;
 
+use crate::lichess::game::StatusName;
 use crate::lichess::{
     Clock, Color, Game, GameId, GameState, GameStatus, Player, Speed, UserId, Variant,
 };
@@ -163,7 +164,7 @@ struct StreamedGame {
     variant: Variant,
     speed: Speed,
     clock: Option<Clock>,
-    status_name: GameStatus,
+    status_name: StatusName,
     players: StreamedPlayers,
     winner: Option<Color>,
 }
@@ -195,8 +196,7 @@ impl From<StreamedPlayer> for Player {
 fn decode(line: &str) -> Result<GameState, serde_json::Error> {
     let game: StreamedGame = serde_json::from_str(line)?;
     Ok(GameState {
-        status: game.status_name,
-        winner: game.winner,
+        status: GameStatus::new(game.status_name, game.winner).map_err(serde::de::Error::custom)?,
         game: Game {
             id: game.id,
             white: game.players.white.into(),

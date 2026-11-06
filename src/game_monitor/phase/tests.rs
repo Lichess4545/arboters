@@ -8,84 +8,68 @@ const fn finished(outcome: GameOutcome, ending: Ending) -> GamePhase {
 }
 
 #[test]
-fn statuses_and_winners_map_to_game_phases() {
-    let white = Some(Color::White);
-    let black = Some(Color::Black);
+fn statuses_map_to_game_phases() {
+    let white = Color::White;
+    let black = Color::Black;
     let cases = [
-        (GameStatus::Created, None, GamePhase::Created),
-        (GameStatus::Started, None, GamePhase::Started),
+        (GameStatus::Created, GamePhase::Created),
+        (GameStatus::Started, GamePhase::Started),
         (
             GameStatus::Aborted,
-            None,
             finished(GameOutcome::Aborted, Ending::Aborted),
         ),
         (
-            GameStatus::Mate,
-            white,
+            GameStatus::Mate { winner: white },
             finished(GameOutcome::WhiteWon, Ending::Checkmate),
         ),
         (
-            GameStatus::Resign,
-            black,
+            GameStatus::Resign { winner: black },
             finished(GameOutcome::BlackWon, Ending::Resignation),
         ),
         (
             GameStatus::Stalemate,
-            None,
             finished(GameOutcome::Draw, Ending::Stalemate),
         ),
         (
-            GameStatus::Timeout,
-            white,
+            GameStatus::Timeout {
+                winner: Some(white),
+            },
             finished(GameOutcome::WhiteWon, Ending::VictoryClaimed),
         ),
+        (GameStatus::Draw, finished(GameOutcome::Draw, Ending::Draw)),
         (
-            GameStatus::Draw,
-            None,
-            finished(GameOutcome::Draw, Ending::Draw),
-        ),
-        (
-            GameStatus::Outoftime,
-            None,
+            GameStatus::Outoftime { winner: None },
             finished(GameOutcome::Draw, Ending::OutOfTime),
         ),
         (
-            GameStatus::Outoftime,
-            black,
+            GameStatus::Outoftime {
+                winner: Some(black),
+            },
             finished(GameOutcome::BlackWon, Ending::OutOfTime),
         ),
         (
-            GameStatus::Cheat,
-            black,
+            GameStatus::Cheat { winner: black },
             finished(GameOutcome::BlackWon, Ending::CheatDetected),
         ),
         (
-            GameStatus::NoStart,
-            None,
+            GameStatus::NoStart { winner: white },
             finished(GameOutcome::Aborted, Ending::NeverStarted),
         ),
         (
-            GameStatus::UnknownFinish,
-            None,
+            GameStatus::UnknownFinish { winner: None },
             finished(GameOutcome::Undecided, Ending::Unknown),
         ),
         (
             GameStatus::InsufficientMaterialClaim,
-            None,
             finished(GameOutcome::Draw, Ending::InsufficientMaterialClaimed),
         ),
         (
-            GameStatus::VariantEnd,
-            white,
+            GameStatus::VariantEnd { winner: white },
             finished(GameOutcome::WhiteWon, Ending::VariantEnd),
         ),
     ];
-    for (status, winner, phase) in cases {
-        assert_eq!(
-            GamePhase::of(status, winner),
-            phase,
-            "{status:?} {winner:?}"
-        );
+    for (status, phase) in cases {
+        assert_eq!(GamePhase::of(status), phase, "{status:?}");
     }
 }
 
@@ -94,7 +78,6 @@ fn a_created_game_is_not_an_event() {
     let created = GameState {
         game: alice_vs_bob("g1"),
         status: GameStatus::Created,
-        winner: None,
     };
     assert_eq!(GameEvent::of(created), None);
 }

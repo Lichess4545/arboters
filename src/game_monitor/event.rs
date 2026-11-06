@@ -46,7 +46,7 @@ pub enum GameEvent {
 impl GameEvent {
     #[must_use]
     pub fn of(state: GameState) -> Option<Self> {
-        match GamePhase::of(state.status, state.winner) {
+        match GamePhase::of(state.status) {
             GamePhase::Created => None,
             GamePhase::Started => Some(Self::Started(state.game)),
             GamePhase::Finished { outcome, ending } => Some(Self::Finished {
