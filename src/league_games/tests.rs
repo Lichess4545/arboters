@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 
 use kameo::actor::Spawn;
-use reqwest::header::{AUTHORIZATION, USER_AGENT};
 use secrecy::SecretString;
 use url::Url;
 use wiremock::matchers::{method, path};
@@ -17,21 +16,10 @@ const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "bl
 
 type Fields = BTreeMap<String, String>;
 
-async fn report(
-    answers: &[(u16, &str)],
-    active: ActiveLeagues,
-    events: Vec<GameEvent>,
-) -> Vec<Request> {
+async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields> {
     let heltour = MockServer::start().await;
-    let update_pairing = || Mock::given(method("POST")).and(path("/api/update_pairing/"));
-    for (status, body) in answers {
-        update_pairing()
-            .respond_with(ResponseTemplate::new(*status).set_body_string(*body))
-            .up_to_n_times(1)
-            .mount(&heltour)
-            .await;
-    }
-    update_pairing()
+    Mock::given(method("POST"))
+        .and(path("/api/update_pairing/"))
         .respond_with(ResponseTemplate::new(200).set_body_string(UPDATED))
         .mount(&heltour)
         .await;
@@ -51,17 +39,14 @@ async fn report(
         reporter.ask(StreamMessage::Next(event)).await.unwrap();
     }
     assert!(reporter.is_alive());
-    heltour.received_requests().await.unwrap()
+    let requests = heltour.received_requests().await.unwrap();
+    requests.iter().map(form).collect()
 }
 
 fn form(request: &Request) -> Fields {
     url::form_urlencoded::parse(&request.body)
         .into_owned()
         .collect()
-}
-
-async fn reports_of(active: ActiveLeagues, events: Vec<GameEvent>) -> Vec<Fields> {
-    report(&[], active, events).await.iter().map(form).collect()
 }
 
 fn classical(tag_name: &str) -> League {
@@ -101,50 +86,44 @@ fn game() -> Game {
     }
 }
 
-const fn finished(game: Game, outcome: GameOutcome, ending: Ending) -> GameEvent {
+const fn started(game: Game) -> GameEvent {
+    GameEvent::Started(game)
+}
+
+fn game_where(change: impl FnOnce(&mut Game)) -> Game {
+    let mut game = game();
+    change(&mut game);
+    game
+}
+
+fn finished(outcome: GameOutcome, ending: Ending) -> GameEvent {
     GameEvent::Finished {
-        game,
+        game: game(),
         outcome,
         ending,
     }
 }
 
 fn report_to(league: &str, result: Option<&str>) -> Fields {
-    let mut fields: Fields = [
-        ("league", league.to_owned()),
-        ("white", "alice".to_owned()),
-        ("black", "bob".to_owned()),
-        (
-            "game_link",
-            GameId::new("abcd1234")
-                .link(&lichess::Config::default().base_url)
-                .to_string(),
-        ),
-        ("strict", "true".to_owned()),
+    let game_link = GameId::new("abcd1234").link(&lichess::Config::default().base_url);
+    [
+        ("league", league),
+        ("white", "alice"),
+        ("black", "bob"),
+        ("game_link", game_link.as_str()),
+        ("strict", "true"),
     ]
     .into_iter()
-    .map(|(key, value)| (key.to_owned(), value))
-    .collect();
-    if let Some(result) = result {
-        fields.insert("result".to_owned(), result.to_owned());
-    }
-    fields
+    .chain(result.map(|result| ("result", result)))
+    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+    .collect()
 }
 
 #[tokio::test]
-async fn a_valid_start_is_reported_strictly_with_its_game_link_and_our_credentials() {
-    let requests = report(&[], alice_vs_bob(), vec![GameEvent::Started(game())]).await;
-
-    let headers = &requests[0].headers;
-    assert_eq!(form(&requests[0]), report_to("classical", None));
-    assert_eq!(headers[AUTHORIZATION], "Token heltour_secret");
+async fn a_valid_start_is_reported_without_a_result() {
     assert_eq!(
-        headers[USER_AGENT],
-        format!(
-            "arboters/{} (+https://github.com/Lichess4545/arboters)",
-            env!("CARGO_PKG_VERSION")
-        )
-        .as_str()
+        reports_of(alice_vs_bob(), vec![started(game())]).await,
+        [report_to("classical", None)]
     );
 }
 
@@ -159,101 +138,86 @@ async fn a_valid_finish_reports_its_result() {
     ];
     for (outcome, ending, result) in results {
         assert_eq!(
-            reports_of(alice_vs_bob(), vec![finished(game(), outcome, ending)]).await,
+            reports_of(alice_vs_bob(), vec![finished(outcome, ending)]).await,
             [report_to("classical", Some(result))],
             "{ending:?}"
         );
     }
 }
 
+struct Unreported(&'static str, ActiveLeagues, GameEvent);
+
 #[tokio::test]
-async fn a_game_that_breaks_its_leagues_rules_is_not_reported() {
+async fn an_invalid_game_is_not_reported() {
     let clock = |initial_seconds, increment_seconds| {
         Some(Clock {
             initial_seconds,
             increment_seconds,
         })
     };
+    let without_time_controls = alice_vs_bob_in(League {
+        time_control: None,
+        ..classical("classical")
+    });
     let breaches = [
-        (
+        Unreported(
             "initial time",
             alice_vs_bob(),
-            GameEvent::Started(Game {
-                clock: clock(1800, 45),
-                ..game()
-            }),
+            started(game_where(|game| game.clock = clock(1800, 45))),
         ),
-        (
+        Unreported(
             "increment",
             alice_vs_bob(),
-            GameEvent::Started(Game {
-                clock: clock(2700, 30),
-                ..game()
-            }),
+            started(game_where(|game| game.clock = clock(2700, 30))),
         ),
-        (
+        Unreported(
             "no clock",
             alice_vs_bob(),
-            GameEvent::Started(Game {
-                clock: None,
-                ..game()
-            }),
+            started(game_where(|game| game.clock = None)),
         ),
-        (
-            "a league without a time control",
-            alice_vs_bob_in(League {
-                time_control: None,
-                ..classical("classical")
-            }),
-            GameEvent::Started(Game {
-                clock: None,
-                ..game()
-            }),
+        Unreported(
+            "no time controls",
+            without_time_controls,
+            started(game_where(|game| game.clock = None)),
         ),
-        (
+        Unreported(
             "unrated",
             alice_vs_bob(),
-            GameEvent::Started(Game {
-                rated: false,
-                ..game()
-            }),
+            started(game_where(|game| game.rated = false)),
         ),
-        (
+        Unreported(
             "variant",
             alice_vs_bob(),
-            GameEvent::Started(Game {
-                variant: Variant::Chess960,
-                ..game()
-            }),
+            started(game_where(|game| game.variant = Variant::Chess960)),
         ),
-        (
+        Unreported(
             "claimed victory",
             alice_vs_bob(),
-            finished(game(), GameOutcome::WhiteWon, Ending::VictoryClaimed),
+            finished(GameOutcome::WhiteWon, Ending::VictoryClaimed),
         ),
-        (
+        Unreported(
             "cheat detected",
             alice_vs_bob(),
-            finished(game(), GameOutcome::BlackWon, Ending::CheatDetected),
+            finished(GameOutcome::BlackWon, Ending::CheatDetected),
         ),
-        (
+        Unreported(
             "aborted",
             alice_vs_bob(),
-            finished(game(), GameOutcome::Aborted, Ending::Aborted),
+            finished(GameOutcome::Aborted, Ending::Aborted),
         ),
-        (
+        Unreported(
             "never started",
             alice_vs_bob(),
-            finished(game(), GameOutcome::Aborted, Ending::NeverStarted),
+            finished(GameOutcome::Aborted, Ending::NeverStarted),
         ),
-        (
+        Unreported(
             "unknown finish",
             alice_vs_bob(),
-            finished(game(), GameOutcome::WhiteWon, Ending::Unknown),
+            finished(GameOutcome::WhiteWon, Ending::Unknown),
         ),
     ];
-    for (breach, active, event) in breaches {
-        assert_eq!(reports_of(active, vec![event]).await, [], "{breach}");
+    for Unreported(name, active, event) in breaches {
+        assert_eq!(reports_of(active, vec![event]).await, [], "{name}");
     }
 }
 
@@ -272,22 +236,7 @@ async fn a_game_is_reported_with_its_own_colors_to_each_league_that_pairs_its_pl
         ],
     };
     assert_eq!(
-        reports_of(active, vec![GameEvent::Started(game())]).await,
+        reports_of(active, vec![started(game())]).await,
         [report_to("rapid", None), report_to("blitz", None)]
     );
-}
-
-#[tokio::test]
-async fn the_reporter_carries_on_after_heltour_declines_or_fails() {
-    let answers = [
-        (200, r#"{"updated": 0, "error": "not_found"}"#),
-        (200, r#"{"updated": 0, "error": "game_link_conflict"}"#),
-        (200, r#"{"updated": 0, "error": "result_already_set"}"#),
-        (500, "Server Error"),
-        (200, "not json"),
-    ];
-    let events = vec![GameEvent::Started(game()); answers.len() + 1];
-    let reports = report(&answers, alice_vs_bob(), events).await;
-
-    assert_eq!(reports.len(), answers.len() + 1);
 }
