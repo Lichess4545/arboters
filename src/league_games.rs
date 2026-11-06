@@ -2,11 +2,13 @@ mod config;
 
 use std::collections::BTreeSet;
 use std::convert::Infallible;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message, StreamMessage};
-use tokio::sync::broadcast;
+use tokio::sync::{Semaphore, broadcast};
 use url::Url;
 
 use crate::game_monitor::{
@@ -16,10 +18,11 @@ use crate::heltour::{Heltour, PairingResult, PairingUpdate, UpdatePairingError, 
 
 pub use config::Config;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Reporter {
     heltour: Heltour,
     lichess: Url,
+    parallel_reports: Arc<Semaphore>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -31,8 +34,22 @@ enum Breach {
 
 impl Reporter {
     #[must_use]
-    pub const fn new(heltour: Heltour, lichess: Url) -> Self {
-        Self { heltour, lichess }
+    pub fn new(heltour: Heltour, lichess: Url, parallel_reports: NonZeroUsize) -> Self {
+        let permits = parallel_reports.get().min(Semaphore::MAX_PERMITS);
+        Self {
+            heltour,
+            lichess,
+            parallel_reports: Arc::new(Semaphore::new(permits)),
+        }
+    }
+
+    async fn report_in_parallel(&self, event: GameEvent) {
+        let permit = Arc::clone(&self.parallel_reports).acquire_owned().await;
+        let reporter = self.clone();
+        tokio::spawn(async move {
+            reporter.report(&event).await;
+            drop(permit);
+        });
     }
 
     async fn report(&self, event: &GameEvent) {
@@ -138,7 +155,7 @@ impl Message<StreamMessage<GameEvent, (), ()>> for Reporter {
         _: &mut Context<Self, Self::Reply>,
     ) {
         if let StreamMessage::Next(event) = message {
-            self.report(&event).await;
+            self.report_in_parallel(event).await;
         }
     }
 }

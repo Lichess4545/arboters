@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use kameo::actor::Spawn;
 use secrecy::SecretString;
 use url::Url;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::{Mock, MockBuilder, MockServer, Request, ResponseTemplate};
 
 use super::*;
 use crate::game_monitor::http_client;
@@ -15,30 +16,44 @@ use crate::testing::{CLASSICAL_CLOCK, alice_vs_bob, fixture, league, tag};
 
 const UPDATED: &str = r#"{"updated": 1, "reversed": false, "white": "alice", "black": "bob", "game_link_changed": true, "result_changed": false}"#;
 
+const PARALLEL_REPORTS: u32 = 2;
+
 type Fields = BTreeMap<String, String>;
 
-async fn reports_of(events: Vec<GameEvent>) -> Vec<Fields> {
-    let heltour = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/api/update_pairing/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(UPDATED))
-        .mount(&heltour)
-        .await;
+fn reporter(heltour: &MockServer) -> Reporter {
     let config = heltour::Config {
         base_url: Url::parse(&format!("{}/api/", heltour.uri())).unwrap(),
         token: SecretString::from("heltour_secret"),
         retry: heltour::RetryConfig::default(),
     };
-    let reporter = Reporter::spawn((
-        Reporter::new(
-            Heltour::new(http_client().unwrap(), &config),
-            lichess::Config::default().base_url,
-        ),
-        broadcast::channel(1).1,
-    ));
+    Reporter::new(
+        Heltour::new(http_client().unwrap(), &config),
+        lichess::Config::default().base_url,
+        NonZeroUsize::new(PARALLEL_REPORTS as usize).unwrap(),
+    )
+}
+
+fn update_pairing() -> MockBuilder {
+    Mock::given(method("POST")).and(path("/api/update_pairing/"))
+}
+
+fn updated() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_string(UPDATED)
+}
+
+async fn reports_of(events: Vec<GameEvent>) -> Vec<Fields> {
+    let heltour = MockServer::start().await;
+    update_pairing()
+        .respond_with(updated())
+        .mount(&heltour)
+        .await;
+    let reporter = reporter(&heltour);
+    let reports = Arc::clone(&reporter.parallel_reports);
+    let reporter = Reporter::spawn((reporter, broadcast::channel(1).1));
     for event in events {
         reporter.ask(StreamMessage::Next(event)).await.unwrap();
     }
+    let _all_finished = reports.acquire_many(PARALLEL_REPORTS).await.unwrap();
     assert!(reporter.is_alive());
     let requests = heltour.received_requests().await.unwrap();
     requests.iter().map(form).collect()
@@ -221,4 +236,37 @@ async fn a_league_from_another_source_is_not_reported() {
         reports_of(vec![event]).await,
         [report_to("classical", None)]
     );
+}
+
+#[tokio::test]
+async fn a_slow_report_does_not_hold_up_the_next_game() {
+    let heltour = MockServer::start().await;
+    update_pairing()
+        .and(body_string_contains("slow1234"))
+        .respond_with(updated().set_delay(Duration::from_mins(1)))
+        .mount(&heltour)
+        .await;
+    let next = update_pairing()
+        .and(body_string_contains("next1234"))
+        .respond_with(updated())
+        .expect(1)
+        .mount_as_scoped(&heltour)
+        .await;
+    let reporter = Reporter::spawn((reporter(&heltour), broadcast::channel(1).1));
+    let both_reported = async {
+        for id in ["slow1234", "next1234"] {
+            let game = Game {
+                clock: Some(CLASSICAL_CLOCK),
+                ..alice_vs_bob(id)
+            };
+            reporter
+                .ask(StreamMessage::Next(started(game)))
+                .await
+                .unwrap();
+        }
+        next.wait_until_satisfied().await;
+    };
+    tokio::time::timeout(Duration::from_secs(5), both_reported)
+        .await
+        .unwrap();
 }

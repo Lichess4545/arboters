@@ -43,6 +43,7 @@ fn with_only_the_required_variables_set_every_other_setting_takes_its_default() 
         assert_eq!(config.game_recheck.interval, Duration::from_mins(15));
         assert_eq!(config.telemetry.log_format, LogFormat::Json);
         assert!(!config.league_games.report);
+        assert_eq!(config.league_games.parallel_reports.get(), 8);
     });
 }
 
@@ -87,6 +88,7 @@ fn a_misspelled_variable_in_any_section_is_rejected() {
         "ARBOTERS_HELTOUR__TOKN",
         "ARBOTERS_HELTOUR__RETRY__RETRIE",
         "ARBOTERS_HELTOUR_SYNC__REFRESH",
+        "ARBOTERS_LEAGUE_GAMES__PARALLEL_REPORT",
         "ARBOTERS_TELEMETRY__FORMAT",
         "ARBOTERS_STATUS__CHANEL",
     ] {

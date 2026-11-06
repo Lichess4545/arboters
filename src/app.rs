@@ -161,7 +161,11 @@ impl Games {
         notifier.wait_for_startup().await;
         let reporter = if config.league_games.report {
             let reporter = Reporter::spawn((
-                Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
+                Reporter::new(
+                    heltour.clone(),
+                    config.lichess.base_url.clone(),
+                    config.league_games.parallel_reports,
+                ),
                 monitor.events(),
             ));
             reporter.wait_for_startup().await;
