@@ -20,7 +20,7 @@ use super::{
     StoreError, StreamConnected, SubmitFixtures,
 };
 
-const GAME_EVENTS_CAPACITY: usize = 1024;
+const GAME_EVENTS_CAPACITY: usize = 16_384;
 
 #[derive(Debug)]
 pub struct GameMonitor<F, P> {

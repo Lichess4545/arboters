@@ -70,6 +70,7 @@ impl FakeServices {
         let config = heltour::Config {
             base_url: Url::parse(&format!("{}/api/", self.0.uri())).unwrap(),
             token: SecretString::from("heltour_secret"),
+            retry: heltour::RetryConfig::default(),
         };
         Heltour::new(http_client().unwrap(), &config)
     }
