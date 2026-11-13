@@ -1,28 +1,9 @@
 use url::Url;
 
-use crate::chat::MessageId;
-
+use super::Action;
 use crate::responses::ResponseId;
 use crate::responses::link::{LinkMistake, linked_message};
 use crate::responses::phrase::{Matching, Phrase};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    Help,
-    Response(Result<Command, Mistake>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Help,
-    Add {
-        phrase: Phrase,
-        matching: Matching,
-        message: MessageId,
-    },
-    List(Option<Phrase>),
-    Remove(ResponseId),
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mistake {
@@ -37,11 +18,11 @@ pub enum Mistake {
 const OPENING_QUOTES: [char; 2] = ['"', '\u{201c}'];
 const CLOSING_QUOTES: [char; 2] = ['"', '\u{201d}'];
 
-pub fn parse(text: &str, site: &Url) -> Option<Request> {
+pub fn parse(text: &str, site: &Url) -> Option<Action> {
     let (first, rest) = first_word(text);
     match first.to_lowercase().as_str() {
-        "help" => Some(Request::Help),
-        "response" | "responses" => Some(Request::Response(command(rest, site))),
+        "help" => Some(Action::Help),
+        "response" | "responses" => Some(response(rest, site)),
         _ => None,
     }
 }
@@ -52,26 +33,29 @@ fn first_word(text: &str) -> (&str, &str) {
         .map_or((text, ""), |(word, rest)| (word, rest.trim()))
 }
 
-fn command(text: &str, site: &Url) -> Result<Command, Mistake> {
+fn response(text: &str, site: &Url) -> Action {
     let (verb, rest) = first_word(text);
     match verb.to_lowercase().as_str() {
-        "" | "help" if rest.is_empty() => Ok(Command::Help),
-        "add" => add(rest, site),
-        "list" if rest.is_empty() => Ok(Command::List(None)),
+        "" | "help" if rest.is_empty() => Action::ResponseHelp,
+        "add" => add(rest, site).unwrap_or_else(Action::Mistake),
+        "list" if rest.is_empty() => Action::List(None),
         "list" => match quoted(rest) {
-            Some((inside, "")) => Ok(Command::List(Some(phrase(inside)?))),
-            _ => Err(Mistake::List),
+            Some((inside, "")) => {
+                phrase(inside).map_or_else(Action::Mistake, |phrase| Action::List(Some(phrase)))
+            }
+            _ => Action::Mistake(Mistake::List),
         },
         "remove" => rest
             .trim_start_matches('#')
             .parse()
-            .map(|id| Command::Remove(ResponseId(id)))
-            .map_err(|_| Mistake::Remove),
-        _ => Err(Mistake::Unknown),
+            .map_or(Action::Mistake(Mistake::Remove), |id| {
+                Action::Remove(ResponseId(id))
+            }),
+        _ => Action::Mistake(Mistake::Unknown),
     }
 }
 
-fn add(text: &str, site: &Url) -> Result<Command, Mistake> {
+fn add(text: &str, site: &Url) -> Result<Action, Mistake> {
     let (matching, text) = match first_word(text) {
         (word, rest) if word.eq_ignore_ascii_case("exact") => (Matching::ExactCase, rest),
         _ => (Matching::AnyCase, text),
@@ -81,11 +65,10 @@ fn add(text: &str, site: &Url) -> Result<Command, Mistake> {
     if link.is_empty() {
         return Err(Mistake::Add);
     }
-    let message = linked_message(link, site).map_err(Mistake::Link)?;
-    Ok(Command::Add {
+    Ok(Action::Add {
         phrase,
         matching,
-        message,
+        source: linked_message(link, site).map_err(Mistake::Link)?,
     })
 }
 

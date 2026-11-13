@@ -22,10 +22,6 @@ const MEMBER: u64 = 10;
 const MODERATOR: u64 = 11;
 const ANSWER: &str = "Subscription `1`: tell you when a-game-starts in classical.";
 
-fn answering() -> Handling {
-    Handling::Answered(OutgoingMessage::new(ANSWER.to_owned()))
-}
-
 type Form = BTreeMap<String, String>;
 type Reply = (StatusCode, Value);
 
@@ -125,33 +121,32 @@ async fn edit_message(
 }
 
 #[derive(Debug)]
-struct Listener {
-    handling: Handling,
+struct Answerer {
     heard: mpsc::UnboundedSender<IncomingMessage>,
 }
 
-impl Actor for Listener {
+impl Actor for Answerer {
     type Args = Self;
     type Error = Infallible;
 
     fn on_start(
-        listener: Self,
+        answerer: Self,
         _: ActorRef<Self>,
     ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(listener))
+        std::future::ready(Ok(answerer))
     }
 }
 
-impl Message<IncomingMessage> for Listener {
-    type Reply = Handling;
+impl Message<IncomingMessage> for Answerer {
+    type Reply = OutgoingMessage;
 
     fn handle(
         &mut self,
         message: IncomingMessage,
         _: &mut Context<Self, Self::Reply>,
-    ) -> impl Future<Output = Handling> + Send {
+    ) -> impl Future<Output = OutgoingMessage> + Send {
         self.heard.send(message).unwrap();
-        std::future::ready(self.handling.clone())
+        std::future::ready(OutgoingMessage::new(ANSWER.to_owned()))
     }
 }
 
@@ -195,7 +190,7 @@ struct FakeZulip {
 }
 
 impl FakeZulip {
-    async fn start() -> Self {
+    async fn start() -> (Self, mpsc::UnboundedReceiver<IncomingMessage>) {
         let (replies, replies_out) = mpsc::unbounded_channel();
         let (registrations_in, registrations) = mpsc::unbounded_channel();
         let (polls_in, polls) = mpsc::unbounded_channel();
@@ -232,31 +227,23 @@ impl FakeZulip {
             },
         };
         let messenger = ZulipMessenger::new(reqwest::Client::new(), &config);
-        let inbox = Inbox::spawn(Inbox::new(reqwest::Client::new(), &config, messenger));
-        Self {
+        let (heard, hearing) = mpsc::unbounded_channel();
+        let answerer = Answerer::spawn(Answerer { heard });
+        let inbox = Inbox::spawn(Inbox::new(
+            reqwest::Client::new(),
+            &config,
+            messenger,
+            answerer.reply_recipient(),
+        ));
+        let zulip = Self {
             inbox,
             replies,
             registrations,
             polls,
             sent,
             edits,
-        }
-    }
-
-    async fn listening(handling: Handling) -> (Self, mpsc::UnboundedReceiver<IncomingMessage>) {
-        let zulip = Self::start().await;
-        let heard = zulip.listen(handling).await;
-        (zulip, heard)
-    }
-
-    async fn listen(&self, handling: Handling) -> mpsc::UnboundedReceiver<IncomingMessage> {
-        let (heard, hearing) = mpsc::unbounded_channel();
-        let listener = Listener::spawn(Listener { handling, heard });
-        self.inbox
-            .ask(Listen(listener.reply_recipient()))
-            .await
-            .unwrap();
-        hearing
+        };
+        (zulip, hearing)
     }
 
     async fn overhear(&self) -> mpsc::UnboundedReceiver<OverheardMessage> {
@@ -402,7 +389,7 @@ fn games_topic() -> Conversation {
 
 #[tokio::test]
 async fn the_queue_is_registered_for_messages_and_their_edits_in_raw_markdown() {
-    let (mut zulip, _) = FakeZulip::listening(answering()).await;
+    let (mut zulip, _) = FakeZulip::start().await;
 
     let registration = within_a_while(zulip.registrations.recv()).await;
 
@@ -415,7 +402,7 @@ async fn the_queue_is_registered_for_messages_and_their_edits_in_raw_markdown() 
 
 #[tokio::test]
 async fn the_queue_is_registered_for_messages_in_every_public_channel() {
-    let (mut zulip, _) = FakeZulip::listening(answering()).await;
+    let (mut zulip, _) = FakeZulip::start().await;
 
     let registration = within_a_while(zulip.registrations.recv()).await;
 
@@ -424,7 +411,7 @@ async fn the_queue_is_registered_for_messages_in_every_public_channel() {
 
 #[tokio::test]
 async fn a_direct_message_is_handed_out_with_its_sender_role_and_conversation() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
 
     zulip.deliver(json!([direct_message(1, MODERATOR, " subscription list ")]));
 
@@ -441,8 +428,38 @@ async fn a_direct_message_is_handed_out_with_its_sender_role_and_conversation() 
 }
 
 #[tokio::test]
+async fn the_answer_to_a_direct_message_is_sent_to_its_sender() {
+    let (mut zulip, _heard) = FakeZulip::start().await;
+
+    zulip.deliver(json!([direct_message(1, MEMBER, "help")]));
+
+    let reply = within_a_while(zulip.sent.recv()).await;
+    assert_eq!(reply["type"], "direct");
+    assert_eq!(reply["to"], "[10]");
+    assert_eq!(reply["content"], ANSWER);
+}
+
+#[tokio::test]
+async fn the_answer_to_a_mention_is_sent_to_its_topic() {
+    let (mut zulip, _heard) = FakeZulip::start().await;
+
+    zulip.deliver(json!([channel_message(
+        1,
+        MEMBER,
+        "@**Arboters** help",
+        &["mentioned"]
+    )]));
+
+    let reply = within_a_while(zulip.sent.recv()).await;
+    assert_eq!(reply["type"], "channel");
+    assert_eq!(reply["to"], "chess");
+    assert_eq!(reply["topic"], "games");
+    assert_eq!(reply["content"], ANSWER);
+}
+
+#[tokio::test]
 async fn a_channel_message_that_mentions_the_bot_is_handed_out_without_the_mention() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
 
     zulip.deliver(json!([channel_message(
         1,
@@ -459,7 +476,7 @@ async fn a_channel_message_that_mentions_the_bot_is_handed_out_without_the_menti
 
 #[tokio::test]
 async fn a_mention_that_names_the_bot_by_id_is_stripped_too() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
 
     zulip.deliver(json!([channel_message(
         1,
@@ -473,7 +490,7 @@ async fn a_mention_that_names_the_bot_by_id_is_stripped_too() {
 
 #[tokio::test]
 async fn messages_not_addressed_to_the_bot_alone_are_ignored() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
 
     zulip.deliver(json!([
         channel_message(1, MEMBER, "@**Arboters** help", &["read"]),
@@ -492,7 +509,7 @@ async fn messages_not_addressed_to_the_bot_alone_are_ignored() {
 
 #[tokio::test]
 async fn an_expired_queue_is_registered_again() {
-    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -516,7 +533,7 @@ async fn an_expired_queue_is_registered_again() {
 
 #[tokio::test]
 async fn a_failed_poll_is_retried_on_the_same_queue() {
-    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -535,7 +552,7 @@ async fn a_failed_poll_is_retried_on_the_same_queue() {
 
 #[tokio::test]
 async fn heartbeats_are_acknowledged_and_the_poll_continues() {
-    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     assert_eq!(
         zulip.next_poll().await,
         ("queue-1".to_owned(), "-1".to_owned())
@@ -552,35 +569,8 @@ async fn heartbeats_are_acknowledged_and_the_poll_continues() {
 }
 
 #[tokio::test]
-async fn a_message_no_listener_recognizes_gets_a_reply_pointing_at_help() {
-    let (mut zulip, _heard) = FakeZulip::listening(Handling::Unrecognized).await;
-
-    zulip.deliver(json!([direct_message(1, MEMBER, "hello")]));
-
-    let reply = within_a_while(zulip.sent.recv()).await;
-    assert_eq!(reply["type"], "direct");
-    assert_eq!(reply["to"], "[10]");
-    assert_eq!(reply["content"], UNRECOGNIZED);
-}
-
-#[tokio::test]
-async fn the_answers_of_every_listener_that_handles_a_message_are_one_reply() {
-    let (mut zulip, mut ignoring) = FakeZulip::listening(Handling::Unrecognized).await;
-    let _first = zulip.listen(answering()).await;
-    let _second = zulip.listen(answering()).await;
-
-    zulip.deliver(json!([direct_message(1, MEMBER, "help")]));
-    within_a_while(ignoring.recv()).await;
-
-    let reply = within_a_while(zulip.sent.recv()).await;
-    assert_eq!(reply["content"], format!("{ANSWER}\n\n{ANSWER}"));
-    zulip.listen(answering()).await;
-    assert!(zulip.sent.try_recv().is_err());
-}
-
-#[tokio::test]
 async fn an_edit_of_an_answered_message_is_handed_out_again_and_edits_the_reply() {
-    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     zulip.deliver(json!([direct_message(1, MEMBER, "tell me")]));
     within_a_while(heard.recv()).await;
     within_a_while(zulip.sent.recv()).await;
@@ -601,8 +591,8 @@ async fn an_edit_of_an_answered_message_is_handed_out_again_and_edits_the_reply(
 }
 
 #[tokio::test]
-async fn an_edit_of_an_unrecognized_message_edits_the_pointer_to_help() {
-    let (mut zulip, mut heard) = FakeZulip::listening(Handling::Unrecognized).await;
+async fn an_edit_in_a_channel_is_handed_out_without_the_mention_and_edits_the_reply() {
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     zulip.deliver(json!([channel_message(
         1,
         MEMBER,
@@ -625,12 +615,12 @@ async fn an_edit_of_an_unrecognized_message_edits_the_pointer_to_help() {
     assert_eq!(edited.reply_to, games_topic());
     let (reply, edited) = within_a_while(zulip.edits.recv()).await;
     assert_eq!(reply, 5000);
-    assert_eq!(edited["content"], UNRECOGNIZED);
+    assert_eq!(edited["content"], ANSWER);
 }
 
 #[tokio::test]
 async fn topic_moves_unaddressed_edits_and_edits_of_unanswered_messages_are_ignored() {
-    let (mut zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (mut zulip, mut heard) = FakeZulip::start().await;
     zulip.deliver(json!([channel_message(
         1,
         MEMBER,
@@ -668,7 +658,7 @@ async fn topic_moves_unaddressed_edits_and_edits_of_unanswered_messages_are_igno
 
 #[tokio::test]
 async fn a_mention_by_name_alone_gets_the_id_of_the_one_active_user_with_that_name() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
 
     zulip.deliver(json!([
         direct_message(
@@ -700,7 +690,7 @@ async fn a_mention_by_name_alone_gets_the_id_of_the_one_active_user_with_that_na
 
 #[tokio::test]
 async fn an_ordinary_channel_message_is_overheard_and_never_handed_out_as_a_command() {
-    let (zulip, mut heard) = FakeZulip::listening(answering()).await;
+    let (zulip, mut heard) = FakeZulip::start().await;
     let mut overheard = zulip.overhear().await;
 
     zulip.deliver(json!([
