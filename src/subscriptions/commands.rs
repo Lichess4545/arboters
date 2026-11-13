@@ -3,24 +3,25 @@ mod parsing;
 mod spelling;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 
 use kameo::Actor;
-use kameo::actor::{ActorRef, Recipient};
-use kameo::error::SendError;
+use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use tokio::sync::watch;
 use url::Url;
 
 use crate::chat::{
-    ChannelName, ChatUserId, Conversation, Handling, IncomingMessage, Listen, MessageId,
-    OutgoingMessage, Revision, TopicName,
+    ChannelName, ChatUserId, Conversation, IncomingMessage, MessageId, OutgoingMessage, Revision,
+    Role, TopicName,
 };
+use crate::commands::{Handling, Listener};
 use crate::game_monitor::GameEventKind;
 use crate::heltour::{ActiveLeagues, League, league};
 
 use super::model::{NewSubscription, Remover, SubscriptionId, SubscriptionSource};
 use super::{Subscriptions, SubscriptionsError};
-use parsing::{Command, Draft, IS_OVER, Listener, Mistake, Problem, STARTS, Tell, parse};
+use parsing::{Audience, Draft, IS_OVER, Mistake, Problem, STARTS, Tell, parse};
 use spelling::Found;
 
 #[derive(Debug)]
@@ -32,9 +33,50 @@ pub struct SubscriptionCommands<R> {
     lichess: Url,
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("subscription commands could not listen to the inbox")]
-pub struct InboxUnavailable(#[from] SendError<Listen>);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    Help,
+    Tell(Tell),
+    List,
+    Remove(SubscriptionId),
+    Mistake(Mistake),
+    EditedAway,
+}
+
+#[derive(Debug)]
+pub struct SubscriptionCommand {
+    asker: Asker,
+    action: Action,
+}
+
+#[derive(Debug)]
+struct Asker {
+    sender: ChatUserId,
+    role: Role,
+    reply_to: Conversation,
+    message: MessageId,
+    revision: Revision,
+}
+
+impl SubscriptionCommand {
+    fn new(message: &IncomingMessage, action: Option<Action>) -> Option<Self> {
+        let action = match (action, message.revision) {
+            (Some(action), _) => action,
+            (None, Revision::Edited) => Action::EditedAway,
+            (None, Revision::Original) => return None,
+        };
+        Some(Self {
+            asker: Asker {
+                sender: message.sender,
+                role: message.role,
+                reply_to: message.reply_to.clone(),
+                message: message.id,
+                revision: message.revision,
+            },
+            action,
+        })
+    }
+}
 
 impl<R: Subscriptions> SubscriptionCommands<R> {
     #[must_use]
@@ -52,64 +94,67 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         }
     }
 
-    fn earlier_subscription(&self, message: &IncomingMessage) -> Option<SubscriptionId> {
-        match message.revision {
+    fn earlier_subscription(&self, asker: &Asker) -> Option<SubscriptionId> {
+        match asker.revision {
             Revision::Original => None,
-            Revision::Edited => self.subscribed_by.get(&message.id).map(|(id, _)| *id),
+            Revision::Edited => self.subscribed_by.get(&asker.message).map(|(id, _)| *id),
         }
     }
 
-    async fn reply_to(
-        &mut self,
-        message: &IncomingMessage,
-        command: Result<Command, Mistake>,
-    ) -> String {
-        let outcome = match command {
-            Ok(Command::Help) => Ok(self.help(message)),
-            Ok(Command::Tell(tell)) => match self.request(message, tell) {
-                Ok(subscription) => self.subscribe(message, subscription).await,
-                Err(refusal) => Ok(self.unchanged(message, refusal)),
+    async fn answer(&mut self, asker: &Asker, action: Action) -> Option<String> {
+        let outcome = match action {
+            Action::Help => Ok(self.help(asker)),
+            Action::Tell(tell) => match self.request(asker, tell) {
+                Ok(subscription) => self.subscribe(asker, subscription).await,
+                Err(refusal) => Ok(self.unchanged(asker, refusal)),
             },
-            Ok(Command::List) => self.list(message).await,
-            Ok(Command::Remove(id)) => self.remove(message, id).await,
-            Err(mistake) => Ok(self.unchanged(message, self.explain(message, mistake))),
+            Action::List => self.list(asker).await,
+            Action::Remove(id) => self.remove(asker, id).await,
+            Action::Mistake(mistake) => Ok(self.unchanged(asker, self.explain(asker, mistake))),
+            Action::EditedAway => {
+                return self.earlier_subscription(asker).map(|id| {
+                    format!(
+                        "Subscription `{id}` is unchanged. Send `help` to see the commands I know."
+                    )
+                });
+            }
         };
-        outcome.unwrap_or_else(|error| {
+        Some(outcome.unwrap_or_else(|error| {
             tracing::error!(error = %error, cause = ?std::error::Error::source(&error), "subscription command failed");
             "Something went wrong on my side. Please try again later.".to_owned()
-        })
+        }))
     }
 
-    fn unchanged(&self, message: &IncomingMessage, reply: String) -> String {
-        match self.earlier_subscription(message) {
+    fn unchanged(&self, asker: &Asker, reply: String) -> String {
+        match self.earlier_subscription(asker) {
             Some(id) => format!("{reply}\nSubscription `{id}` is unchanged."),
             None => reply,
         }
     }
 
-    fn request(&self, message: &IncomingMessage, tell: Tell) -> Result<NewSubscription, String> {
+    fn request(&self, asker: &Asker, tell: Tell) -> Result<NewSubscription, String> {
         let league = match league_lookup::find(&self.active, &tell.league) {
             Found::One(league) => league.tag.clone(),
-            found => return Err(self.unknown_league(message, &Draft::from(tell), &found)),
+            found => return Err(self.unknown_league(asker, &Draft::from(tell), &found)),
         };
-        let target = match tell.listener {
-            Listener::Me => Conversation::Direct {
-                user_id: message.sender,
+        let target = match tell.audience {
+            Audience::Me => Conversation::Direct {
+                user_id: asker.sender,
             },
-            Listener::Here => match &message.reply_to {
+            Audience::Here => match &asker.reply_to {
                 Conversation::Direct { .. } => {
                     return Err("`tell here` only works in a channel topic. In a direct message, use `tell me`, or name a topic with `tell #**channel>topic**`.".to_owned());
                 }
                 channel @ Conversation::Topic { .. } => channel.clone(),
             },
-            Listener::Topic { channel, topic } => Conversation::Topic { channel, topic },
-            Listener::User(user_id) if user_id != message.sender && !message.role.moderates() => {
+            Audience::Topic { channel, topic } => Conversation::Topic { channel, topic },
+            Audience::User(user_id) if user_id != asker.sender && !asker.role.moderates() => {
                 return Err("Only moderators can subscribe someone else. Use `tell me` to subscribe yourself.".to_owned());
             }
-            Listener::User(user_id) => Conversation::Direct { user_id },
+            Audience::User(user_id) => Conversation::Direct { user_id },
         };
         Ok(NewSubscription {
-            requester: message.sender,
+            requester: asker.sender,
             league,
             source: tell
                 .player
@@ -121,19 +166,19 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
 
     async fn subscribe(
         &mut self,
-        message: &IncomingMessage,
+        asker: &Asker,
         subscription: NewSubscription,
     ) -> Result<String, SubscriptionsError> {
         let description = describe(
-            message.sender,
+            asker.sender,
             &subscription.league,
             &subscription.source,
             subscription.event,
             &subscription.target,
         );
-        let earlier = match message.revision {
+        let earlier = match asker.revision {
             Revision::Original => None,
-            Revision::Edited => self.subscribed_by.get(&message.id),
+            Revision::Edited => self.subscribed_by.get(&asker.message),
         };
         if let Some((id, _)) = earlier.filter(|(_, earlier)| *earlier == subscription) {
             return Ok(format!("Subscription `{id}`: {description}."));
@@ -143,21 +188,21 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         let replaced = match earlier.filter(|earlier| *earlier != id) {
             Some(earlier) => self
                 .subscriptions
-                .remove(earlier, remover(message))
+                .remove(earlier, remover(asker))
                 .await?
                 .then_some(earlier),
             None => None,
         };
-        self.subscribed_by.insert(message.id, (id, subscription));
+        self.subscribed_by.insert(asker.message, (id, subscription));
         let replacement = replaced
             .map(|earlier| format!(" It replaces subscription `{earlier}`."))
             .unwrap_or_default();
         Ok(format!("Subscription `{id}`: {description}.{replacement}"))
     }
 
-    async fn list(&self, message: &IncomingMessage) -> Result<String, SubscriptionsError> {
-        let subscriptions = self.subscriptions.listed_in(&message.reply_to).await?;
-        let (heading, none) = match message.reply_to {
+    async fn list(&self, asker: &Asker) -> Result<String, SubscriptionsError> {
+        let subscriptions = self.subscriptions.listed_in(&asker.reply_to).await?;
+        let (heading, none) = match asker.reply_to {
             Conversation::Topic { .. } => (
                 "Subscriptions that post in this topic:",
                 "No subscription posts in this topic.",
@@ -170,7 +215,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         let lines: Vec<String> = subscriptions
             .iter()
             .map(|subscription| {
-                let made_by = if subscription.requester == message.sender {
+                let made_by = if subscription.requester == asker.sender {
                     String::new()
                 } else {
                     format!(", made by {}", mention(subscription.requester))
@@ -179,7 +224,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                     "- `{}`: {}{made_by}",
                     subscription.id,
                     describe(
-                        message.sender,
+                        asker.sender,
                         &subscription.league,
                         &subscription.source,
                         subscription.event,
@@ -193,10 +238,10 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
 
     async fn remove(
         &self,
-        message: &IncomingMessage,
+        asker: &Asker,
         id: SubscriptionId,
     ) -> Result<String, SubscriptionsError> {
-        let remover = remover(message);
+        let remover = remover(asker);
         let missing = match &remover {
             Remover::Moderator => format!("There is no subscription `{id}`."),
             Remover::Owner {
@@ -216,8 +261,8 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         Ok(missing)
     }
 
-    fn permissions(message: &IncomingMessage) -> String {
-        let removing = match (remover(message), &message.reply_to) {
+    fn permissions(asker: &Asker) -> String {
+        let removing = match (remover(asker), &asker.reply_to) {
             (Remover::Moderator, _) => {
                 "You are a moderator, so you can remove any subscription from anywhere."
             }
@@ -228,7 +273,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                 "You can list and remove the subscriptions you made and the ones that send you direct messages."
             }
         };
-        if message.role.moderates() {
+        if asker.role.moderates() {
             format!(
                 "{removing} You can also subscribe someone else with `tell @**user** when <event> in <league>`."
             )
@@ -264,7 +309,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
             .unwrap_or_default()
     }
 
-    fn help(&self, message: &IncomingMessage) -> String {
+    fn help(&self, asker: &Asker) -> String {
         format!(
             "I know these commands:\n\
              - `tell me when <event> in <league>` sends you a direct message about every game in the league.\n\
@@ -280,13 +325,13 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
              {}",
             self.active_leagues(),
             self.example(),
-            Self::permissions(message)
+            Self::permissions(asker)
         )
     }
 
-    fn explain(&self, message: &IncomingMessage, mistake: Mistake) -> String {
+    fn explain(&self, asker: &Asker, mistake: Mistake) -> String {
         match mistake {
-            Mistake::Tell(problem, draft) => self.correct(message, problem, &draft),
+            Mistake::Tell(problem, draft) => self.correct(asker, problem, &draft),
             Mistake::Subscription => "Use `tell me when <event> in <league>` to add a subscription, `subscription list` to see yours, or `subscription remove <id>` to remove one.".to_owned(),
             Mistake::Id => {
                 "A subscription id is a number. Use `subscription list` to see yours.".to_owned()
@@ -294,10 +339,10 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         }
     }
 
-    fn correct(&self, message: &IncomingMessage, problem: Problem, draft: &Draft) -> String {
+    fn correct(&self, asker: &Asker, problem: Problem, draft: &Draft) -> String {
         let reason = match problem {
             Problem::Wording => "Write it as `tell me when <event> in <league>`. Add `for <lichess-player>` to hear about one player's games only.".to_owned(),
-            Problem::Listener => "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.".to_owned(),
+            Problem::Audience => "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.".to_owned(),
             Problem::TopicLink => "A topic link looks like `#**channel>topic**`. To write one, type `#` and pick the topic.".to_owned(),
             Problem::Person => "I could not tell who you mentioned. Type `@` and pick them from the list.".to_owned(),
             Problem::Event => format!("`<event>` is `{STARTS}` or `{IS_OVER}`."),
@@ -317,16 +362,11 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
         };
         format!(
             "{reason}\nTry `{}`.",
-            suggestion(message, problem, draft, league)
+            suggestion(asker, problem, draft, league)
         )
     }
 
-    fn unknown_league(
-        &self,
-        message: &IncomingMessage,
-        draft: &Draft,
-        found: &Found<&League>,
-    ) -> String {
+    fn unknown_league(&self, asker: &Asker, draft: &Draft, found: &Found<&League>) -> String {
         let written = draft
             .league
             .as_ref()
@@ -343,7 +383,7 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
                     .map(|league| {
                         format!(
                             "`{}`",
-                            suggestion(message, Problem::League, draft, Some(league))
+                            suggestion(asker, Problem::League, draft, Some(league))
                         )
                     })
                     .collect();
@@ -361,13 +401,13 @@ impl<R: Subscriptions> SubscriptionCommands<R> {
     }
 }
 
-fn remover(message: &IncomingMessage) -> Remover {
-    if message.role.moderates() {
+fn remover(asker: &Asker) -> Remover {
+    if asker.role.moderates() {
         Remover::Moderator
     } else {
         Remover::Owner {
-            user: message.sender,
-            at: message.reply_to.clone(),
+            user: asker.sender,
+            at: asker.reply_to.clone(),
         }
     }
 }
@@ -387,18 +427,13 @@ const fn event_name(event: GameEventKind) -> &'static str {
     }
 }
 
-fn suggestion(
-    message: &IncomingMessage,
-    problem: Problem,
-    draft: &Draft,
-    league: Option<&League>,
-) -> String {
-    let listener = match &draft.listener {
-        Some(Listener::Me) => "me".to_owned(),
-        Some(Listener::Here) => "here".to_owned(),
-        Some(Listener::Topic { channel, topic }) => topic_link(channel, topic),
-        Some(Listener::User(user_id)) => mention(*user_id),
-        None => match message.reply_to {
+fn suggestion(asker: &Asker, problem: Problem, draft: &Draft, league: Option<&League>) -> String {
+    let audience = match &draft.audience {
+        Some(Audience::Me) => "me".to_owned(),
+        Some(Audience::Here) => "here".to_owned(),
+        Some(Audience::Topic { channel, topic }) => topic_link(channel, topic),
+        Some(Audience::User(user_id)) => mention(*user_id),
+        None => match asker.reply_to {
             Conversation::Topic { .. } => "here".to_owned(),
             Conversation::Direct { .. } => "me".to_owned(),
         },
@@ -410,7 +445,7 @@ fn suggestion(
         (None, Problem::Player) => " for <lichess-player>".to_owned(),
         (None, _) => String::new(),
     };
-    format!("tell {listener} when {event} in {league}{player}")
+    format!("tell {audience} when {event} in {league}{player}")
 }
 
 fn describe(
@@ -420,7 +455,7 @@ fn describe(
     event: GameEventKind,
     target: &Conversation,
 ) -> String {
-    let listener = match target {
+    let audience = match target {
         Conversation::Direct { user_id } if *user_id == viewer => "you".to_owned(),
         Conversation::Direct { user_id } => mention(*user_id),
         Conversation::Topic { channel, topic } => topic_link(channel, topic),
@@ -428,52 +463,60 @@ fn describe(
     let event = event_name(event);
     match source {
         SubscriptionSource::Player(player) => {
-            format!("tell {listener} when {event} in {league} for {player}")
+            format!("tell {audience} when {event} in {league} for {player}")
         }
         SubscriptionSource::Team(team) => {
             format!(
-                "tell {listener} when {event} in {league} for team {}",
+                "tell {audience} when {event} in {league} for team {}",
                 team.as_str()
             )
         }
-        SubscriptionSource::League => format!("tell {listener} when {event} in {league}"),
+        SubscriptionSource::League => format!("tell {audience} when {event} in {league}"),
+    }
+}
+
+impl<R: Subscriptions> SubscriptionCommands<R> {
+    pub fn listen(self) -> (ActorRef<Self>, Listener) {
+        let lichess = self.lichess.clone();
+        let subscription_commands = Self::spawn(self);
+        let listener = Listener::new(
+            move |message: &IncomingMessage| {
+                SubscriptionCommand::new(message, parse(&message.text, &lichess))
+            },
+            subscription_commands
+                .clone()
+                .reply_recipient::<SubscriptionCommand>(),
+        );
+        (subscription_commands, listener)
     }
 }
 
 impl<R: Subscriptions> Actor for SubscriptionCommands<R> {
-    type Args = (Self, Recipient<Listen>);
-    type Error = InboxUnavailable;
+    type Args = Self;
+    type Error = Infallible;
 
-    async fn on_start(
-        (commands, inbox): Self::Args,
-        actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
-        inbox
-            .tell(Listen(actor_ref.reply_recipient::<IncomingMessage>()))
-            .await?;
-        Ok(commands)
+    fn on_start(
+        subscription_commands: Self,
+        _: ActorRef<Self>,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        std::future::ready(Ok(subscription_commands))
     }
 }
 
-impl<R: Subscriptions> Message<IncomingMessage> for SubscriptionCommands<R> {
+impl<R: Subscriptions> Message<SubscriptionCommand> for SubscriptionCommands<R> {
     type Reply = Handling;
 
     async fn handle(
         &mut self,
-        message: IncomingMessage,
+        SubscriptionCommand { asker, action }: SubscriptionCommand,
         _: &mut Context<Self, Self::Reply>,
     ) -> Handling {
         self.active = self.active_leagues.borrow().clone();
-        let reply = match parse(&message.text, &self.lichess) {
-            Some(command) => self.reply_to(&message, command).await,
-            None => match self.earlier_subscription(&message) {
-                Some(id) => format!(
-                    "Subscription `{id}` is unchanged. Send `help` to see the commands I know."
-                ),
-                None => return Handling::Unrecognized,
-            },
-        };
-        Handling::Answered(OutgoingMessage::new(reply))
+        self.answer(&asker, action)
+            .await
+            .map_or(Handling::Declined, |reply| {
+                Handling::Answered(OutgoingMessage::new(reply))
+            })
     }
 }
 

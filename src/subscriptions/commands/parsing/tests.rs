@@ -2,13 +2,13 @@ use super::*;
 use crate::lichess;
 use crate::testing::user_id;
 
-fn parse(text: &str) -> Option<Result<Command, Mistake>> {
+fn parse(text: &str) -> Option<Action> {
     super::parse(text, &lichess::Config::default().base_url)
 }
 
 fn told(text: &str) -> Tell {
     match parse(text) {
-        Some(Ok(Command::Tell(tell))) => tell,
+        Some(Action::Tell(tell)) => tell,
         other => panic!("{text} parsed as {other:?}"),
     }
 }
@@ -17,9 +17,9 @@ fn written(league: &str) -> WrittenLeague {
     WrittenLeague::try_new(league).unwrap()
 }
 
-fn tell(listener: Listener, event: GameEventKind, league: &str, player: Option<&str>) -> Tell {
+fn tell(audience: Audience, event: GameEventKind, league: &str, player: Option<&str>) -> Tell {
     Tell {
-        listener,
+        audience,
         event,
         league: written(league),
         player: player.map(user_id),
@@ -28,7 +28,7 @@ fn tell(listener: Listener, event: GameEventKind, league: &str, player: Option<&
 
 fn mistake(text: &str) -> (Problem, Draft) {
     match parse(text) {
-        Some(Err(Mistake::Tell(problem, draft))) => (problem, draft),
+        Some(Action::Mistake(Mistake::Tell(problem, draft))) => (problem, draft),
         other => panic!("{text} parsed as {other:?}"),
     }
 }
@@ -38,7 +38,7 @@ fn tell_me_for_a_player_subscribes_the_sender_to_that_players_games() {
     assert_eq!(
         told("tell me when a-game-starts in classical for alice"),
         tell(
-            Listener::Me,
+            Audience::Me,
             GameEventKind::GameStarted,
             "classical",
             Some("alice")
@@ -51,7 +51,7 @@ fn without_a_player_the_subscription_covers_the_whole_league() {
     assert_eq!(
         told("tell here when a-game-is-over in classical"),
         tell(
-            Listener::Here,
+            Audience::Here,
             GameEventKind::GameFinished,
             "classical",
             None
@@ -64,7 +64,7 @@ fn words_match_regardless_of_case_and_spacing() {
     assert_eq!(
         told("  Tell  Me when A-Game-Starts in Classical\nfor Alice "),
         tell(
-            Listener::Me,
+            Audience::Me,
             GameEventKind::GameStarted,
             "classical",
             Some("alice")
@@ -104,8 +104,8 @@ fn events_can_be_written_in_plain_words() {
 fn a_mention_with_a_user_id_names_that_user() {
     for mention in ["@**Alice Smith|23**", "@_**Alice Smith|23**", "@_**|23**"] {
         assert_eq!(
-            told(&format!("tell {mention} when ends in classical")).listener,
-            Listener::User(ChatUserId(23)),
+            told(&format!("tell {mention} when ends in classical")).audience,
+            Audience::User(ChatUserId(23)),
             "{mention}"
         );
     }
@@ -117,11 +117,11 @@ fn a_mention_with_a_user_id_names_that_user() {
 
 #[test]
 fn here_can_also_be_written_this_topic_or_us() {
-    for listener in ["here", "this topic", "us", "This Topic"] {
+    for audience in ["here", "this topic", "us", "This Topic"] {
         assert_eq!(
-            told(&format!("tell {listener} when a-game-starts in classical")).listener,
-            Listener::Here,
-            "{listener}"
+            told(&format!("tell {audience} when a-game-starts in classical")).audience,
+            Audience::Here,
+            "{audience}"
         );
     }
 }
@@ -131,7 +131,7 @@ fn a_league_is_everything_between_in_and_for() {
     assert_eq!(
         told("tell me when a game ends in Team 4545 League for alice"),
         tell(
-            Listener::Me,
+            Audience::Me,
             GameEventKind::GameFinished,
             "team 4545 league",
             Some("alice")
@@ -167,7 +167,7 @@ fn a_profile_link_is_read_on_the_configured_lichess_site_only() {
         &format!("tell me when ends in classical for {link}"),
         &local,
     ) {
-        Some(Ok(Command::Tell(tell))) => tell.player,
+        Some(Action::Tell(tell)) => tell.player,
         _ => None,
     };
     assert_eq!(
@@ -183,7 +183,7 @@ fn typos_in_keywords_events_and_here_are_corrected() {
         (
             "tel here when a-game-starts in classical",
             tell(
-                Listener::Here,
+                Audience::Here,
                 GameEventKind::GameStarted,
                 "classical",
                 None,
@@ -192,7 +192,7 @@ fn typos_in_keywords_events_and_here_are_corrected() {
         (
             "tell hre wen a-game-strats in classical",
             tell(
-                Listener::Here,
+                Audience::Here,
                 GameEventKind::GameStarted,
                 "classical",
                 None,
@@ -201,7 +201,7 @@ fn typos_in_keywords_events_and_here_are_corrected() {
         (
             "tell me when a gmae is ovr in classical fro alice",
             tell(
-                Listener::Me,
+                Audience::Me,
                 GameEventKind::GameFinished,
                 "classical",
                 Some("alice"),
@@ -210,11 +210,11 @@ fn typos_in_keywords_events_and_here_are_corrected() {
     ] {
         assert_eq!(told(text), expected, "{text}");
     }
-    assert_eq!(parse("hlep"), Some(Ok(Command::Help)));
-    assert_eq!(parse("subscripton lsit"), Some(Ok(Command::List)));
+    assert_eq!(parse("hlep"), Some(Action::Help));
+    assert_eq!(parse("subscripton lsit"), Some(Action::List));
     assert_eq!(
         parse("subscription remvoe 3"),
-        Some(Ok(Command::Remove(SubscriptionId(3))))
+        Some(Action::Remove(SubscriptionId(3)))
     );
 }
 
@@ -226,7 +226,7 @@ fn player_names_and_short_words_are_never_corrected() {
     );
     assert_eq!(
         mistake("tell mi when a-game-starts in classical").0,
-        Problem::Listener
+        Problem::Audience
     );
 }
 
@@ -235,7 +235,7 @@ fn a_topic_link_keeps_the_case_and_spaces_of_its_channel_and_topic() {
     assert_eq!(
         told("Tell #**Chess Club>Round 1 Games** when A-Game-Starts in Classical"),
         tell(
-            Listener::Topic {
+            Audience::Topic {
                 channel: ChannelName::try_new("Chess Club").unwrap(),
                 topic: TopicName::try_new("Round 1 Games").unwrap(),
             },
@@ -248,8 +248,8 @@ fn a_topic_link_keeps_the_case_and_spaces_of_its_channel_and_topic() {
 
 #[test]
 fn mistakes_name_the_first_wrong_part_and_keep_the_parts_that_were_right() {
-    let draft = |listener, event: Option<GameEventKind>, league: Option<&str>| Draft {
-        listener,
+    let draft = |audience, event: Option<GameEventKind>, league: Option<&str>| Draft {
+        audience,
         event,
         league: league.map(written),
         player: None,
@@ -267,24 +267,24 @@ fn mistakes_name_the_first_wrong_part_and_keep_the_parts_that_were_right() {
         ),
         (
             "tell my-team-channel when a-game-starts in classical",
-            Problem::Listener,
+            Problem::Audience,
             draft(None, Some(GameEventKind::GameStarted), Some("classical")),
         ),
         (
             "tell this channel when a-game-starts in classical",
-            Problem::Listener,
+            Problem::Audience,
             draft(None, Some(GameEventKind::GameStarted), Some("classical")),
         ),
         (
             "tell here when a-game-is-scheduled in classical",
             Problem::Event,
-            draft(Some(Listener::Here), None, Some("classical")),
+            draft(Some(Audience::Here), None, Some("classical")),
         ),
         (
             "tell here when a game starts soon in classical",
             Problem::Event,
             draft(
-                Some(Listener::Here),
+                Some(Audience::Here),
                 Some(GameEventKind::GameStarted),
                 Some("classical"),
             ),
@@ -292,18 +292,18 @@ fn mistakes_name_the_first_wrong_part_and_keep_the_parts_that_were_right() {
         (
             "tell me when a-game-starts",
             Problem::League,
-            draft(Some(Listener::Me), Some(GameEventKind::GameStarted), None),
+            draft(Some(Audience::Me), Some(GameEventKind::GameStarted), None),
         ),
         (
             "tell me when a-game-starts in",
             Problem::League,
-            draft(Some(Listener::Me), Some(GameEventKind::GameStarted), None),
+            draft(Some(Audience::Me), Some(GameEventKind::GameStarted), None),
         ),
         (
             "tell me a-game-starts in classical",
             Problem::Wording,
             draft(
-                Some(Listener::Me),
+                Some(Audience::Me),
                 Some(GameEventKind::GameStarted),
                 Some("classical"),
             ),
@@ -312,7 +312,7 @@ fn mistakes_name_the_first_wrong_part_and_keep_the_parts_that_were_right() {
             "tell me when a-game-starts classical",
             Problem::Wording,
             draft(
-                Some(Listener::Me),
+                Some(Audience::Me),
                 Some(GameEventKind::GameStarted),
                 Some("classical"),
             ),
@@ -320,7 +320,7 @@ fn mistakes_name_the_first_wrong_part_and_keep_the_parts_that_were_right() {
         (
             "tell me",
             Problem::Event,
-            draft(Some(Listener::Me), None, None),
+            draft(Some(Audience::Me), None, None),
         ),
         ("tell", Problem::Wording, Draft::default()),
     ] {
@@ -342,20 +342,23 @@ fn a_player_that_is_not_a_lichess_user_id_is_a_player_mistake() {
 
 #[test]
 fn subscription_list_and_remove_are_parsed() {
-    assert_eq!(parse("subscription list"), Some(Ok(Command::List)));
+    assert_eq!(parse("subscription list"), Some(Action::List));
     assert_eq!(
         parse("subscription remove 12"),
-        Some(Ok(Command::Remove(SubscriptionId(12))))
+        Some(Action::Remove(SubscriptionId(12)))
     );
     assert_eq!(
         parse("subscription remove #12"),
-        Some(Ok(Command::Remove(SubscriptionId(12))))
+        Some(Action::Remove(SubscriptionId(12)))
     );
 }
 
 #[test]
 fn a_subscription_id_that_is_not_a_number_is_an_id_mistake() {
-    assert_eq!(parse("subscription remove twelve"), Some(Err(Mistake::Id)));
+    assert_eq!(
+        parse("subscription remove twelve"),
+        Some(Action::Mistake(Mistake::Id))
+    );
 }
 
 #[test]
@@ -367,14 +370,18 @@ fn any_other_subscription_command_is_a_subscription_mistake() {
         "subscription list all",
         "subscription remove 1 2",
     ] {
-        assert_eq!(parse(text), Some(Err(Mistake::Subscription)), "{text}");
+        assert_eq!(
+            parse(text),
+            Some(Action::Mistake(Mistake::Subscription)),
+            "{text}"
+        );
     }
 }
 
 #[test]
 fn help_is_parsed() {
-    assert_eq!(parse("help"), Some(Ok(Command::Help)));
-    assert_eq!(parse("Help me"), Some(Ok(Command::Help)));
+    assert_eq!(parse("help"), Some(Action::Help));
+    assert_eq!(parse("Help me"), Some(Action::Help));
 }
 
 #[test]

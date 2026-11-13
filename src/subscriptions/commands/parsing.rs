@@ -6,15 +6,8 @@ use crate::game_monitor::GameEventKind;
 use crate::lichess;
 use crate::subscriptions::SubscriptionId;
 
+use super::Action;
 use super::spelling::{Found, closest, matches};
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Command {
-    Help,
-    Tell(Tell),
-    List,
-    Remove(SubscriptionId),
-}
 
 #[nutype(
     sanitize(with = |written: String| written.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()),
@@ -25,7 +18,7 @@ pub struct WrittenLeague(String);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tell {
-    pub listener: Listener,
+    pub audience: Audience,
     pub event: GameEventKind,
     pub league: WrittenLeague,
     pub player: Option<lichess::UserId>,
@@ -33,7 +26,7 @@ pub struct Tell {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
-    pub listener: Option<Listener>,
+    pub audience: Option<Audience>,
     pub event: Option<GameEventKind>,
     pub league: Option<WrittenLeague>,
     pub player: Option<lichess::UserId>,
@@ -42,7 +35,7 @@ pub struct Draft {
 impl From<Tell> for Draft {
     fn from(tell: Tell) -> Self {
         Self {
-            listener: Some(tell.listener),
+            audience: Some(tell.audience),
             event: Some(tell.event),
             league: Some(tell.league),
             player: tell.player,
@@ -51,7 +44,7 @@ impl From<Tell> for Draft {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Listener {
+pub enum Audience {
     Me,
     Here,
     Topic {
@@ -64,7 +57,7 @@ pub enum Listener {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Problem {
     Wording,
-    Listener,
+    Audience,
     TopicLink,
     Person,
     Event,
@@ -108,7 +101,7 @@ enum Verb {
     Subscription,
 }
 
-pub fn parse(text: &str, lichess: &Url) -> Option<Result<Command, Mistake>> {
+pub fn parse(text: &str, lichess: &Url) -> Option<Action> {
     let (text, link) = take_enclosed(text, TOPIC_LINK);
     let (text, mention) = take_enclosed(&text.replacen(SILENT_MENTION, MENTION, 1), MENTION);
     let lowered = text.to_lowercase();
@@ -120,10 +113,11 @@ pub fn parse(text: &str, lichess: &Url) -> Option<Result<Command, Mistake>> {
         ("subscription", Verb::Subscription),
     ];
     match closest(verb, verbs) {
-        Found::One(Verb::Help) => Some(Ok(Command::Help)),
-        Found::One(Verb::Tell) => {
-            Some(tell(rest, link.as_deref(), mention.as_deref(), lichess).map(Command::Tell))
-        }
+        Found::One(Verb::Help) => Some(Action::Help),
+        Found::One(Verb::Tell) => Some(
+            tell(rest, link.as_deref(), mention.as_deref(), lichess)
+                .map_or_else(Action::Mistake, Action::Tell),
+        ),
         Found::One(Verb::Subscription) => Some(subscription(rest)),
         Found::Several(_) | Found::Nothing => None,
     }
@@ -142,24 +136,24 @@ fn take_enclosed(text: &str, opener: &str) -> (String, Option<String>) {
     )
 }
 
-fn person(mention: &str) -> Result<Listener, Problem> {
+fn person(mention: &str) -> Result<Audience, Problem> {
     mention
         .rsplit_once('|')
         .and_then(|(_, id)| id.trim().parse().ok())
-        .map(|id| Listener::User(ChatUserId(id)))
+        .map(|id| Audience::User(ChatUserId(id)))
         .ok_or(Problem::Person)
 }
 
-fn topic(link: &str) -> Result<Listener, Problem> {
+fn topic(link: &str) -> Result<Audience, Problem> {
     let (channel, topic) = link.split_once('>').ok_or(Problem::TopicLink)?;
-    Ok(Listener::Topic {
+    Ok(Audience::Topic {
         channel: ChannelName::try_new(channel).map_err(|_| Problem::TopicLink)?,
         topic: TopicName::try_new(topic).map_err(|_| Problem::TopicLink)?,
     })
 }
 
 struct Sections<'a> {
-    listener: &'a [&'a str],
+    audience: &'a [&'a str],
     event: Option<&'a [&'a str]>,
     league: Option<&'a [&'a str]>,
     player: Option<&'a [&'a str]>,
@@ -184,7 +178,7 @@ fn sections<'a>(words: &'a [&'a str]) -> Sections<'a> {
         words.get(start..end)
     };
     Sections {
-        listener: between(Some(0), &[when, r#in, r#for]).unwrap_or_default(),
+        audience: between(Some(0), &[when, r#in, r#for]).unwrap_or_default(),
         event: between(when.map(|when| when + 1), &[r#in, r#for]),
         league: between(r#in.map(|r#in| r#in + 1), &[r#for]),
         player: r#for.and_then(|r#for| words.get(r#for + 1..)),
@@ -204,9 +198,9 @@ fn tell(
     let mut draft = Draft::default();
     let mut problems = Vec::new();
 
-    let listener_rest = match take_listener(sections.listener, link, mention) {
-        Ok((listener, rest)) => {
-            draft.listener = Some(listener);
+    let audience_rest = match take_audience(sections.audience, link, mention) {
+        Ok((audience, rest)) => {
+            draft.audience = Some(audience);
             rest
         }
         Err(problem) => {
@@ -216,7 +210,7 @@ fn tell(
     };
     let event_words = continued(
         sections.event,
-        listener_rest,
+        audience_rest,
         Problem::Wording,
         &mut problems,
     );
@@ -246,13 +240,13 @@ fn tell(
         (
             None,
             Draft {
-                listener: Some(listener),
+                audience: Some(audience),
                 event: Some(event),
                 league: Some(league),
                 player,
             },
         ) => Ok(Tell {
-            listener,
+            audience,
             event,
             league,
             player,
@@ -281,19 +275,19 @@ fn continued<'a>(
     }
 }
 
-fn take_listener<'a>(
+fn take_audience<'a>(
     words: &'a [&'a str],
     link: Option<&str>,
     mention: Option<&str>,
-) -> Result<(Listener, &'a [&'a str]), Problem> {
+) -> Result<(Audience, &'a [&'a str]), Problem> {
     match words {
         [TOPIC_LINK, rest @ ..] => Ok((link.ok_or(Problem::TopicLink).and_then(topic)?, rest)),
         [MENTION, rest @ ..] => Ok((mention.ok_or(Problem::Person).and_then(person)?, rest)),
         [word, ..] if word.starts_with(TOPIC_LINK) => Err(Problem::TopicLink),
-        ["me", rest @ ..] => Ok((Listener::Me, rest)),
-        ["us", rest @ ..] | ["this", "topic", rest @ ..] => Ok((Listener::Here, rest)),
-        [word, rest @ ..] if matches(word, "here") => Ok((Listener::Here, rest)),
-        _ => Err(Problem::Listener),
+        ["me", rest @ ..] => Ok((Audience::Me, rest)),
+        ["us", rest @ ..] | ["this", "topic", rest @ ..] => Ok((Audience::Here, rest)),
+        [word, rest @ ..] if matches(word, "here") => Ok((Audience::Here, rest)),
+        _ => Err(Problem::Audience),
     }
 }
 
@@ -338,15 +332,16 @@ fn player(written: &str, lichess: &Url) -> Option<lichess::UserId> {
     lichess::UserId::try_new(name).ok()
 }
 
-fn subscription(words: &[&str]) -> Result<Command, Mistake> {
+fn subscription(words: &[&str]) -> Action {
     match words {
-        [action] if matches(action, "list") => Ok(Command::List),
-        [action, id] if matches(action, "remove") => Ok(Command::Remove(SubscriptionId(
-            id.trim_start_matches('#')
-                .parse()
-                .map_err(|_| Mistake::Id)?,
-        ))),
-        _ => Err(Mistake::Subscription),
+        [action] if matches(action, "list") => Action::List,
+        [action, id] if matches(action, "remove") => id
+            .trim_start_matches('#')
+            .parse()
+            .map_or(Action::Mistake(Mistake::Id), |id| {
+                Action::Remove(SubscriptionId(id))
+            }),
+        _ => Action::Mistake(Mistake::Subscription),
     }
 }
 

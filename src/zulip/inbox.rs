@@ -9,22 +9,20 @@ use kameo::message::{Context, Message};
 use tokio::task::JoinHandle;
 
 use crate::chat::{
-    ChatUserId, CommandText, Conversation, Handling, IncomingMessage, Listen, MessageId,
-    MessageText, OutgoingMessage, Overhear, OverheardMessage, Revision, Role,
+    ChatUserId, CommandText, Conversation, IncomingMessage, MessageId, MessageText,
+    OutgoingMessage, Overhear, OverheardMessage, Revision, Role,
 };
 
 use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
 use super::messenger::ZulipMessenger;
 use super::{Config, InboxConfig};
 
-const UNRECOGNIZED: &str = "I don't know that command. Send `help` to see the commands I know.";
-
 #[derive(Debug)]
 pub struct Inbox {
     api: Api,
     config: InboxConfig,
     messenger: ZulipMessenger,
-    listeners: Vec<ReplyRecipient<IncomingMessage, Handling>>,
+    commands: ReplyRecipient<IncomingMessage, OutgoingMessage>,
     overhearers: Vec<Recipient<OverheardMessage>>,
     exchanges: HashMap<MessageId, Exchange>,
     reading: Option<JoinHandle<()>>,
@@ -55,35 +53,31 @@ pub struct Overheard(OverheardMessage);
 
 impl Inbox {
     #[must_use]
-    pub fn new(http: reqwest::Client, config: &Config, messenger: ZulipMessenger) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        config: &Config,
+        messenger: ZulipMessenger,
+        commands: ReplyRecipient<IncomingMessage, OutgoingMessage>,
+    ) -> Self {
         Self {
             api: Api::new(http, config),
             config: config.inbox.clone(),
             messenger,
-            listeners: Vec::new(),
+            commands,
             overhearers: Vec::new(),
             exchanges: HashMap::new(),
             reading: None,
         }
     }
 
-    async fn answer(&self, message: &IncomingMessage) -> OutgoingMessage {
-        let mut answers = Vec::new();
-        for listener in &self.listeners {
-            match listener.ask(message.clone()).await {
-                Ok(Handling::Answered(answer)) => answers.push(answer.markdown().to_owned()),
-                Ok(Handling::Unrecognized) => {}
-                Err(error) => tracing::warn!(error = ?error, "listener failed to take a message"),
-            }
-        }
-        if answers.is_empty() {
-            return OutgoingMessage::new(UNRECOGNIZED.to_owned());
-        }
-        OutgoingMessage::new(answers.join("\n\n"))
-    }
-
     async fn reply(&mut self, message: IncomingMessage) {
-        let answer = self.answer(&message).await;
+        let answer = match self.commands.ask(message.clone()).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                tracing::error!(error = ?error, "commands failed to take a message");
+                return;
+            }
+        };
         let earlier = self
             .exchanges
             .get(&message.id)
@@ -139,14 +133,6 @@ impl Actor for Inbox {
             overheard,
         )));
         std::future::ready(Ok(inbox))
-    }
-}
-
-impl Message<Listen> for Inbox {
-    type Reply = ();
-
-    async fn handle(&mut self, Listen(listener): Listen, _: &mut Context<Self, Self::Reply>) {
-        self.listeners.push(listener);
     }
 }
 

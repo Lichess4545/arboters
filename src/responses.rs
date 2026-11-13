@@ -1,6 +1,6 @@
 use kameo::error::SendError;
 
-use crate::chat::{Listen, MessageId, MessageText, Overhear};
+use crate::chat::{MessageId, MessageText, Overhear};
 
 mod commands;
 mod config;
@@ -49,9 +49,5 @@ pub trait MessageReader: Send + Sync + 'static {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum InboxUnavailable {
-    #[error("response commands could not listen to the inbox")]
-    Listen(#[from] SendError<Listen>),
-    #[error("the responder could not overhear the inbox")]
-    Overhear(#[from] SendError<Overhear>),
-}
+#[error("the responder could not overhear the inbox")]
+pub struct InboxUnavailable(#[from] SendError<Overhear>);
