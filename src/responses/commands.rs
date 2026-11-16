@@ -1,25 +1,64 @@
 mod parsing;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::time::Duration;
 
 use kameo::Actor;
-use kameo::actor::{ActorRef, Recipient};
+use kameo::actor::{ActorRef, Spawn};
 use kameo::message::{Context, Message};
 use url::Url;
 
-use crate::chat::{Handling, IncomingMessage, Listen, MessageId, OutgoingMessage};
+use crate::chat::{ChatUserId, IncomingMessage, MessageId, OutgoingMessage};
+use crate::commands::{Handling, Listener};
 
 use super::Config;
 use super::link::LinkMistake;
 use super::model::{NewResponse, Response, ResponseId};
 use super::phrase::{Matching, Phrase};
-use super::{InboxUnavailable, MessageReader, ReadError, Responses, ResponsesError};
-use parsing::{Command, Mistake, Request, parse};
+use super::{MessageReader, ReadError, Responses, ResponsesError};
+use parsing::{Mistake, parse};
 
 const PREVIEW_LENGTH: usize = 60;
 const REFUSAL: &str = "Only moderators can manage saved responses.";
 const FAILURE: &str = "Something went wrong on my side. Please try again later.";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Action {
+    Help,
+    ResponseHelp,
+    Add {
+        phrase: Phrase,
+        matching: Matching,
+        source: MessageId,
+    },
+    List(Option<Phrase>),
+    Remove(ResponseId),
+    Mistake(Mistake),
+    Refused,
+}
+
+#[derive(Debug)]
+pub struct ResponseCommand {
+    sender: ChatUserId,
+    message: MessageId,
+    action: Action,
+}
+
+impl ResponseCommand {
+    fn new(message: &IncomingMessage, action: Option<Action>) -> Option<Self> {
+        let action = match action? {
+            Action::Help if !message.role.moderates() => return None,
+            _ if !message.role.moderates() => Action::Refused,
+            action => action,
+        };
+        Some(Self {
+            sender: message.sender,
+            message: message.id,
+            action,
+        })
+    }
+}
 
 #[derive(Debug)]
 pub struct ResponseCommands<R, L> {
@@ -42,37 +81,35 @@ impl<R: Responses, L: MessageReader> ResponseCommands<R, L> {
         }
     }
 
-    async fn reply_to(&mut self, message: &IncomingMessage, request: Request) -> Option<String> {
-        let moderates = message.role.moderates();
-        let command = match request {
-            Request::Help if moderates => Ok(Command::Help),
-            Request::Help => return None,
-            Request::Response(_) if !moderates => return Some(REFUSAL.to_owned()),
-            Request::Response(command) => command,
-        };
-        let outcome = match command {
-            Ok(Command::Help) => Ok(self.help()),
-            Ok(Command::Add {
+    async fn answer(&mut self, command: ResponseCommand) -> String {
+        let outcome = match command.action {
+            Action::Help | Action::ResponseHelp => Ok(self.help()),
+            Action::Add {
                 phrase,
                 matching,
-                message: source,
-            }) => self.add(message, phrase, matching, source).await,
-            Ok(Command::List(phrase)) => self.list(phrase.as_ref()).await,
-            Ok(Command::Remove(id)) => self.remove(id).await,
-            Err(mistake) => Ok(self.explain(mistake)),
+                source,
+            } => {
+                self.add(phrase, matching, source, command.sender, command.message)
+                    .await
+            }
+            Action::List(phrase) => self.list(phrase.as_ref()).await,
+            Action::Remove(id) => self.remove(id).await,
+            Action::Mistake(mistake) => Ok(self.explain(mistake)),
+            Action::Refused => Ok(REFUSAL.to_owned()),
         };
-        Some(outcome.unwrap_or_else(|error| {
+        outcome.unwrap_or_else(|error| {
             tracing::error!(error = %error, cause = ?std::error::Error::source(&error), "response command failed");
             FAILURE.to_owned()
-        }))
+        })
     }
 
     async fn add(
         &mut self,
-        message: &IncomingMessage,
         phrase: Phrase,
         matching: Matching,
         source: MessageId,
+        sender: ChatUserId,
+        message: MessageId,
     ) -> Result<String, ResponsesError> {
         let markdown = match self.reader.read(source).await {
             Ok(markdown) => markdown,
@@ -92,10 +129,10 @@ impl<R: Responses, L: MessageReader> ResponseCommands<R, L> {
                 matching,
                 markdown,
                 source,
-                added_by: message.sender,
+                added_by: sender,
             })
             .await?;
-        let replaced = match self.added_by.insert(message.id, id) {
+        let replaced = match self.added_by.insert(message, id) {
             Some(earlier) if earlier != id => {
                 self.responses.remove(earlier).await?.then_some(earlier)
             }
@@ -189,37 +226,43 @@ fn preview(markdown: &str) -> String {
     code(&shown)
 }
 
-impl<R: Responses, L: MessageReader> Actor for ResponseCommands<R, L> {
-    type Args = (Self, Recipient<Listen>);
-    type Error = InboxUnavailable;
-
-    async fn on_start(
-        (commands, inbox): Self::Args,
-        actor_ref: ActorRef<Self>,
-    ) -> Result<Self, Self::Error> {
-        inbox
-            .tell(Listen(actor_ref.reply_recipient::<IncomingMessage>()))
-            .await?;
-        Ok(commands)
+impl<R: Responses, L: MessageReader> ResponseCommands<R, L> {
+    pub fn listen(self) -> (ActorRef<Self>, Listener) {
+        let site = self.site.clone();
+        let response_commands = Self::spawn(self);
+        let listener = Listener::new(
+            move |message: &IncomingMessage| {
+                ResponseCommand::new(message, parse(&message.text, &site))
+            },
+            response_commands
+                .clone()
+                .reply_recipient::<ResponseCommand>(),
+        );
+        (response_commands, listener)
     }
 }
 
-impl<R: Responses, L: MessageReader> Message<IncomingMessage> for ResponseCommands<R, L> {
+impl<R: Responses, L: MessageReader> Actor for ResponseCommands<R, L> {
+    type Args = Self;
+    type Error = Infallible;
+
+    fn on_start(
+        response_commands: Self,
+        _: ActorRef<Self>,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        std::future::ready(Ok(response_commands))
+    }
+}
+
+impl<R: Responses, L: MessageReader> Message<ResponseCommand> for ResponseCommands<R, L> {
     type Reply = Handling;
 
     async fn handle(
         &mut self,
-        message: IncomingMessage,
+        command: ResponseCommand,
         _: &mut Context<Self, Self::Reply>,
     ) -> Handling {
-        let Some(request) = parse(&message.text, &self.site) else {
-            return Handling::Unrecognized;
-        };
-        self.reply_to(&message, request)
-            .await
-            .map_or(Handling::Unrecognized, |reply| {
-                Handling::Answered(OutgoingMessage::new(reply))
-            })
+        Handling::Answered(OutgoingMessage::new(self.answer(command).await))
     }
 }
 

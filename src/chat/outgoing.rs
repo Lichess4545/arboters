@@ -1,4 +1,6 @@
-#[derive(Clone, Debug, PartialEq, Eq)]
+use kameo::Reply;
+
+#[derive(Clone, Debug, PartialEq, Eq, Reply)]
 pub struct OutgoingMessage {
     markdown: String,
 }

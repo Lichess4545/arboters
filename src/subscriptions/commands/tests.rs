@@ -1,10 +1,9 @@
-use std::convert::Infallible;
-
 use kameo::actor::Spawn;
 use sqlx::PgPool;
 
 use super::*;
-use crate::chat::{ChannelName, CommandText, Role, TopicName};
+use crate::chat::{ChannelName, CommandText, TopicName};
+use crate::commands::{Commands, UNRECOGNIZED};
 use crate::heltour::league;
 use crate::lichess::{self, Clock, Variant};
 use crate::subscriptions::PostgresSubscriptions;
@@ -15,30 +14,7 @@ const OTHER_MEMBER: ChatUserId = ChatUserId(12);
 
 const ACTIVE_LEAGUES: &str = "The active leagues are `classical`, `rapid`, `blitz960`.";
 
-#[derive(Debug)]
-struct Inbox;
-
-impl Actor for Inbox {
-    type Args = Self;
-    type Error = Infallible;
-
-    fn on_start(
-        inbox: Self,
-        _: ActorRef<Self>,
-    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        std::future::ready(Ok(inbox))
-    }
-}
-
-impl Message<Listen> for Inbox {
-    type Reply = ();
-
-    async fn handle(&mut self, _: Listen, _: &mut Context<Self, Self::Reply>) {}
-}
-
-type Commands = ActorRef<SubscriptionCommands<PostgresSubscriptions>>;
-
-fn started(pool: PgPool) -> Commands {
+fn started(pool: PgPool) -> ActorRef<Commands> {
     let league = |tag, name, minutes| League {
         tag: league::Tag::try_new(tag).unwrap(),
         name: league::Name::try_new(name).unwrap(),
@@ -56,21 +32,17 @@ fn started(pool: PgPool) -> Commands {
             league("blitz960", "Blitz 960", 15),
         ],
     });
-    SubscriptionCommands::spawn((
-        SubscriptionCommands::new(
-            PostgresSubscriptions::new(pool),
-            lichess::Config::default().base_url,
-            active_leagues,
-        ),
-        Inbox::spawn(Inbox).recipient(),
-    ))
+    let (_, listener) = SubscriptionCommands::new(
+        PostgresSubscriptions::new(pool),
+        lichess::Config::default().base_url,
+        active_leagues,
+    )
+    .listen();
+    Commands::spawn(Commands::new(vec![listener]))
 }
 
-async fn reply(commands: &Commands, message: IncomingMessage) -> String {
-    match commands.ask(message).await.unwrap() {
-        Handling::Answered(answer) => answer.markdown().to_owned(),
-        Handling::Unrecognized => panic!("the commands left the message to others"),
-    }
+async fn reply(commands: &ActorRef<Commands>, message: IncomingMessage) -> String {
+    commands.ask(message).await.unwrap().markdown().to_owned()
 }
 
 fn topic(topic: &str) -> Conversation {
@@ -336,9 +308,9 @@ async fn a_mistake_is_answered_with_what_is_wrong_and_the_command_filled_in_from
 }
 
 #[sqlx::test]
-async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
+async fn a_wrong_audience_suggests_the_conversation_it_was_sent_in(pool: PgPool) {
     let commands = started(pool);
-    let listeners = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
+    let audiences = "You can tell `me`, `here`, or a topic, such as `#**channel>topic**`.";
 
     assert_eq!(
         reply(
@@ -346,7 +318,7 @@ async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool)
             in_games(MEMBER, "tell this channel when ends in 45+45")
         )
         .await,
-        format!("{listeners}\nTry `tell here when a-game-is-over in classical`.")
+        format!("{audiences}\nTry `tell here when a-game-is-over in classical`.")
     );
     assert_eq!(
         reply(
@@ -354,7 +326,7 @@ async fn a_wrong_listener_suggests_the_conversation_it_was_sent_in(pool: PgPool)
             dm(MEMBER, "tell this channel when ends in 45+45")
         )
         .await,
-        format!("{listeners}\nTry `tell me when a-game-is-over in classical`.")
+        format!("{audiences}\nTry `tell me when a-game-is-over in classical`.")
     );
 }
 
@@ -658,6 +630,20 @@ async fn an_edit_that_is_refused_or_not_a_command_keeps_the_earlier_subscription
 }
 
 #[sqlx::test]
+async fn an_edit_that_is_not_a_command_of_a_message_that_subscribed_no_one_is_unrecognized(
+    pool: PgPool,
+) {
+    let commands = started(pool);
+    let original = dm(MEMBER, "who plays today?");
+    reply(&commands, original.clone()).await;
+
+    assert_eq!(
+        reply(&commands, edited(&original, "who plays tomorrow?")).await,
+        UNRECOGNIZED
+    );
+}
+
+#[sqlx::test]
 async fn an_edit_of_a_refused_command_runs_it_again(pool: PgPool) {
     let commands = started(pool);
     let original = dm(MEMBER, "tell me when a game strts in 99+0");
@@ -721,10 +707,11 @@ async fn help_ends_with_what_the_sender_can_do_where_they_asked(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn messages_that_are_not_subscription_commands_are_left_to_others(pool: PgPool) {
+async fn messages_that_are_not_subscription_commands_are_unrecognized(pool: PgPool) {
     let commands = started(pool);
 
-    let handling = commands.ask(dm(MEMBER, "who plays today?")).await.unwrap();
-
-    assert_eq!(handling, Handling::Unrecognized);
+    assert_eq!(
+        reply(&commands, dm(MEMBER, "who plays today?")).await,
+        UNRECOGNIZED
+    );
 }

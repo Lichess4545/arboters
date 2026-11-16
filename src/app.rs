@@ -8,12 +8,13 @@ use rand::SeedableRng;
 use rand::rngs::StdRng;
 use sqlx::PgPool;
 use tokio::signal::unix::{SignalKind, signal};
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::commands::{Commands, Listener};
 use crate::game_monitor::{
-    self, GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
+    self, GameEvent, GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
 };
 use crate::health::{Health, HealthCheck};
 use crate::heltour::{self, ActiveLeagues, Heltour};
@@ -29,7 +30,6 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let pool = database::connect(&config.database).await?;
     let http = http_client()?;
     let messenger = ZulipMessenger::new(http.clone(), &config.zulip);
-    let inbox = Inbox::new(http.clone(), &config.zulip, messenger.clone());
     let listener = http::bind(&config.http).await?;
     let subscriptions = PostgresSubscriptions::new(pool.clone());
     let lichess_api = lichess::Api::new(
@@ -41,16 +41,25 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     let status = Status::new(messenger.clone(), config.status.clone())?;
     let lichess = &config.lichess.base_url;
     let active_leagues = watch::Sender::new(ActiveLeagues::default());
-    let commands = SubscriptionCommands::new(
-        subscriptions.clone(),
-        lichess.clone(),
-        active_leagues.subscribe(),
-    );
+    let (subscription_commands, subscriptions_listener) =
+        start_subscription_commands(&config, &subscriptions, &active_leagues);
+    let (response_commands, responses_listener) = start_response_commands(&config, &http, &pool);
 
     let (health_check, health) = start_health(&config, &http, &pool, heltour.clone(), &lichess_api);
     let status = Status::spawn((status, health.clone()));
-    let conversations = Conversations::spawn(inbox, commands).await;
-    let responding = Responding::start(&conversations, &config, &http, &pool, &messenger);
+    let conversations = Conversations::spawn(
+        &http,
+        &config.zulip,
+        &messenger,
+        vec![subscriptions_listener, responses_listener],
+    );
+    let responding = Responding::start(
+        response_commands,
+        &conversations,
+        &config,
+        &pool,
+        &messenger,
+    );
     let monitor = GameMonitor::new(
         lichess_api.clone(),
         config.lichess.clone(),
@@ -59,12 +68,12 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         status.clone().recipient(),
     );
     let notifier = Notifier::new(subscriptions.clone(), messenger, lichess.clone());
+    let subscribing = Subscribing::start(subscription_commands, notifier, monitor.events()).await;
     let mut games = Games::start(
         &config,
         heltour,
         lichess_api,
         (monitor, health.clone()),
-        notifier,
         active_leagues,
     )
     .await;
@@ -92,11 +101,13 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         error = games.stopped() => Err(error),
         error = conversations.stopped() => Err(error),
         error = responding.stopped() => Err(error),
+        error = subscribing.stopped() => Err(error),
     };
 
     games.stop().await;
     conversations.stop().await;
     responding.stop().await;
+    subscribing.stop().await;
     stop(&health_check).await;
     let shutdown = match &down {
         Ok(signal) => Shutdown::Requested(*signal),
@@ -119,6 +130,39 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     exit_with(down, http_exit)
 }
 
+fn start_subscription_commands(
+    config: &Config,
+    subscriptions: &PostgresSubscriptions,
+    active_leagues: &watch::Sender<ActiveLeagues>,
+) -> (
+    ActorRef<SubscriptionCommands<PostgresSubscriptions>>,
+    Listener,
+) {
+    SubscriptionCommands::new(
+        subscriptions.clone(),
+        config.lichess.base_url.clone(),
+        active_leagues.subscribe(),
+    )
+    .listen()
+}
+
+fn start_response_commands(
+    config: &Config,
+    http: &reqwest::Client,
+    pool: &PgPool,
+) -> (
+    ActorRef<ResponseCommands<PostgresResponses, ZulipMessageReader>>,
+    Listener,
+) {
+    ResponseCommands::new(
+        PostgresResponses::new(pool.clone()),
+        ZulipMessageReader::new(http.clone(), &config.zulip),
+        config.zulip.site.clone(),
+        &config.responses,
+    )
+    .listen()
+}
+
 fn start_health(
     config: &Config,
     http: &reqwest::Client,
@@ -139,7 +183,6 @@ fn start_health(
 
 struct Games {
     monitor: ActorRef<GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>>,
-    notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
     reporter: Option<ActorRef<Reporter>>,
     sync: JoinHandle<()>,
     recheck: JoinHandle<()>,
@@ -154,11 +197,8 @@ impl Games {
             GameMonitor<PostgresFixturesStore, PostgresPublishedEventsStore>,
             watch::Receiver<Option<Health>>,
         ),
-        notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
         active_leagues: watch::Sender<ActiveLeagues>,
     ) -> Self {
-        let notifier = Notifier::spawn((notifier, monitor.events()));
-        notifier.wait_for_startup().await;
         let reporter = if config.league_games.report {
             let reporter = Reporter::spawn((
                 Reporter::new(heltour.clone(), config.lichess.base_url.clone()),
@@ -187,7 +227,6 @@ impl Games {
         ));
         Self {
             monitor,
-            notifier,
             reporter,
             sync,
             recheck,
@@ -197,7 +236,6 @@ impl Games {
     async fn stopped(&mut self) -> anyhow::Error {
         tokio::select! {
             () = self.monitor.wait_for_shutdown() => anyhow::anyhow!("game monitor stopped unexpectedly"),
-            () = self.notifier.wait_for_shutdown() => anyhow::anyhow!("notifier stopped unexpectedly"),
             error = reporter_stopped(self.reporter.as_ref()) => error,
             exit = &mut self.sync => match exit {
                 Ok(()) => anyhow::anyhow!("heltour sync stopped unexpectedly"),
@@ -214,7 +252,6 @@ impl Games {
         self.sync.abort();
         self.recheck.abort();
         stop(&self.monitor).await;
-        stop(&self.notifier).await;
         if let Some(reporter) = &self.reporter {
             stop(reporter).await;
         }
@@ -246,22 +283,31 @@ fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> any
 }
 
 struct Conversations {
+    commands: ActorRef<Commands>,
     inbox: ActorRef<Inbox>,
-    commands: ActorRef<SubscriptionCommands<PostgresSubscriptions>>,
 }
 
 impl Conversations {
-    async fn spawn(inbox: Inbox, commands: SubscriptionCommands<PostgresSubscriptions>) -> Self {
-        let inbox = Inbox::spawn(inbox);
-        let commands = SubscriptionCommands::spawn((commands, inbox.clone().recipient()));
-        commands.wait_for_startup().await;
-        Self { inbox, commands }
+    fn spawn(
+        http: &reqwest::Client,
+        zulip: &zulip::Config,
+        messenger: &ZulipMessenger,
+        listeners: Vec<Listener>,
+    ) -> Self {
+        let commands = Commands::spawn(Commands::new(listeners));
+        let inbox = Inbox::spawn(Inbox::new(
+            http.clone(),
+            zulip,
+            messenger.clone(),
+            commands.clone().reply_recipient(),
+        ));
+        Self { commands, inbox }
     }
 
     async fn stopped(&self) -> anyhow::Error {
         tokio::select! {
+            () = self.commands.wait_for_shutdown() => anyhow::anyhow!("commands stopped unexpectedly"),
             () = self.inbox.wait_for_shutdown() => anyhow::anyhow!("zulip inbox stopped unexpectedly"),
-            () = self.commands.wait_for_shutdown() => anyhow::anyhow!("subscription commands stopped unexpectedly"),
         }
     }
 
@@ -278,32 +324,20 @@ struct Responding {
 
 impl Responding {
     fn start(
+        commands: ActorRef<ResponseCommands<PostgresResponses, ZulipMessageReader>>,
         conversations: &Conversations,
         config: &Config,
-        http: &reqwest::Client,
         pool: &PgPool,
         messenger: &ZulipMessenger,
     ) -> Self {
-        let inbox = &conversations.inbox;
-        let zulip = &config.zulip;
-        let responses = PostgresResponses::new(pool.clone());
-        let commands = ResponseCommands::spawn((
-            ResponseCommands::new(
-                responses.clone(),
-                ZulipMessageReader::new(http.clone(), zulip),
-                zulip.site.clone(),
-                &config.responses,
-            ),
-            inbox.clone().recipient(),
-        ));
         let responder = Responder::spawn((
             Responder::new(
-                responses,
+                PostgresResponses::new(pool.clone()),
                 messenger.clone(),
                 &config.responses,
                 StdRng::from_os_rng(),
             ),
-            inbox.clone().recipient(),
+            conversations.inbox.clone().recipient(),
         ));
         Self {
             commands,
@@ -319,8 +353,37 @@ impl Responding {
     }
 
     async fn stop(&self) {
-        stop(&self.commands).await;
         stop(&self.responder).await;
+        stop(&self.commands).await;
+    }
+}
+
+struct Subscribing {
+    commands: ActorRef<SubscriptionCommands<PostgresSubscriptions>>,
+    notifier: ActorRef<Notifier<PostgresSubscriptions, ZulipMessenger>>,
+}
+
+impl Subscribing {
+    async fn start(
+        commands: ActorRef<SubscriptionCommands<PostgresSubscriptions>>,
+        notifier: Notifier<PostgresSubscriptions, ZulipMessenger>,
+        events: broadcast::Receiver<GameEvent>,
+    ) -> Self {
+        let notifier = Notifier::spawn((notifier, events));
+        notifier.wait_for_startup().await;
+        Self { commands, notifier }
+    }
+
+    async fn stopped(&self) -> anyhow::Error {
+        tokio::select! {
+            () = self.commands.wait_for_shutdown() => anyhow::anyhow!("subscription commands stopped unexpectedly"),
+            () = self.notifier.wait_for_shutdown() => anyhow::anyhow!("notifier stopped unexpectedly"),
+        }
+    }
+
+    async fn stop(&self) {
+        stop(&self.notifier).await;
+        stop(&self.commands).await;
     }
 }
 
