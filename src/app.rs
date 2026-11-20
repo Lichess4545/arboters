@@ -12,6 +12,7 @@ use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::accounts::{Linker, PostgresAccounts};
 use crate::commands::{Commands, Listener};
 use crate::game_monitor::{
     self, GameEvent, GameMonitor, PostgresFixturesStore, PostgresPublishedEventsStore, http_client,
@@ -60,6 +61,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         &pool,
         &messenger,
     );
+    let linker = start_linker(&pool, &heltour, &messenger, &conversations);
     let monitor = GameMonitor::new(
         lichess_api.clone(),
         config.lichess.clone(),
@@ -102,9 +104,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         error = conversations.stopped() => Err(error),
         error = responding.stopped() => Err(error),
         error = subscribing.stopped() => Err(error),
+        () = linker.wait_for_shutdown() => Err(anyhow::anyhow!("linker stopped unexpectedly")),
     };
 
     games.stop().await;
+    stop(&linker).await;
     conversations.stop().await;
     responding.stop().await;
     subscribing.stop().await;
@@ -154,6 +158,22 @@ fn start_response_commands(
         &config.responses,
     )
     .listen()
+}
+
+fn start_linker(
+    pool: &PgPool,
+    heltour: &Heltour,
+    messenger: &ZulipMessenger,
+    conversations: &Conversations,
+) -> ActorRef<Linker<PostgresAccounts, ZulipMessenger>> {
+    Linker::spawn((
+        Linker::new(
+            PostgresAccounts::new(pool.clone()),
+            heltour.clone(),
+            messenger.clone(),
+        ),
+        conversations.inbox.clone().recipient(),
+    ))
 }
 
 fn start_health(
