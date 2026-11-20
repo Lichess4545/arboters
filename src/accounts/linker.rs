@@ -2,16 +2,19 @@ use kameo::Actor;
 use kameo::actor::{ActorRef, Recipient};
 use kameo::message::{Context, Message};
 
-use crate::chat::{ChatUserId, Joined, WatchJoins};
+use crate::chat::{ChatUserId, Conversation, Joined, Messenger, OutgoingMessage, WatchJoins};
 use crate::heltour::{FindPlayerError, Heltour};
 use crate::lichess;
 
 use super::{Accounts, InboxUnavailable};
 
+const UNIDENTIFIED_WELCOME: &str = "Welcome! To take part in the leagues, your Zulip account needs to be linked to your Lichess account, and we couldn't work out which Lichess account is yours. Please reach out to the moderators.";
+
 #[derive(Debug)]
-pub struct Linker<A> {
+pub struct Linker<A, M> {
     accounts: A,
     heltour: Heltour,
+    messenger: M,
 }
 
 enum Identity {
@@ -19,16 +22,20 @@ enum Identity {
     Unknown,
 }
 
-impl<A: Accounts> Linker<A> {
+impl<A: Accounts, M: Messenger> Linker<A, M> {
     #[must_use]
-    pub const fn new(accounts: A, heltour: Heltour) -> Self {
-        Self { accounts, heltour }
+    pub const fn new(accounts: A, heltour: Heltour, messenger: M) -> Self {
+        Self {
+            accounts,
+            heltour,
+            messenger,
+        }
     }
 
     async fn welcome(&self, joined: Joined) {
         match self.identity_of(&joined).await {
             Ok(Identity::Player(player)) => self.link(joined.user, &player).await,
-            Ok(Identity::Unknown) => {}
+            Ok(Identity::Unknown) => self.ask_to_reach_the_moderators(joined.user).await,
             Err(error) => {
                 tracing::warn!(error = %error, cause = ?std::error::Error::source(&error), user = joined.user.0, "could not ask heltour for the player of a user who joined");
             }
@@ -58,6 +65,14 @@ impl<A: Accounts> Linker<A> {
         }
     }
 
+    async fn ask_to_reach_the_moderators(&self, user: ChatUserId) {
+        let conversation = Conversation::Direct { user_id: user };
+        let welcome = OutgoingMessage::new(UNIDENTIFIED_WELCOME.to_owned());
+        if let Err(error) = self.messenger.send(&conversation, &welcome).await {
+            tracing::warn!(error = %error, cause = %error.cause, user = user.0, "could not welcome a user who joined unidentified");
+        }
+    }
+
     async fn link(&self, user: ChatUserId, player: &lichess::UserId) {
         match self.accounts.link(user, player).await {
             Ok(()) => {
@@ -70,7 +85,7 @@ impl<A: Accounts> Linker<A> {
     }
 }
 
-impl<A: Accounts> Actor for Linker<A> {
+impl<A: Accounts, M: Messenger> Actor for Linker<A, M> {
     type Args = (Self, Recipient<WatchJoins>);
     type Error = InboxUnavailable;
 
@@ -85,7 +100,7 @@ impl<A: Accounts> Actor for Linker<A> {
     }
 }
 
-impl<A: Accounts> Message<Joined> for Linker<A> {
+impl<A: Accounts, M: Messenger> Message<Joined> for Linker<A, M> {
     type Reply = ();
 
     async fn handle(&mut self, joined: Joined, _: &mut Context<Self, Self::Reply>) {
