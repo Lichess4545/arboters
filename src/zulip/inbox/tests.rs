@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{Mutex, mpsc};
 
 use super::*;
-use crate::chat::{ChannelName, Role, TopicName};
+use crate::chat::{ChannelName, Email, Role, TopicName};
 use crate::zulip::BotEmail;
 
 const BOT: u64 = 99;
@@ -151,6 +151,36 @@ impl Message<IncomingMessage> for Answerer {
 }
 
 #[derive(Debug)]
+struct JoinWatcher {
+    joined: mpsc::UnboundedSender<Joined>,
+}
+
+impl Actor for JoinWatcher {
+    type Args = Self;
+    type Error = Infallible;
+
+    fn on_start(
+        watcher: Self,
+        _: ActorRef<Self>,
+    ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
+        std::future::ready(Ok(watcher))
+    }
+}
+
+impl Message<Joined> for JoinWatcher {
+    type Reply = ();
+
+    fn handle(
+        &mut self,
+        joined: Joined,
+        _: &mut Context<Self, Self::Reply>,
+    ) -> impl Future<Output = ()> + Send {
+        self.joined.send(joined).unwrap();
+        std::future::ready(())
+    }
+}
+
+#[derive(Debug)]
 struct Overhearer {
     overheard: mpsc::UnboundedSender<OverheardMessage>,
 }
@@ -256,6 +286,16 @@ impl FakeZulip {
         overhearing
     }
 
+    async fn watch_joins(&self) -> mpsc::UnboundedReceiver<Joined> {
+        let (joined, joins) = mpsc::unbounded_channel();
+        let watcher = JoinWatcher::spawn(JoinWatcher { joined });
+        self.inbox
+            .ask(WatchJoins(watcher.recipient()))
+            .await
+            .unwrap();
+        joins
+    }
+
     fn reply(&self, status: StatusCode, body: Value) {
         self.replies.send((status, body)).unwrap();
     }
@@ -357,6 +397,23 @@ fn topic_move(id: i64, message_id: u64, sender: u64) -> Value {
     })
 }
 
+fn user_joined(id: i64, user_id: u64, delivery_email: Option<&str>) -> Value {
+    json!({
+        "id": id,
+        "type": "realm_user",
+        "op": "add",
+        "person": {
+            "user_id": user_id,
+            "email": format!("user{user_id}@chess.zulipchat.example.com"),
+            "delivery_email": delivery_email,
+            "full_name": "New Member",
+            "role": 400,
+            "is_active": true,
+            "is_bot": false,
+        },
+    })
+}
+
 fn heard_from(
     event_id: u64,
     sender: u64,
@@ -388,16 +445,28 @@ fn games_topic() -> Conversation {
 }
 
 #[tokio::test]
-async fn the_queue_is_registered_for_messages_and_their_edits_in_raw_markdown() {
+async fn the_queue_is_registered_for_messages_their_edits_and_users_in_raw_markdown() {
     let (mut zulip, _) = FakeZulip::start().await;
 
     let registration = within_a_while(zulip.registrations.recv()).await;
 
     assert_eq!(
         registration["event_types"],
-        r#"["message","update_message"]"#
+        r#"["message","update_message","realm_user"]"#
     );
     assert_eq!(registration["apply_markdown"], "false");
+}
+
+#[tokio::test]
+async fn registering_the_queue_does_not_fetch_every_user() {
+    let (mut zulip, _) = FakeZulip::start().await;
+
+    let registration = within_a_while(zulip.registrations.recv()).await;
+
+    assert_eq!(
+        registration["fetch_event_types"],
+        r#"["message","update_message"]"#
+    );
 }
 
 #[tokio::test]
@@ -711,4 +780,36 @@ async fn an_ordinary_channel_message_is_overheard_and_never_handed_out_as_a_comm
     );
     assert_eq!(within_a_while(heard.recv()).await.text.as_str(), "help");
     assert_eq!(within_a_while(heard.recv()).await.text.as_str(), "gg");
+}
+
+#[tokio::test]
+async fn a_user_who_joins_is_handed_out_with_their_real_email() {
+    let (zulip, _) = FakeZulip::start().await;
+    let mut joins = zulip.watch_joins().await;
+
+    zulip.deliver(json!([user_joined(1, 23, Some("alice@example.com"))]));
+
+    assert_eq!(
+        within_a_while(joins.recv()).await,
+        Joined {
+            user: ChatUserId(23),
+            email: Some(Email::try_new("alice@example.com").unwrap()),
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_user_who_joins_without_a_real_email_is_handed_out_without_one() {
+    let (zulip, _) = FakeZulip::start().await;
+    let mut joins = zulip.watch_joins().await;
+
+    zulip.deliver(json!([user_joined(1, 23, None)]));
+
+    assert_eq!(
+        within_a_while(joins.recv()).await,
+        Joined {
+            user: ChatUserId(23),
+            email: None,
+        }
+    );
 }

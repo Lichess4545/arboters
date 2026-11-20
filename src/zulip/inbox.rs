@@ -9,11 +9,11 @@ use kameo::message::{Context, Message};
 use tokio::task::JoinHandle;
 
 use crate::chat::{
-    ChatUserId, CommandText, Conversation, IncomingMessage, MessageId, MessageText,
-    OutgoingMessage, Overhear, OverheardMessage, Revision, Role,
+    ChatUserId, CommandText, Conversation, IncomingMessage, Joined, MessageId, MessageText,
+    OutgoingMessage, Overhear, OverheardMessage, Revision, Role, WatchJoins,
 };
 
-use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Place};
+use super::api::{Api, ApiError, Bot, Delivery, Edit, Event, Flag, Person, Place};
 use super::messenger::ZulipMessenger;
 use super::{Config, InboxConfig};
 
@@ -24,6 +24,7 @@ pub struct Inbox {
     messenger: ZulipMessenger,
     commands: ReplyRecipient<IncomingMessage, OutgoingMessage>,
     overhearers: Vec<Recipient<OverheardMessage>>,
+    join_watchers: Vec<Recipient<Joined>>,
     exchanges: HashMap<MessageId, Exchange>,
     reading: Option<JoinHandle<()>>,
 }
@@ -51,6 +52,16 @@ pub struct EditedText {
 #[derive(Debug)]
 pub struct Overheard(OverheardMessage);
 
+#[derive(Debug)]
+pub struct Arrived(Joined);
+
+#[derive(Debug)]
+struct Destinations {
+    received: WeakRecipient<Received>,
+    overheard: WeakRecipient<Overheard>,
+    arrived: WeakRecipient<Arrived>,
+}
+
 impl Inbox {
     #[must_use]
     pub fn new(
@@ -65,6 +76,7 @@ impl Inbox {
             messenger,
             commands,
             overhearers: Vec::new(),
+            join_watchers: Vec::new(),
             exchanges: HashMap::new(),
             reading: None,
         }
@@ -124,13 +136,15 @@ impl Actor for Inbox {
         mut inbox: Self,
         actor_ref: ActorRef<Self>,
     ) -> impl Future<Output = Result<Self, Self::Error>> + Send {
-        let received = actor_ref.clone().recipient::<Received>().downgrade();
-        let overheard = actor_ref.recipient::<Overheard>().downgrade();
+        let destinations = Destinations {
+            received: actor_ref.clone().recipient::<Received>().downgrade(),
+            overheard: actor_ref.clone().recipient::<Overheard>().downgrade(),
+            arrived: actor_ref.recipient::<Arrived>().downgrade(),
+        };
         inbox.reading = Some(tokio::spawn(read(
             inbox.api.clone(),
             inbox.config.clone(),
-            received,
-            overheard,
+            destinations,
         )));
         std::future::ready(Ok(inbox))
     }
@@ -151,6 +165,30 @@ impl Message<Overheard> for Inbox {
         for overhearer in &self.overhearers {
             if let Err(error) = overhearer.tell(message.clone()).await {
                 tracing::warn!(error = ?error, "overhearer failed to take a message");
+            }
+        }
+    }
+}
+
+impl Message<WatchJoins> for Inbox {
+    type Reply = ();
+
+    async fn handle(
+        &mut self,
+        WatchJoins(watcher): WatchJoins,
+        _: &mut Context<Self, Self::Reply>,
+    ) {
+        self.join_watchers.push(watcher);
+    }
+}
+
+impl Message<Arrived> for Inbox {
+    type Reply = ();
+
+    async fn handle(&mut self, Arrived(joined): Arrived, _: &mut Context<Self, Self::Reply>) {
+        for watcher in &self.join_watchers {
+            if let Err(error) = watcher.tell(joined.clone()).await {
+                tracing::warn!(error = ?error, "join watcher failed to take a user who joined");
             }
         }
     }
@@ -210,12 +248,7 @@ impl Retry {
     }
 }
 
-async fn read(
-    api: Api,
-    config: InboxConfig,
-    inbox: WeakRecipient<Received>,
-    overheard: WeakRecipient<Overheard>,
-) {
+async fn read(api: Api, config: InboxConfig, destinations: Destinations) {
     let mut retry = Retry::new(&config);
     let bot = loop {
         match api.own_user().await {
@@ -239,15 +272,7 @@ async fn read(
                     retry.reset();
                     queue.acknowledge(&batch);
                     for event in batch.events {
-                        if let Event::Message(delivery) = &event
-                            && let Some(message) = overhear(&bot, delivery)
-                        {
-                            if pass_on(message, &overheard).await.is_break() {
-                                return;
-                            }
-                            continue;
-                        }
-                        if hand_over(&api, &bot, event, &inbox).await.is_break() {
+                        if dispatch(&api, &bot, event, &destinations).await.is_break() {
                             return;
                         }
                     }
@@ -314,16 +339,35 @@ impl Addressed {
     }
 }
 
-async fn hand_over(
+async fn dispatch(
     api: &Api,
     bot: &Bot,
     event: Event,
+    destinations: &Destinations,
+) -> ControlFlow<()> {
+    match event {
+        Event::Message(delivery) => match overhear(bot, &delivery) {
+            Some(message) => pass_on(Overheard(message), &destinations.overheard).await,
+            None => hand_over(api, addressed(bot, delivery), &destinations.received).await,
+        },
+        Event::Edit(edit) => hand_over(api, edited(bot, edit), &destinations.received).await,
+        Event::Joined(person) => welcome(person, &destinations.arrived).await,
+    }
+}
+
+async fn welcome(person: Person, arrived: &WeakRecipient<Arrived>) -> ControlFlow<()> {
+    let joined = Joined {
+        user: person.user_id,
+        email: person.delivery_email,
+    };
+    pass_on(Arrived(joined), arrived).await
+}
+
+async fn hand_over(
+    api: &Api,
+    addressed: Option<Addressed>,
     inbox: &WeakRecipient<Received>,
 ) -> ControlFlow<()> {
-    let addressed = match event {
-        Event::Message(delivery) => addressed(bot, delivery),
-        Event::Edit(edit) => edited(bot, edit),
-    };
     let Some(mut addressed) = addressed else {
         return ControlFlow::Continue(());
     };
@@ -338,23 +382,14 @@ async fn hand_over(
             return ControlFlow::Continue(());
         }
     };
+    pass_on(addressed.with_role(role), inbox).await
+}
+
+async fn pass_on<M: Send + 'static>(message: M, inbox: &WeakRecipient<M>) -> ControlFlow<()> {
     let Some(inbox) = inbox.upgrade() else {
         return ControlFlow::Break(());
     };
-    match inbox.tell(addressed.with_role(role)).await {
-        Ok(()) => ControlFlow::Continue(()),
-        Err(_) => ControlFlow::Break(()),
-    }
-}
-
-async fn pass_on(
-    message: OverheardMessage,
-    overheard: &WeakRecipient<Overheard>,
-) -> ControlFlow<()> {
-    let Some(inbox) = overheard.upgrade() else {
-        return ControlFlow::Break(());
-    };
-    match inbox.tell(Overheard(message)).await {
+    match inbox.tell(message).await {
         Ok(()) => ControlFlow::Continue(()),
         Err(_) => ControlFlow::Break(()),
     }
