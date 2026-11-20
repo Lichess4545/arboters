@@ -109,14 +109,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     responding.stop().await;
     subscribing.stop().await;
     stop(&health_check).await;
-    let shutdown = match &down {
-        Ok(signal) => Shutdown::Requested(*signal),
-        Err(error) => Shutdown::Failed(format!("{error:#}")),
-    };
-    if status.ask(shutdown).await.is_err() {
-        tracing::warn!("status is not running; shutdown not posted");
-    }
-    stop(&status).await;
+    post_shutdown(&status, &down).await;
     http_stopped.cancel();
     let http_exit = if http_server_running {
         http_server
@@ -264,6 +257,17 @@ async fn reporter_stopped(reporter: Option<&ActorRef<Reporter>>) -> anyhow::Erro
     };
     reporter.wait_for_shutdown().await;
     anyhow::anyhow!("Heltour reporter stopped unexpectedly")
+}
+
+async fn post_shutdown(status: &ActorRef<Status<ZulipMessenger>>, down: &anyhow::Result<Signal>) {
+    let shutdown = match down {
+        Ok(signal) => Shutdown::Requested(*signal),
+        Err(error) => Shutdown::Failed(format!("{error:#}")),
+    };
+    if status.ask(shutdown).await.is_err() {
+        tracing::warn!("status is not running; shutdown not posted");
+    }
+    stop(status).await;
 }
 
 fn exit_with(down: anyhow::Result<Signal>, http_exit: anyhow::Result<()>) -> anyhow::Result<()> {
