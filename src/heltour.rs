@@ -9,6 +9,8 @@ pub mod sync;
 pub mod team;
 
 pub use active_leagues::ActiveLeagues;
-pub use api::{Heltour, PairingResult, PairingUpdate, ReadError, Refusal, UpdatePairingError};
+pub use api::{
+    FindPlayerError, Heltour, PairingResult, PairingUpdate, ReadError, Refusal, UpdatePairingError,
+};
 pub use config::Config;
 pub use league::League;
