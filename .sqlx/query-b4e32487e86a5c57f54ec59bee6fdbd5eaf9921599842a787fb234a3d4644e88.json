@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT lichess_user_id FROM linked_accounts WHERE chat_user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "lichess_user_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "linked_accounts",
+            "name": "lichess_user_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b4e32487e86a5c57f54ec59bee6fdbd5eaf9921599842a787fb234a3d4644e88"
+}

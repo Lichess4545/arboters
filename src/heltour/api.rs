@@ -1,12 +1,13 @@
 use std::time::Duration;
 
 use reqwest::header::AUTHORIZATION;
-use reqwest::{Method, RequestBuilder, Response};
+use reqwest::{Method, RequestBuilder, Response, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+use crate::chat::Email;
 use crate::lichess;
 
 use super::Config;
@@ -16,6 +17,8 @@ use super::pairing::{Pairing, Round, RoundId};
 
 const LEAGUES_PATH: &str = "v2/leagues/";
 const ONLY_ACTIVE: [(&str, &str); 1] = [("active", "true")];
+const PLAYER_BY_EMAIL_PATH: &str = "v2/players/by-email/";
+const PLAYER_BY_EMAIL_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_TEST_PATH: &str = "v2/token/test/";
 const UPDATE_PAIRING_PATH: &str = "update_pairing/";
 const UPDATE_PAIRING_TIMEOUT: Duration = Duration::from_secs(30);
@@ -59,6 +62,26 @@ pub enum UpdatePairingError {
     Refused(Refusal),
     #[error("could not ask Heltour to update the pairing")]
     Request(#[from] reqwest::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum FindPlayerError {
+    #[error("more than one heltour player has the email")]
+    Ambiguous,
+    #[error("heltour does not take the email for an email address")]
+    NotAnEmail,
+    #[error("could not ask heltour for the player with the email")]
+    Request(#[from] reqwest::Error),
+}
+
+#[derive(Serialize)]
+struct EmailBody<'a> {
+    email: &'a str,
+}
+
+#[derive(Deserialize)]
+struct PlayerAnswer {
+    id: lichess::UserId,
 }
 
 #[derive(Serialize)]
@@ -196,6 +219,26 @@ impl Heltour {
             .collect())
     }
 
+    pub async fn player_with_email(
+        &self,
+        email: &Email,
+    ) -> Result<Option<lichess::UserId>, FindPlayerError> {
+        let response = self
+            .request(Method::POST, PLAYER_BY_EMAIL_PATH)
+            .json(&EmailBody {
+                email: email.as_str(),
+            })
+            .timeout(PLAYER_BY_EMAIL_TIMEOUT)
+            .send()
+            .await?;
+        match response.status() {
+            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::CONFLICT => Err(FindPlayerError::Ambiguous),
+            StatusCode::BAD_REQUEST => Err(FindPlayerError::NotAnEmail),
+            _ => Ok(Some(found_player(response).await?)),
+        }
+    }
+
     pub async fn update_pairing(&self, update: &PairingUpdate) -> Result<(), UpdatePairingError> {
         let form = UpdatePairingForm {
             league: update.league.as_str(),
@@ -220,6 +263,14 @@ async fn send(request: RequestBuilder) -> reqwest::Result<Response> {
     request.send().await?.error_for_status()
 }
 
+async fn found_player(response: Response) -> reqwest::Result<lichess::UserId> {
+    let player: PlayerAnswer = response.error_for_status()?.json().await?;
+    Ok(player.id)
+}
+
 async fn answer<T: DeserializeOwned>(request: RequestBuilder) -> reqwest::Result<T> {
     send(request).await?.json().await
 }
+
+#[cfg(test)]
+mod tests;

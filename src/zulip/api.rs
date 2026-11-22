@@ -8,13 +8,16 @@ use serde::de::{DeserializeOwned, IgnoredAny};
 use url::Url;
 
 use crate::chat::{
-    ChannelName, ChatUserId, Conversation, MessageId, MessageText, OutgoingMessage, Role, TopicName,
+    ChannelName, ChatUserId, Conversation, Email, MessageId, MessageText, OutgoingMessage, Role,
+    TopicName,
 };
 
 use super::{BotEmail, Config};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LONG_POLL_TIMEOUT: Duration = Duration::from_secs(90);
+const EVENT_TYPES: &str = r#"["message","update_message","realm_user"]"#;
+const FETCHED_EVENT_TYPES: &str = r#"["message","update_message"]"#;
 
 #[derive(Clone, Debug)]
 pub struct Api {
@@ -80,6 +83,23 @@ pub struct Batch {
 pub enum Event {
     Message(Delivery),
     Edit(Edit),
+    Joined(Person),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+enum UserChange {
+    Add {
+        person: Person,
+    },
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Person {
+    pub user_id: ChatUserId,
+    pub delivery_email: Option<Email>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,11 +188,12 @@ struct Numbered {
     kind: EventKind,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum EventKind {
     Message,
     UpdateMessage,
+    RealmUser,
     #[serde(other)]
     Other,
 }
@@ -278,7 +299,8 @@ impl Api {
         let response = self
             .request(Method::POST, "register")
             .form(&[
-                ("event_types", r#"["message","update_message"]"#),
+                ("event_types", EVENT_TYPES),
+                ("fetch_event_types", FETCHED_EVENT_TYPES),
                 ("apply_markdown", "false"),
                 ("all_public_streams", "true"),
             ])
@@ -308,16 +330,12 @@ impl Api {
                 continue;
             };
             batch.last_event_id = batch.last_event_id.max(Some(numbered.id));
-            let read = match numbered.kind {
-                EventKind::Message => Delivery::deserialize(&event).map(Event::Message),
-                EventKind::UpdateMessage => Edit::deserialize(&event).map(Event::Edit),
-                EventKind::Other => continue,
-            };
-            match read {
-                Ok(read) => batch.events.push(read),
-                Err(error) => {
-                    tracing::warn!(%error, event_id = numbered.id.0, "unreadable zulip message event ignored");
+            match read_event(numbered.kind, &event) {
+                Some(Ok(read)) => batch.events.push(read),
+                Some(Err(error)) => {
+                    tracing::warn!(%error, event_id = numbered.id.0, "unreadable zulip event ignored");
                 }
+                None => {}
             }
         }
         Ok(batch)
@@ -367,6 +385,26 @@ impl Queue {
         if let Some(last_event_id) = batch.last_event_id {
             self.last_event_id = self.last_event_id.max(last_event_id);
         }
+    }
+}
+
+fn read_event(
+    kind: EventKind,
+    event: &serde_json::Value,
+) -> Option<Result<Event, serde_json::Error>> {
+    match kind {
+        EventKind::Message => Some(Delivery::deserialize(event).map(Event::Message)),
+        EventKind::UpdateMessage => Some(Edit::deserialize(event).map(Event::Edit)),
+        EventKind::RealmUser => joined(event),
+        EventKind::Other => None,
+    }
+}
+
+fn joined(event: &serde_json::Value) -> Option<Result<Event, serde_json::Error>> {
+    match UserChange::deserialize(event) {
+        Ok(UserChange::Add { person }) => Some(Ok(Event::Joined(person))),
+        Ok(UserChange::Other) => None,
+        Err(error) => Some(Err(error)),
     }
 }
 

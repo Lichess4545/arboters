@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO linked_accounts (chat_user_id, lichess_user_id)\n            VALUES ($1, $2)\n            ON CONFLICT (chat_user_id)\n            DO UPDATE SET lichess_user_id = EXCLUDED.lichess_user_id, linked_at = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67c269a9789bab96bed19b00948bc00a2afb3fa7b87cf0ff765781db0d2d9447"
+}

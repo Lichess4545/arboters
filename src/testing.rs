@@ -1,8 +1,10 @@
 use kameo::Actor;
 use kameo::actor::ActorRef;
 use kameo::message::{Context, Message};
+use sqlx::PgPool;
 use tokio::sync::mpsc;
 
+use crate::chat::ChatUserId;
 use crate::game_monitor::{self, Fixture, League};
 use crate::heltour::league;
 use crate::lichess::{
@@ -100,4 +102,14 @@ impl<T: Send + 'static> Message<T> for Collector<T> {
     async fn handle(&mut self, collected: T, _: &mut Context<Self, Self::Reply>) {
         self.0.send(collected).unwrap();
     }
+}
+
+pub async fn linked_account(pool: &PgPool, chat_user: ChatUserId) -> Vec<String> {
+    sqlx::query_scalar!(
+        "SELECT lichess_user_id FROM linked_accounts WHERE chat_user_id = $1",
+        i64::try_from(chat_user.0).unwrap(),
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
